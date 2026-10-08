@@ -2,11 +2,17 @@
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
-.packages
 .pub-cache/
 .pub/
 build/
-pubspec.lock.bak
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
+**/xcuserdata/
+Payload/
 
 # IDE
 .idea/
@@ -16,9 +22,3 @@ pubspec.lock.bak
 # OS
 .DS_Store
 Thumbs.db
-
-# Android local/secrets
-android/local.properties
-android/key.properties
-*.jks
-*.keystore
