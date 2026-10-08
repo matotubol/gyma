@@ -15,7 +15,9 @@ workflows:
         script: |
           if [ ! -d ios ]; then
             flutter create --org com.mato --project-name gyma --platforms=ios .
+            sed -i '' -E 's/IPHONEOS_DEPLOYMENT_TARGET = [0-9.]+;/IPHONEOS_DEPLOYMENT_TARGET = 26.0;/g' ios/Runner.xcodeproj/project.pbxproj
           fi
+          grep -m1 IPHONEOS_DEPLOYMENT_TARGET ios/Runner.xcodeproj/project.pbxproj
       - name: Get packages
         script: flutter pub get
       - name: Analyze
