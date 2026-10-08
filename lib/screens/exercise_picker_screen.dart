@@ -4,7 +4,7 @@ import '../models.dart';
 import '../store.dart';
 import '../widgets.dart';
 
-/// Grid of exercises to add to a workout. Pops with the chosen exercise id.
+/// Searchable exercise list. Pops with the chosen exercise id.
 class ExercisePickerScreen extends StatefulWidget {
   const ExercisePickerScreen({super.key, this.alreadyAdded = const {}});
 
@@ -17,11 +17,19 @@ class ExercisePickerScreen extends StatefulWidget {
 class _ExercisePickerScreenState extends State<ExercisePickerScreen> {
   String _query = '';
   Muscle? _muscle;
+  final _search = TextEditingController();
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
 
   Future<void> _createCustom() async {
     final def = await showDialog<ExerciseDef>(
       context: context,
-      builder: (_) => _NewExerciseDialog(initialMuscle: _muscle ?? Muscle.chest),
+      builder: (_) =>
+          _NewExerciseDialog(initialMuscle: _muscle ?? Muscle.chest),
     );
     if (def == null || !mounted) return;
     Navigator.pop(context, def.id);
@@ -50,110 +58,116 @@ class _ExercisePickerScreenState extends State<ExercisePickerScreen> {
           const SizedBox(width: 8),
         ],
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-            child: TextField(
-              onChanged: (v) => setState(() => _query = v),
-              onTapOutside: (_) => FocusScope.of(context).unfocus(),
-              decoration: InputDecoration(
-                hintText: 'Search exercises',
-                prefixIcon: const Icon(Icons.search),
-                filled: true,
-                isDense: true,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(28),
-                  borderSide: BorderSide.none,
+      body: SafeArea(
+          top: false,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                child: TextField(
+                  controller: _search,
+                  onChanged: (v) => setState(() => _query = v),
+                  onTapOutside: (_) => FocusScope.of(context).unfocus(),
+                  decoration: InputDecoration(
+                    hintText: 'Search exercises',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: _query.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: 'Clear search',
+                            onPressed: () {
+                              _search.clear();
+                              setState(() => _query = '');
+                            },
+                            icon: const Icon(Icons.close, size: 20),
+                          ),
+                    filled: true,
+                    isDense: true,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(28),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
                 ),
               ),
-            ),
-          ),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: ChoiceChip(
-                    label: const Text('All'),
-                    selected: _muscle == null,
-                    showCheckmark: false,
-                    onSelected: (_) => setState(() => _muscle = null),
-                  ),
-                ),
-                for (final m in Muscle.values)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: ChoiceChip(
-                      avatar: CircleAvatar(backgroundColor: m.color, radius: 5),
-                      label: Text(m.label),
-                      selected: _muscle == m,
-                      showCheckmark: false,
-                      onSelected: (_) => setState(() => _muscle = m),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: ChoiceChip(
+                        label: const Text('All'),
+                        selected: _muscle == null,
+                        showCheckmark: false,
+                        onSelected: (_) => setState(() => _muscle = null),
+                      ),
                     ),
-                  ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: shown.isEmpty
-                ? EmptyState(
-                    icon: Icons.search_off,
-                    title: 'Nothing found',
-                    message: 'Tap "New" to add "${_query.trim()}" yourself.',
-                  )
-                : GridView.builder(
-                    padding: const EdgeInsets.all(16),
-                    gridDelegate:
-                        const SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 130,
-                      mainAxisSpacing: 12,
-                      crossAxisSpacing: 12,
-                      childAspectRatio: 0.85,
-                    ),
-                    itemCount: shown.length,
-                    itemBuilder: (context, i) {
-                      final e = shown[i];
-                      final added = widget.alreadyAdded.contains(e.id);
-                      return Opacity(
-                        opacity: added ? 0.45 : 1,
-                        child: Card(
-                          margin: EdgeInsets.zero,
-                          clipBehavior: Clip.antiAlias,
-                          child: InkWell(
-                            onTap: added ? null : () => Navigator.pop(context, e.id),
-                            child: Padding(
-                              padding: const EdgeInsets.all(10),
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  ExerciseAvatar(e, size: 54),
-                                  const SizedBox(height: 10),
-                                  Text(
-                                    e.name,
-                                    textAlign: TextAlign.center,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: theme.textTheme.labelLarge,
-                                  ),
-                                  if (added)
-                                    Text('Added',
-                                        style: theme.textTheme.labelSmall
-                                            ?.copyWith(
-                                                color: theme.colorScheme.primary)),
-                                ],
-                              ),
-                            ),
-                          ),
+                    for (final m in Muscle.values)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: ChoiceChip(
+                          avatar:
+                              CircleAvatar(backgroundColor: m.color, radius: 5),
+                          label: Text(m.label),
+                          selected: _muscle == m,
+                          showCheckmark: false,
+                          onSelected: (_) => setState(() => _muscle = m),
                         ),
-                      );
-                    },
-                  ),
-          ),
-        ],
-      ),
+                      ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: shown.isEmpty
+                    ? EmptyState(
+                        icon: Icons.search_off,
+                        title: 'Nothing found',
+                        message:
+                            'Tap "New" to add "${_query.trim()}" yourself.',
+                      )
+                    : ListView.separated(
+                        keyboardDismissBehavior:
+                            ScrollViewKeyboardDismissBehavior.onDrag,
+                        padding: const EdgeInsets.all(16),
+                        separatorBuilder: (_, index) =>
+                            const SizedBox(height: 8),
+                        itemCount: shown.length,
+                        itemBuilder: (context, i) {
+                          final e = shown[i];
+                          final added = widget.alreadyAdded.contains(e.id);
+                          return Card(
+                            clipBehavior: Clip.antiAlias,
+                            child: ListTile(
+                              key: ValueKey('pick-${e.id}'),
+                              enabled: !added,
+                              contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 8),
+                              leading: ExerciseAvatar(e, size: 44),
+                              title: Text(e.name,
+                                  style: theme.textTheme.titleSmall
+                                      ?.copyWith(fontWeight: FontWeight.w600)),
+                              subtitle: Text(added
+                                  ? '${e.muscle.label} · Already in workout'
+                                  : e.muscle.label),
+                              trailing: Icon(
+                                  added
+                                      ? Icons.check_circle_outline
+                                      : Icons.add_circle_outline,
+                                  color: added
+                                      ? theme.colorScheme.onSurfaceVariant
+                                      : theme.colorScheme.primary),
+                              onTap: added
+                                  ? null
+                                  : () => Navigator.pop(context, e.id),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          )),
     );
   }
 }
@@ -236,11 +250,13 @@ class _NewExerciseDialogState extends State<_NewExerciseDialog> {
                         borderRadius: BorderRadius.circular(14),
                         border: Border.all(
                           width: 2,
-                          color: _icon == key ? _muscle.color : Colors.transparent,
+                          color:
+                              _icon == key ? _muscle.color : Colors.transparent,
                         ),
                       ),
                       child: ExerciseAvatar(
-                          ExerciseDef('preview', '', _muscle, key), size: 40),
+                          ExerciseDef('preview', '', _muscle, key),
+                          size: 40),
                     ),
                   ),
               ],

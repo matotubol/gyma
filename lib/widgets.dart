@@ -28,7 +28,8 @@ class ExerciseAvatar extends StatelessWidget {
 
 /// Small rounded label, e.g. "🙂 Good" or "🌙 Night shift".
 class Pill extends StatelessWidget {
-  const Pill({super.key, required this.leading, required this.label, this.color});
+  const Pill(
+      {super.key, required this.leading, required this.label, this.color});
 
   final Widget leading;
   final String label;
@@ -51,7 +52,9 @@ class Pill extends StatelessWidget {
             child: leading,
           ),
           const SizedBox(width: 6),
-          Text(label, style: Theme.of(context).textTheme.labelMedium),
+          Flexible(
+              child:
+                  Text(label, style: Theme.of(context).textTheme.labelMedium)),
         ],
       ),
     );
@@ -94,11 +97,12 @@ class StatTile extends StatelessWidget {
           value,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: theme.textTheme.titleLarge
-              ?.copyWith(fontWeight: FontWeight.w700),
+          style:
+              theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
         ),
         Text(
           label,
+          textAlign: TextAlign.center,
           style: theme.textTheme.bodySmall
               ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
         ),
@@ -109,7 +113,10 @@ class StatTile extends StatelessWidget {
 
 class EmptyState extends StatelessWidget {
   const EmptyState(
-      {super.key, required this.icon, required this.title, required this.message});
+      {super.key,
+      required this.icon,
+      required this.title,
+      required this.message});
 
   final IconData icon;
   final String title;
@@ -195,7 +202,8 @@ class FilterBar extends StatelessWidget {
 
 /// Times, check-in and totals for one workout.
 class WorkoutSummaryCard extends StatelessWidget {
-  const WorkoutSummaryCard({super.key, required this.workout, this.onEditCheckIn});
+  const WorkoutSummaryCard(
+      {super.key, required this.workout, this.onEditCheckIn});
 
   final Workout workout;
   final VoidCallback? onEditCheckIn;
@@ -216,7 +224,8 @@ class WorkoutSummaryCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                Icon(Icons.schedule, size: 18, color: theme.colorScheme.primary),
+                Icon(Icons.schedule,
+                    size: 18, color: theme.colorScheme.primary),
                 const SizedBox(width: 6),
                 Expanded(child: Text(when, style: theme.textTheme.titleSmall)),
               ],
@@ -227,10 +236,11 @@ class WorkoutSummaryCard extends StatelessWidget {
               borderRadius: BorderRadius.circular(20),
               child: Row(
                 children: [
-                  ShiftPill(w.shift),
-                  const SizedBox(width: 8),
-                  EnergyPill(w.energy),
-                  const Spacer(),
+                  Expanded(
+                      child: Wrap(spacing: 8, runSpacing: 8, children: [
+                    ShiftPill(w.shift),
+                    EnergyPill(w.energy),
+                  ])),
                   if (onEditCheckIn != null)
                     Icon(Icons.edit_outlined,
                         size: 18, color: theme.colorScheme.onSurfaceVariant),
@@ -275,7 +285,8 @@ class NumberField extends StatelessWidget {
       autofocus: autofocus,
       keyboardType: TextInputType.numberWithOptions(decimal: decimal),
       inputFormatters: [
-        FilteringTextInputFormatter.allow(RegExp(decimal ? r'[0-9.,]' : r'[0-9]')),
+        FilteringTextInputFormatter.allow(
+            RegExp(decimal ? r'[0-9.,]' : r'[0-9]')),
       ],
       textAlign: TextAlign.center,
       style: Theme.of(context).textTheme.titleMedium,

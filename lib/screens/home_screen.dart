@@ -63,22 +63,27 @@ class _HomeScreenState extends State<HomeScreen> {
                         MaterialPageRoute<void>(
                             builder: (_) => const DataScreen()))),
               ]),
-          body: Column(children: [
-            if (store.storageError != null)
-              MaterialBanner(content: Text(store.storageError!), actions: [
-                TextButton(
-                    onPressed: () => Navigator.push(
-                        context,
-                        MaterialPageRoute<void>(
-                            builder: (_) => const DataScreen())),
-                    child: const Text('Backup'))
-              ]),
-            Expanded(
-                child: IndexedStack(
-                    index: _tab,
-                    children: const [ProgressTab(), HistoryTab(), CoachTab()])),
-          ]),
-          floatingActionButton: _tab == 2
+          body: SafeArea(
+              top: false,
+              bottom: false,
+              child: Column(children: [
+                if (store.storageError != null)
+                  MaterialBanner(content: Text(store.storageError!), actions: [
+                    TextButton(
+                        onPressed: () => Navigator.push(
+                            context,
+                            MaterialPageRoute<void>(
+                                builder: (_) => const DataScreen())),
+                        child: const Text('Backup'))
+                  ]),
+                Expanded(
+                    child: IndexedStack(index: _tab, children: [
+                  ProgressTab(onStartWorkout: _startOrResume),
+                  const HistoryTab(),
+                  const CoachTab()
+                ])),
+              ])),
+          floatingActionButton: _tab != 1
               ? null
               : FloatingActionButton.extended(
                   onPressed: _startOrResume,
@@ -91,7 +96,9 @@ class _HomeScreenState extends State<HomeScreen> {
             onDestinationSelected: (i) => setState(() => _tab = i),
             destinations: const [
               NavigationDestination(
-                  icon: Icon(Icons.insights), label: 'Overview'),
+                  icon: Icon(Icons.space_dashboard_outlined),
+                  selectedIcon: Icon(Icons.space_dashboard_rounded),
+                  label: 'Overview'),
               NavigationDestination(
                   icon: Icon(Icons.fitness_center), label: 'Workouts'),
               NavigationDestination(

@@ -8,6 +8,7 @@ import '../store.dart';
 import '../widgets.dart';
 import 'check_in_sheet.dart';
 import 'exercise_card.dart';
+import 'exercise_log_screen.dart';
 import 'exercise_picker_screen.dart';
 import 'workout_detail_screen.dart';
 import 'recovery_screen.dart';
@@ -50,7 +51,38 @@ class _ActiveWorkoutScreenState extends State<ActiveWorkoutScreen> {
         ),
       ),
     );
-    if (id != null) store.addExercise(_w, id);
+    if (id == null || !mounted) return;
+    store.addExercise(_w, id);
+    await _openExercise(_w.exercises.last);
+  }
+
+  Future<void> _openExercise(WorkoutExercise entry) =>
+      Navigator.of(context).push<void>(MaterialPageRoute(
+        builder: (_) => ExerciseLogScreen(workout: _w, entry: entry),
+      ));
+
+  Future<void> _workoutAction(String action) async {
+    switch (action) {
+      case 'check-in':
+        await _editCheckIn();
+      case 'recovery':
+        if (!mounted) return;
+        await Navigator.push(
+            context,
+            MaterialPageRoute<void>(
+              builder: (_) => RecoveryScreen(date: _w.start),
+            ));
+      case 'date':
+        final date = await showDatePicker(
+          context: context,
+          initialDate: _w.start,
+          firstDate: DateTime(2000),
+          lastDate: DateTime.now(),
+        );
+        if (date != null) store.updateWorkoutDate(_w, date);
+      case 'discard':
+        await _discard();
+    }
   }
 
   Future<void> _editCheckIn() async {
@@ -127,62 +159,84 @@ class _ActiveWorkoutScreenState extends State<ActiveWorkoutScreen> {
       listenable: store,
       builder: (context, _) => Scaffold(
         appBar: AppBar(
-          title: editing
-              ? const Text('Edit workout')
-              : Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Workout'),
-                    Text(
-                      fmtClock(_w.duration),
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        color: theme.colorScheme.primary,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                  ],
-                ),
+          title: Text(editing ? 'Edit workout' : 'Workout'),
           actions: [
-            if (!editing)
-              IconButton(
-                tooltip: 'Discard workout',
-                onPressed: _discard,
-                icon: const Icon(Icons.delete_outline),
-              ),
-            Padding(
-              padding: const EdgeInsets.only(right: 12),
-              child: FilledButton(
-                onPressed: editing ? () => Navigator.pop(context) : _finish,
-                child: Text(editing ? 'Done' : 'Finish'),
-              ),
+            TextButton(
+              onPressed: editing ? () => Navigator.pop(context) : _finish,
+              child: Text(editing ? 'Done' : 'Finish'),
+            ),
+            PopupMenuButton<String>(
+              tooltip: 'Workout options',
+              onSelected: _workoutAction,
+              itemBuilder: (_) => [
+                const PopupMenuItem(
+                    value: 'check-in', child: Text('Edit shift & energy')),
+                const PopupMenuItem(
+                    value: 'recovery', child: Text('Daily soreness')),
+                if (editing)
+                  const PopupMenuItem(
+                      value: 'date', child: Text('Correct workout date')),
+                if (!editing)
+                  const PopupMenuItem(
+                      value: 'discard', child: Text('Discard workout')),
+              ],
             ),
           ],
         ),
         body: ListView(
           keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
           children: [
-            WorkoutSummaryCard(workout: _w, onEditCheckIn: _editCheckIn),
-            TextButton.icon(
-                onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute<void>(
-                        builder: (_) => RecoveryScreen(date: _w.start))),
-                icon: const Icon(Icons.accessibility_new),
-                label: const Text('Daily soreness (optional)')),
-            if (editing)
-              TextButton.icon(
-                  onPressed: () async {
-                    final date = await showDatePicker(
-                        context: context,
-                        initialDate: _w.start,
-                        firstDate: DateTime(2000),
-                        lastDate: DateTime.now());
-                    if (date != null) store.updateWorkoutDate(_w, date);
-                  },
-                  icon: const Icon(Icons.calendar_today),
-                  label: const Text('Correct workout date')),
-            const SizedBox(height: 12),
+            Card(
+                child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(editing ? fmtDate(_w.start) : 'IN PROGRESS',
+                        style: theme.textTheme.labelMedium?.copyWith(
+                            color: theme.colorScheme.primary,
+                            letterSpacing: 1.2)),
+                    const SizedBox(height: 16),
+                    Row(children: [
+                      Expanded(
+                          child: StatTile(fmtClock(_w.duration), 'Duration')),
+                      Expanded(
+                          child:
+                              StatTile('${_w.exercises.length}', 'Exercises')),
+                      Expanded(
+                          child: StatTile('${_w.totalSets}', 'Sets logged')),
+                    ]),
+                    const SizedBox(height: 20),
+                    InkWell(
+                      onTap: _editCheckIn,
+                      borderRadius: BorderRadius.circular(12),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Row(children: [
+                          Expanded(
+                              child: Wrap(spacing: 8, runSpacing: 8, children: [
+                            ShiftPill(_w.shift),
+                            EnergyPill(_w.energy)
+                          ])),
+                          const SizedBox(width: 8),
+                          Icon(Icons.edit_outlined,
+                              size: 18,
+                              color: theme.colorScheme.onSurfaceVariant),
+                        ]),
+                      ),
+                    ),
+                  ]),
+            )),
+            const SizedBox(height: 28),
+            Text('Your exercises',
+                style: theme.textTheme.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            Text('Open an exercise to log or edit its sets.',
+                style: theme.textTheme.bodyMedium
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+            const SizedBox(height: 16),
             if (_w.exercises.isEmpty)
               const Padding(
                 padding: EdgeInsets.only(top: 32),
@@ -196,14 +250,20 @@ class _ActiveWorkoutScreenState extends State<ActiveWorkoutScreen> {
               Padding(
                 padding: const EdgeInsets.only(bottom: 12),
                 child: ExerciseCard(
-                    key: ObjectKey(entry), workout: _w, entry: entry),
+                    key: ObjectKey(entry),
+                    entry: entry,
+                    onTap: () => _openExercise(entry)),
               ),
           ],
         ),
-        floatingActionButton: FloatingActionButton.extended(
-          onPressed: _addExercise,
-          icon: const Icon(Icons.add),
-          label: const Text('Add exercise'),
+        bottomNavigationBar: SafeArea(
+          top: false,
+          minimum: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          child: FilledButton.icon(
+            onPressed: _addExercise,
+            icon: const Icon(Icons.add),
+            label: const Text('Add exercise'),
+          ),
         ),
       ),
     );

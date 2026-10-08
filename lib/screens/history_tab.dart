@@ -77,7 +77,10 @@ class _WeekCard extends StatelessWidget {
     final scheme = theme.colorScheme;
     final now = DateTime.now();
     final monday = DateTime(now.year, now.month, now.day - (now.weekday - 1));
-    final week = [for (final w in workouts) if (!w.start.isBefore(monday)) w];
+    final week = [
+      for (final w in workouts)
+        if (!w.start.isBefore(monday)) w
+    ];
     final trained = {for (final w in week) w.start.weekday};
     final volume = week.fold<double>(0, (a, w) => a + w.volume);
     final time = week.fold(Duration.zero, (a, w) => a + w.duration);
@@ -110,7 +113,8 @@ class _WeekCard extends StatelessWidget {
                               : null,
                         ),
                         child: trained.contains(d)
-                            ? Icon(Icons.check, size: 18, color: scheme.onPrimary)
+                            ? Icon(Icons.check,
+                                size: 18, color: scheme.onPrimary)
                             : null,
                       ),
                       const SizedBox(height: 4),
@@ -194,14 +198,13 @@ class _WorkoutTile extends StatelessWidget {
                       children: [ShiftPill(w.shift), EnergyPill(w.energy)],
                     ),
                     const SizedBox(height: 10),
-                    Row(
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
                       children: [
                         for (final e in w.exercises.take(maxIcons))
-                          Padding(
-                            padding: const EdgeInsets.only(right: 6),
-                            child: ExerciseAvatar(store.exercise(e.exerciseId),
-                                size: 28),
-                          ),
+                          ExerciseAvatar(store.exercise(e.exerciseId),
+                              size: 28),
                         if (w.exercises.length > maxIcons)
                           Text('+${w.exercises.length - maxIcons}',
                               style: theme.textTheme.labelMedium),

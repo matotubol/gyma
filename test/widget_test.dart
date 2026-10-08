@@ -8,7 +8,8 @@ import 'package:gyma/models.dart';
 import 'package:gyma/store.dart';
 
 void main() {
-  testWidgets('populated dashboard fits a small phone with large text', (tester) async {
+  testWidgets('populated dashboard fits a small phone with large text',
+      (tester) async {
     tester.view.physicalSize = const Size(320, 740);
     tester.view.devicePixelRatio = 1;
     tester.platformDispatcher.textScaleFactorTestValue = 1.3;
@@ -18,24 +19,34 @@ void main() {
     final now = DateTime.now();
     for (var i = 0; i < 2; i++) {
       final date = now.subtract(Duration(days: i + 1));
-      store.workouts.add(Workout(id: 'preview-$i', start: date,
-        end: date.add(const Duration(hours: 1)), shift: Shift.off, energy: Energy.good,
-        exercises: [WorkoutExercise('bench_press', [WorkSet(i == 0 ? 65 : 60, 8)]),
-          WorkoutExercise('squat', [WorkSet(i == 0 ? 70 : 80, 8)])]));
+      store.workouts.add(Workout(
+          id: 'preview-$i',
+          start: date,
+          end: date.add(const Duration(hours: 1)),
+          shift: Shift.off,
+          energy: Energy.good,
+          exercises: [
+            WorkoutExercise('bench_press', [WorkSet(i == 0 ? 65 : 60, 8)]),
+            WorkoutExercise('squat', [WorkSet(i == 0 ? 70 : 80, 8)])
+          ]));
     }
     addTearDown(store.workouts.clear);
     await tester.pumpWidget(const GymaApp());
     await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(find.text('Needs attention'), 200,
-      scrollable: find.descendant(of: find.byType(ListView).first, matching: find.byType(Scrollable)).first);
+    await tester.scrollUntilVisible(find.text('Lower loads'), 200,
+        scrollable: find
+            .descendant(
+                of: find.byType(ListView).first,
+                matching: find.byType(Scrollable))
+            .first);
     await tester.pumpAndSettle();
-    expect(find.text('Needs attention'), findsOneWidget);
+    expect(find.text('Lower loads'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
   testWidgets('home screen shows empty state', (tester) async {
     await tester.pumpWidget(const GymaApp());
-    expect(find.text('Your training, at a glance'), findsOneWidget);
+    expect(find.text('Your training'), findsOneWidget);
     expect(find.text('Start workout'), findsOneWidget);
   });
 

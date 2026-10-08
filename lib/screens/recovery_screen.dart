@@ -171,44 +171,53 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
 
 class RecoveryCard extends StatelessWidget {
   const RecoveryCard({super.key});
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final day = store.recoveryDays[dayKey(DateTime.now())];
     final recorded = day?.muscles.length ?? 0;
     final sore =
-        day?.muscles.entries.where((e) => e.value != Soreness.none).toList() ??
-            [];
+        day?.muscles.values.where((s) => s != Soreness.none).length ?? 0;
     return Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => Navigator.push(context,
+            MaterialPageRoute<void>(builder: (_) => const RecoveryScreen())),
         child: Padding(
-            padding: const EdgeInsets.all(16),
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Today’s recovery',
-                  style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 8),
-              Text(recorded == 0
-                  ? 'Muscle soreness not recorded today.'
-                  : '$recorded of ${BodyArea.values.length} muscle groups recorded'),
-              if (sore.isNotEmpty)
-                Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Wrap(spacing: 6, runSpacing: 4, children: [
-                      for (final e in sore)
-                        Chip(label: Text('${e.key.label}: ${e.value.label}'))
-                    ])),
-              if (day != null && day.painAreas.isNotEmpty)
-                Text(
-                    'Pain flagged: ${day.painAreas.map((a) => a.label).join(', ')}. Tell your coach before planning.'),
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                  onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute<void>(
-                          builder: (_) => const RecoveryScreen())),
-                  icon: const Icon(Icons.accessibility_new),
-                  label: Text(day == null
-                      ? 'Log soreness (optional)'
-                      : 'Edit daily check-in')),
-            ])));
+          padding: const EdgeInsets.all(16),
+          child: Row(children: [
+            Icon(Icons.accessibility_new_rounded,
+                color: theme.colorScheme.primary),
+            const SizedBox(width: 14),
+            Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                  Text('Daily check-in',
+                      style: theme.textTheme.titleSmall
+                          ?.copyWith(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 4),
+                  Text(
+                      recorded == 0
+                          ? 'Log muscle soreness · Optional'
+                          : '$recorded of ${BodyArea.values.length} groups recorded · $sore sore',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant)),
+                  if (day != null && day.painAreas.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                        'Pain flagged: ${day.painAreas.map((a) => a.label).join(', ')}',
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: theme.colorScheme.error)),
+                  ],
+                ])),
+            const SizedBox(width: 8),
+            Icon(Icons.chevron_right_rounded,
+                color: theme.colorScheme.onSurfaceVariant),
+          ]),
+        ),
+      ),
+    );
   }
 }
