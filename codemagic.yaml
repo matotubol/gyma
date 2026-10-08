@@ -1,0 +1,27 @@
+workflows:
+  android:
+    name: Android APK
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    environment:
+      flutter: stable
+    triggering:
+      events: [push]
+      branch_patterns:
+        - pattern: main
+    scripts:
+      - name: Generate platform folder (if missing)
+        script: |
+          if [ ! -d android ]; then
+            flutter create --org com.mato --project-name gyma --platforms=android .
+          fi
+      - name: Get packages
+        script: flutter pub get
+      - name: Analyze
+        script: flutter analyze
+      - name: Test
+        script: flutter test
+      - name: Build APK
+        script: flutter build apk --release --build-number=$PROJECT_BUILD_NUMBER
+    artifacts:
+      - build/app/outputs/flutter-apk/*.apk
