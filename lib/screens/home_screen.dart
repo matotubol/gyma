@@ -3,7 +3,8 @@ import 'package:flutter/material.dart';
 import '../models.dart';
 import '../store.dart';
 import 'active_workout_screen.dart';
-import 'check_in_sheet.dart';
+import 'session_prepare_screen.dart';
+import 'body_progress_screen.dart';
 import 'history_tab.dart';
 import 'progress_tab.dart';
 import 'coach_tab.dart';
@@ -23,14 +24,9 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _startOrResume() async {
     var workout = store.activeWorkout;
     if (workout == null) {
-      final checkIn = await showModalBottomSheet<(Shift, Energy)>(
-        context: context,
-        showDragHandle: true,
-        isScrollControlled: true,
-        builder: (_) => const CheckInSheet(),
-      );
-      if (checkIn == null) return;
-      workout = store.startWorkout(checkIn.$1, checkIn.$2);
+      workout = await Navigator.push<Workout>(context,
+          MaterialPageRoute(builder: (_) => const SessionPrepareScreen()));
+      if (workout == null) return;
     }
     final Workout current = workout;
     if (!mounted) return;
@@ -46,7 +42,7 @@ class _HomeScreenState extends State<HomeScreen> {
         final active = store.activeWorkout != null;
         return Scaffold(
           appBar: AppBar(
-              title: Text(['Gyma', 'Workouts', 'Coach'][_tab]),
+              title: Text(['Gyma', 'Workouts', 'Progress', 'Coach'][_tab]),
               actions: [
                 IconButton(
                     tooltip: 'Daily soreness',
@@ -78,8 +74,12 @@ class _HomeScreenState extends State<HomeScreen> {
                   ]),
                 Expanded(
                     child: IndexedStack(index: _tab, children: [
-                  ProgressTab(onStartWorkout: _startOrResume),
+                  ProgressTab(
+                      onStartWorkout: _startOrResume,
+                      onOpenCoach: () => setState(() => _tab = 3),
+                      onOpenProgress: () => setState(() => _tab = 2)),
                   const HistoryTab(),
+                  const BodyProgressScreen(embedded: true),
                   const CoachTab()
                 ])),
               ])),
@@ -101,6 +101,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   label: 'Overview'),
               NavigationDestination(
                   icon: Icon(Icons.fitness_center), label: 'Workouts'),
+              NavigationDestination(
+                  icon: Icon(Icons.photo_library_outlined), label: 'Progress'),
               NavigationDestination(
                   icon: Icon(Icons.auto_awesome), label: 'Coach'),
             ],

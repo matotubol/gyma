@@ -7,10 +7,17 @@ import '../store.dart';
 import '../widgets.dart';
 import 'exercise_progress_screen.dart';
 import 'recovery_screen.dart';
+import 'coach_tab.dart';
 
 class ProgressTab extends StatefulWidget {
-  const ProgressTab({super.key, required this.onStartWorkout});
+  const ProgressTab(
+      {super.key,
+      required this.onStartWorkout,
+      this.onOpenCoach,
+      this.onOpenProgress});
   final VoidCallback onStartWorkout;
+  final VoidCallback? onOpenCoach;
+  final VoidCallback? onOpenProgress;
 
   @override
   State<ProgressTab> createState() => _ProgressTabState();
@@ -33,9 +40,18 @@ class _ProgressTabState extends State<ProgressTab> {
           final now = DateTime.now();
           final from = DateTime(now.year, now.month, now.day - _days + 1);
           final workouts = store.finishedWorkouts
-              .where((w) => !w.start.isBefore(from) && !w.start.isAfter(now))
+              .where((w) => !w.start.isBefore(from) && isFinishedAt(w, now))
               .toList();
           final trends = exerciseTrends(store, now, _days);
+          final repChanges = repTrends(store, now, _days).take(3).toList();
+          final week = weeklyReview(store, now);
+          final allHistory = store.finishedWorkouts
+              .where((w) => isFinishedAt(w, now))
+              .toList()
+            ..sort((a, b) => b.start.compareTo(a.start));
+          final last = allHistory.firstOrNull;
+          final gap =
+              last == null ? null : calendarDaysBetween(last.start, now);
           final up = trends.where((t) => t.delta > 0).take(3).toList();
           final down =
               trends.reversed.where((t) => t.delta < 0).take(3).toList();
@@ -55,7 +71,13 @@ class _ProgressTabState extends State<ProgressTab> {
                       w.exercises
                           .where(
                               (e) => store.exercise(e.exerciseId).muscle == m)
-                          .fold<int>(0, (n, e) => n + e.sets.length)),
+                          .fold<int>(
+                              0,
+                              (n, e) =>
+                                  n +
+                                  e.sets
+                                      .where((s) => s.isWarmup != true)
+                                      .length)),
           };
           final mostSets =
               muscleSets.values.fold<int>(0, (a, b) => a > b ? a : b);
@@ -89,7 +111,9 @@ class _ProgressTabState extends State<ProgressTab> {
                           Expanded(
                               child: Text(
                                   active == null
-                                      ? 'Ready when you are'
+                                      ? (gap != null && gap >= 14
+                                          ? 'Welcome back'
+                                          : 'Make today count')
                                       : 'Workout in progress',
                                   style: theme.textTheme.titleLarge?.copyWith(
                                       fontWeight: FontWeight.w700,
@@ -98,7 +122,11 @@ class _ProgressTabState extends State<ProgressTab> {
                         const SizedBox(height: 8),
                         Text(
                             active == null
-                                ? 'Build your next session, one set at a time.'
+                                ? (gap == null
+                                    ? 'Check in with your coach and build a session around your goal.'
+                                    : gap >= 14
+                                        ? '$gap days since your last logged workout. Check in before choosing today’s starting point.'
+                                        : 'Start with how you feel. Leave with a clear plan for today.')
                                 : '${active.exercises.length} exercises · ${active.totalSets} sets logged',
                             style: theme.textTheme.bodyMedium
                                 ?.copyWith(color: scheme.onPrimaryContainer)),
@@ -113,6 +141,57 @@ class _ProgressTabState extends State<ProgressTab> {
                       ]),
                 ),
               ),
+              const SizedBox(height: 12),
+              Wrap(spacing: 8, runSpacing: 8, children: [
+                if (widget.onOpenCoach != null)
+                  OutlinedButton.icon(
+                      onPressed: widget.onOpenCoach,
+                      icon: const Icon(Icons.forum_outlined),
+                      label: const Text('Talk to coach')),
+                if (widget.onOpenProgress != null)
+                  OutlinedButton.icon(
+                      onPressed: widget.onOpenProgress,
+                      icon: const Icon(Icons.photo_library_outlined),
+                      label: const Text('Photos & measurements')),
+              ]),
+              const SizedBox(height: 16),
+              Card(
+                  child: Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Your last 7 days',
+                                style: theme.textTheme.titleMedium),
+                            const SizedBox(height: 8),
+                            Text(
+                                week['sessions'] == 0
+                                    ? 'A fresh starting point'
+                                    : '${week['sessions']} completed ${week['sessions'] == 1 ? 'session' : 'sessions'} · ${week['trainingDays']} training ${week['trainingDays'] == 1 ? 'day' : 'days'}',
+                                style: theme.textTheme.titleLarge
+                                    ?.copyWith(fontWeight: FontWeight.w700)),
+                            const SizedBox(height: 8),
+                            Text(
+                                week['sessions'] == 0
+                                    ? 'Choose a session that fits today. Your earlier history is still here.'
+                                    : '${week['workingSets']} working sets · ${week['setsWithEffort']} with effort recorded${week['unclassifiedSets'] == 0 ? '' : ' · ${week['unclassifiedSets']} older or unclassified sets'}.',
+                                style: theme.textTheme.bodyMedium
+                                    ?.copyWith(color: scheme.onSurfaceVariant)),
+                            if (widget.onOpenCoach != null)
+                              TextButton(
+                                  onPressed: () => Navigator.push(
+                                      context,
+                                      MaterialPageRoute<void>(
+                                          builder: (_) => Scaffold(
+                                              appBar: AppBar(
+                                                  title: const Text(
+                                                      'Weekly review')),
+                                              body: const SafeArea(
+                                                  child: CoachTab(
+                                                      initialQuestion:
+                                                          'Review my last seven days against my goal. Recognize progress, explain what is uncertain, and suggest one useful adjustment for next week.'))))),
+                                  child: const Text('Review my week')),
+                          ]))),
               const SizedBox(height: 12),
               const RecoveryCard(),
               const SizedBox(height: 28),
@@ -163,7 +242,7 @@ class _ProgressTabState extends State<ProgressTab> {
                 child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      if (up.isEmpty && down.isEmpty) ...[
+                      if (up.isEmpty && down.isEmpty && repChanges.isEmpty) ...[
                         Icon(Icons.insights_outlined, color: scheme.primary),
                         const SizedBox(height: 12),
                         Text(
@@ -190,6 +269,23 @@ class _ProgressTabState extends State<ProgressTab> {
                             child: Divider()),
                       if (down.isNotEmpty)
                         _trendGroup(context, 'Lower loads', down),
+                      if (repChanges.isNotEmpty) ...[
+                        if (up.isNotEmpty || down.isNotEmpty)
+                          const Divider(height: 24),
+                        Text('Reps at the same weight',
+                            style: theme.textTheme.labelLarge),
+                        for (final t in repChanges)
+                          ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              leading: const Icon(Icons.repeat),
+                              title: Text(store.exercise(t.exerciseId).name),
+                              subtitle: Text(
+                                  '${t.previousReps} → ${t.currentReps} reps · ${fmtKg(t.kg)} kg'),
+                              onTap: () => _openExercise(t.exerciseId)),
+                        Text(
+                            'Logged performance at matching weight; effort and technique may differ.',
+                            style: theme.textTheme.bodySmall),
+                      ],
                       if (up.isNotEmpty || down.isNotEmpty) ...[
                         const SizedBox(height: 12),
                         Text(
@@ -205,7 +301,7 @@ class _ProgressTabState extends State<ProgressTab> {
                     style: theme.textTheme.titleLarge
                         ?.copyWith(fontWeight: FontWeight.w700)),
                 const SizedBox(height: 4),
-                Text('Sets logged in this period',
+                Text('Sets excluding marked warm-ups',
                     style: theme.textTheme.bodyMedium
                         ?.copyWith(color: scheme.onSurfaceVariant)),
                 const SizedBox(height: 12),
@@ -237,7 +333,7 @@ class _ProgressTabState extends State<ProgressTab> {
                         ]),
                       ),
                     Text(
-                        'Primary muscle groups only. Includes logged warm-ups; these bars are not targets.',
+                        'Primary muscle groups only. Older unclassified sets are included; these bars are not targets.',
                         style: theme.textTheme.bodySmall
                             ?.copyWith(color: scheme.onSurfaceVariant)),
                   ]),

@@ -56,14 +56,20 @@ class DataScreen extends StatelessWidget {
       builder: (context, _) => Scaffold(
             appBar: AppBar(title: const Text('Settings')),
             body: ListView(padding: const EdgeInsets.all(16), children: [
-              ListTile(leading: const Icon(Icons.key_outlined), title: const Text('OpenAI API key'),
-                subtitle: const Text('Add, replace or remove your saved key'), trailing: const Icon(Icons.chevron_right),
-                onTap: () => Navigator.push(context, MaterialPageRoute<void>(builder: (_) => const ApiKeyScreen()))),
+              ListTile(
+                  leading: const Icon(Icons.key_outlined),
+                  title: const Text('OpenAI API key'),
+                  subtitle: const Text('Add, replace or remove your saved key'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute<void>(
+                          builder: (_) => const ApiKeyScreen()))),
               const SizedBox(height: 24),
               Text('Your data', style: Theme.of(context).textTheme.titleLarge),
               if (store.storageError != null) Text(store.storageError!),
               const Text(
-                  'Backups include workout history, daily soreness, preferences, deleted workouts and recent corrections. Keep them somewhere private.'),
+                  'Workout backups include sessions, targets, effort, check-ins, daily soreness, training preferences, saved coach conversations and recent corrections. Progress photos and body measurements are stored separately and are not included. Keep backups private.'),
               FilledButton.icon(
                   onPressed: () async {
                     await Clipboard.setData(ClipboardData(

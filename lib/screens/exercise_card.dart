@@ -41,6 +41,15 @@ class ExerciseCard extends StatelessWidget {
                   style: theme.textTheme.bodySmall
                       ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                 ),
+                if (entry.target case final target?) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'Plan: ${target.sets} × ${target.repsMin}–${target.repsMax} reps'
+                    ' · ${entry.sets.where((set) => set.isWarmup == false).length} working sets logged',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: theme.colorScheme.primary),
+                  ),
+                ],
               ],
             )),
             const SizedBox(width: 8),

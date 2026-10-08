@@ -12,6 +12,7 @@ import 'exercise_log_screen.dart';
 import 'exercise_picker_screen.dart';
 import 'workout_detail_screen.dart';
 import 'recovery_screen.dart';
+import 'coach_tab.dart';
 
 /// Logs a running workout. Also used to edit a finished one.
 class ActiveWorkoutScreen extends StatefulWidget {
@@ -161,6 +162,19 @@ class _ActiveWorkoutScreenState extends State<ActiveWorkoutScreen> {
         appBar: AppBar(
           title: Text(editing ? 'Edit workout' : 'Workout'),
           actions: [
+            if (!editing)
+              IconButton(
+                  tooltip: 'Ask coach about this workout',
+                  onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute<void>(
+                          builder: (_) => Scaffold(
+                              appBar: AppBar(title: const Text('Your coach')),
+                              body: const SafeArea(
+                                  child: CoachTab(
+                                      initialQuestion:
+                                          'Help me adjust the rest of this workout using my current sets and how I feel.'))))),
+                  icon: const Icon(Icons.forum_outlined)),
             TextButton(
               onPressed: editing ? () => Navigator.pop(context) : _finish,
               child: Text(editing ? 'Done' : 'Finish'),
@@ -198,6 +212,10 @@ class _ActiveWorkoutScreenState extends State<ActiveWorkoutScreen> {
                             color: theme.colorScheme.primary,
                             letterSpacing: 1.2)),
                     const SizedBox(height: 16),
+                    if (_w.planTitle != null) ...[
+                      Text(_w.planTitle!, style: theme.textTheme.titleLarge),
+                      const SizedBox(height: 12),
+                    ],
                     Row(children: [
                       Expanded(
                           child: StatTile(fmtClock(_w.duration), 'Duration')),
@@ -226,6 +244,14 @@ class _ActiveWorkoutScreenState extends State<ActiveWorkoutScreen> {
                         ]),
                       ),
                     ),
+                    if (_w.checkIn != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                          '${_w.checkIn!.timeMinutes} minutes planned${_w.checkIn!.sleepHours == null ? '' : ' · ${_w.checkIn!.sleepHours}h sleep'}'),
+                      if (_w.checkIn!.notes.isNotEmpty) Text(_w.checkIn!.notes),
+                      if (_w.checkIn!.painNote.isNotEmpty)
+                        Text('Movement limits: ${_w.checkIn!.painNote}'),
+                    ],
                   ]),
             )),
             const SizedBox(height: 28),
@@ -233,7 +259,10 @@ class _ActiveWorkoutScreenState extends State<ActiveWorkoutScreen> {
                 style: theme.textTheme.titleLarge
                     ?.copyWith(fontWeight: FontWeight.w700)),
             const SizedBox(height: 4),
-            Text('Open an exercise to log or edit its sets.',
+            Text(
+                _w.exercises.any((e) => e.target != null)
+                    ? 'Follow your targets, then record what you actually complete.'
+                    : 'Open an exercise to log or edit its sets.',
                 style: theme.textTheme.bodyMedium
                     ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
             const SizedBox(height: 16),

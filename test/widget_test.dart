@@ -54,7 +54,7 @@ void main() {
     await tester.pumpWidget(const GymaApp());
     await tester.tap(find.text('Start workout'));
     await tester.pumpAndSettle();
-    expect(find.text('Did you work today?'), findsOneWidget);
+    expect(find.text('Your work shift'), findsOneWidget);
     expect(find.text('How is your energy?'), findsOneWidget);
   });
 

@@ -82,21 +82,127 @@ class ExerciseDef {
       );
 }
 
+enum SetEffort {
+  easy('Several more reps'),
+  challenging('1–2 more reps'),
+  limit('At my limit');
+
+  const SetEffort(this.label);
+  final String label;
+}
+
+/// A prescription is a target, never a completed set.
+class ExerciseTarget {
+  ExerciseTarget(
+      {required this.sets,
+      required this.repsMin,
+      required this.repsMax,
+      this.loadKg,
+      this.restSeconds = 90,
+      this.reason = ''}) {
+    if (sets < 1 ||
+        sets > 10 ||
+        repsMin < 1 ||
+        repsMax < repsMin ||
+        repsMax > 50 ||
+        restSeconds < 15 ||
+        restSeconds > 600 ||
+        (loadKg != null &&
+            (!loadKg!.isFinite || loadKg! < 0 || loadKg! > 1000))) {
+      throw const FormatException('Invalid exercise target');
+    }
+  }
+  final int sets;
+  final int repsMin;
+  final int repsMax;
+  final double? loadKg;
+  final int restSeconds;
+  final String reason;
+
+  Map<String, dynamic> toJson() => {
+        'sets': sets,
+        'repsMin': repsMin,
+        'repsMax': repsMax,
+        'loadKg': loadKg,
+        'restSeconds': restSeconds,
+        'reason': reason
+      };
+  factory ExerciseTarget.fromJson(Map<String, dynamic> j) => ExerciseTarget(
+      sets: j['sets'] as int,
+      repsMin: (j['repsMin'] ?? j['reps']) as int,
+      repsMax: (j['repsMax'] ?? j['reps']) as int,
+      loadKg: (j['loadKg'] as num?)?.toDouble(),
+      restSeconds: j['restSeconds'] as int? ?? 90,
+      reason: j['reason'] as String? ?? '');
+}
+
+class SessionCheckIn {
+  SessionCheckIn(
+      {required this.shift,
+      required this.energy,
+      this.timeMinutes = 45,
+      this.sleepHours,
+      this.notes = '',
+      this.recentTrainingNote = '',
+      this.painNote = ''}) {
+    if (timeMinutes < 10 ||
+        timeMinutes > 180 ||
+        (sleepHours != null &&
+            (!sleepHours!.isFinite || sleepHours! < 0 || sleepHours! > 24)) ||
+        [notes, recentTrainingNote, painNote].any((s) => s.length > 2000)) {
+      throw const FormatException('Invalid session check-in');
+    }
+  }
+  final Shift shift;
+  final Energy energy;
+  final int timeMinutes;
+  final double? sleepHours;
+  final String notes;
+  final String recentTrainingNote;
+  final String painNote;
+
+  Map<String, dynamic> toJson() => {
+        'shift': shift.name,
+        'energy': energy.name,
+        'timeMinutes': timeMinutes,
+        'sleepHours': sleepHours,
+        'notes': notes,
+        'recentTrainingNote': recentTrainingNote,
+        'painNote': painNote
+      };
+  factory SessionCheckIn.fromJson(Map<String, dynamic> j) => SessionCheckIn(
+      shift: Shift.values.byName(j['shift'] as String),
+      energy: Energy.values.byName(j['energy'] as String),
+      timeMinutes: j['timeMinutes'] as int? ?? 45,
+      sleepHours: (j['sleepHours'] as num?)?.toDouble(),
+      notes: j['notes'] as String? ?? '',
+      recentTrainingNote: j['recentTrainingNote'] as String? ?? '',
+      painNote: j['painNote'] as String? ?? '');
+}
+
 class WorkSet {
-  WorkSet(this.kg, this.reps);
+  WorkSet(this.kg, this.reps, {this.effort, this.isWarmup});
 
   double kg;
   int reps;
+  SetEffort? effort;
+  // Null preserves the unknown classification of older sets.
+  bool? isWarmup;
 
   double get volume => kg * reps;
 
   /// Epley estimate of the one-rep max.
   double get oneRepMax => reps <= 1 ? kg : kg * (1 + reps / 30);
 
-  Map<String, dynamic> toJson() => {'kg': kg, 'reps': reps};
+  Map<String, dynamic> toJson() =>
+      {'kg': kg, 'reps': reps, 'effort': effort?.name, 'isWarmup': isWarmup};
 
   factory WorkSet.fromJson(Map<String, dynamic> j) =>
-      WorkSet((j['kg'] as num).toDouble(), (j['reps'] as num).toInt());
+      WorkSet((j['kg'] as num).toDouble(), j['reps'] as int,
+          effort: j['effort'] == null
+              ? null
+              : SetEffort.values.byName(j['effort'] as String),
+          isWarmup: j['isWarmup'] as bool?);
 }
 
 class WorkoutExercise {
@@ -104,6 +210,7 @@ class WorkoutExercise {
 
   final String exerciseId;
   final List<WorkSet> sets;
+  ExerciseTarget? target;
 
   int get reps => sets.fold<int>(0, (a, s) => a + s.reps);
   double get volume => sets.fold<double>(0, (a, s) => a + s.volume);
@@ -114,6 +221,7 @@ class WorkoutExercise {
   Map<String, dynamic> toJson() => {
         'exercise': exerciseId,
         'sets': [for (final s in sets) s.toJson()],
+        'target': target?.toJson(),
       };
 
   factory WorkoutExercise.fromJson(Map<String, dynamic> j) => WorkoutExercise(
@@ -122,7 +230,9 @@ class WorkoutExercise {
           for (final s in j['sets'] as List)
             WorkSet.fromJson(s as Map<String, dynamic>)
         ],
-      );
+      )..target = j['target'] == null
+          ? null
+          : ExerciseTarget.fromJson(j['target'] as Map<String, dynamic>);
 }
 
 class Workout {
@@ -132,6 +242,8 @@ class Workout {
     this.end,
     required this.shift,
     required this.energy,
+    this.checkIn,
+    this.planTitle,
     List<WorkoutExercise>? exercises,
   }) : exercises = exercises ?? [];
 
@@ -140,6 +252,8 @@ class Workout {
   DateTime? end;
   Shift shift;
   Energy energy;
+  SessionCheckIn? checkIn;
+  String? planTitle;
   final List<WorkoutExercise> exercises;
 
   bool get isActive => end == null;
@@ -154,6 +268,8 @@ class Workout {
         'end': end?.toIso8601String(),
         'shift': shift.name,
         'energy': energy.name,
+        'checkIn': checkIn?.toJson(),
+        'planTitle': planTitle,
         'exercises': [for (final e in exercises) e.toJson()],
       };
 
@@ -163,6 +279,10 @@ class Workout {
         end: j['end'] == null ? null : DateTime.parse(j['end'] as String),
         shift: Shift.values.byName(j['shift'] as String),
         energy: Energy.values.byName(j['energy'] as String),
+        checkIn: j['checkIn'] == null
+            ? null
+            : SessionCheckIn.fromJson(j['checkIn'] as Map<String, dynamic>),
+        planTitle: j['planTitle'] as String?,
         exercises: [
           for (final e in j['exercises'] as List)
             WorkoutExercise.fromJson(e as Map<String, dynamic>)

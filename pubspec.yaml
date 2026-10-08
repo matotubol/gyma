@@ -1,7 +1,7 @@
 name: gyma
 description: Personal, local-only fitness tracker.
 publish_to: none
-version: 0.2.0+1
+version: 0.3.0+1
 
 environment:
   sdk: ^3.5.0
@@ -10,6 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
   path_provider: ^2.1.5
+  image_picker: ^1.2.1
   flutter_secure_storage: ^11.2.0
 
 dev_dependencies:

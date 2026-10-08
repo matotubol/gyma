@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 
 import 'screens/home_screen.dart';
 import 'store.dart';
+import 'body_progress.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await store.load();
+  await bodyProgressStore.load();
   runApp(const GymaApp());
 }
 

@@ -82,7 +82,8 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('logger seeds the previous session and validates weight and reps',
+  testWidgets(
+      'legacy loads remain reference only and inputs validate weight and reps',
       (tester) async {
     final previous = session(finished: true, exercises: [
       WorkoutExercise('bench_press', [WorkSet(60, 8)])
@@ -94,8 +95,8 @@ void main() {
     await tester.pumpWidget(MaterialApp(
         home: ExerciseLogScreen(
             workout: workout, entry: workout.exercises.single)));
-    expect(fieldValue(tester, weightField), '60');
-    expect(fieldValue(tester, repsField), '8');
+    expect(fieldValue(tester, weightField), isEmpty);
+    expect(fieldValue(tester, repsField), isEmpty);
     await tester.enterText(find.byKey(weightField), '');
     await tester.enterText(find.byKey(repsField), '0');
     await tester.tap(find.byKey(saveSet));
@@ -112,6 +113,205 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('returning after a break keeps old loads as reference only',
+      (tester) async {
+    final previous = session(finished: true, exercises: [
+      WorkoutExercise('bench_press', [WorkSet(80, 8)])
+    ]);
+    previous.start = previous.start.subtract(const Duration(days: 28));
+    previous.end = previous.end!.subtract(const Duration(days: 28));
+    final entry = WorkoutExercise('bench_press')
+      ..target = ExerciseTarget(sets: 2, repsMin: 8, repsMax: 12);
+    final workout = session(exercises: [entry]);
+    store.workouts.addAll([workout, previous]);
+    await tester.pumpWidget(
+        MaterialApp(home: ExerciseLogScreen(workout: workout, entry: entry)));
+    expect(fieldValue(tester, weightField), isEmpty);
+    expect(fieldValue(tester, repsField), '8');
+    expect(find.textContaining('Last time ('), findsOneWidget);
+    expect(entry.sets, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'today’s 50 kg target wins over an older 80 kg load after a break',
+      (tester) async {
+    final previous = session(finished: true, exercises: [
+      WorkoutExercise('bench_press', [WorkSet(80, 12)])
+    ]);
+    previous.start = previous.start.subtract(const Duration(days: 28));
+    previous.end = previous.end!.subtract(const Duration(days: 28));
+    final entry = WorkoutExercise('bench_press')
+      ..target = ExerciseTarget(sets: 2, repsMin: 8, repsMax: 10, loadKg: 50);
+    final workout = session(exercises: [entry])..energy = Energy.poor;
+    store.workouts.addAll([workout, previous]);
+    await tester.pumpWidget(
+        MaterialApp(home: ExerciseLogScreen(workout: workout, entry: entry)));
+    expect(fieldValue(tester, weightField), '50');
+    expect(fieldValue(tester, repsField), '8');
+    expect(entry.sets, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'recent load reuse requires a known working set with non-limit effort',
+      (tester) async {
+    for (final effort in [SetEffort.challenging, SetEffort.limit, null]) {
+      final previous = session(finished: true, exercises: [
+        WorkoutExercise('bench_press', [
+          WorkSet(20, 12, isWarmup: true, effort: SetEffort.easy),
+          WorkSet(60, 8, isWarmup: false, effort: effort),
+        ])
+      ]);
+      previous.start = previous.start.subtract(const Duration(days: 1));
+      previous.end = previous.end!.subtract(const Duration(days: 1));
+      final entry = WorkoutExercise('bench_press');
+      final workout = session(exercises: [entry]);
+      store.workouts
+        ..clear()
+        ..addAll([workout, previous]);
+      await tester.pumpWidget(
+          MaterialApp(home: ExerciseLogScreen(workout: workout, entry: entry)));
+      expect(fieldValue(tester, weightField),
+          effort == SetEffort.challenging ? '60' : isEmpty);
+      expect(entry.sets, isEmpty);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    }
+  });
+
+  testWidgets('target load stays blank when coach leaves load to the user',
+      (tester) async {
+    final previous = session(finished: true, exercises: [
+      WorkoutExercise('bench_press',
+          [WorkSet(80, 8, isWarmup: false, effort: SetEffort.easy)])
+    ]);
+    previous.start = previous.start.subtract(const Duration(days: 1));
+    previous.end = previous.end!.subtract(const Duration(days: 1));
+    final entry = WorkoutExercise('bench_press')
+      ..target = ExerciseTarget(sets: 2, repsMin: 8, repsMax: 12);
+    final workout = session(exercises: [entry]);
+    store.workouts.addAll([workout, previous]);
+    await tester.pumpWidget(
+        MaterialApp(home: ExerciseLogScreen(workout: workout, entry: entry)));
+    expect(fieldValue(tester, weightField), isEmpty);
+    expect(fieldValue(tester, repsField), '8');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('current working sets precede targets while warm-ups do not',
+      (tester) async {
+    for (final hasWorkingSet in [false, true]) {
+      final entry = WorkoutExercise('bench_press', [
+        if (hasWorkingSet) WorkSet(55, 10, isWarmup: false),
+        WorkSet(20, 12, isWarmup: true),
+      ])
+        ..target = ExerciseTarget(sets: 2, repsMin: 8, repsMax: 12, loadKg: 50);
+      final workout = session(exercises: [entry]);
+      await tester.pumpWidget(
+          MaterialApp(home: ExerciseLogScreen(workout: workout, entry: entry)));
+      expect(fieldValue(tester, weightField), hasWorkingSet ? '55' : '50');
+      expect(fieldValue(tester, repsField), hasWorkingSet ? '10' : '8');
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    }
+  });
+
+  testWidgets('effort and warm-up are saved only for the rated set',
+      (tester) async {
+    smallPhone(tester);
+    final entry = WorkoutExercise('bench_press');
+    final workout = session(exercises: [entry]);
+    store.workouts.add(workout);
+    await tester.pumpWidget(
+        MaterialApp(home: ExerciseLogScreen(workout: workout, entry: entry)));
+    await tester.enterText(find.byKey(weightField), '40');
+    await tester.enterText(find.byKey(repsField), '8');
+    await tester.tap(find.byKey(const ValueKey('set-context')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(SetEffort.easy.label));
+    await tester.ensureVisible(find.byType(SwitchListTile));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(SwitchListTile));
+    await tester.ensureVisible(find.text('Use for this set'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Use for this set'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(saveSet));
+    await tester.pumpAndSettle();
+    expect(entry.sets.single.effort, SetEffort.easy);
+    expect(entry.sets.single.isWarmup, isTrue);
+    await tester.tap(find.byKey(saveSet));
+    await tester.pumpAndSettle();
+    expect(entry.sets.last.effort, isNull);
+    expect(entry.sets.last.isWarmup, isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('logging a warm-up returns the next working set to its target',
+      (tester) async {
+    final entry = WorkoutExercise('bench_press')
+      ..target = ExerciseTarget(sets: 2, repsMin: 8, repsMax: 12, loadKg: 50);
+    final workout = session(exercises: [entry]);
+    await tester.pumpWidget(
+        MaterialApp(home: ExerciseLogScreen(workout: workout, entry: entry)));
+    await tester.enterText(find.byKey(weightField), '20');
+    await tester.enterText(find.byKey(repsField), '12');
+    await tester.tap(find.byKey(const ValueKey('set-context')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(SwitchListTile));
+    await tester.tap(find.text('Use for this set'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(saveSet));
+    await tester.pumpAndSettle();
+    expect(entry.sets.single.kg, 20);
+    expect(entry.sets.single.isWarmup, isTrue);
+    expect(fieldValue(tester, weightField), '50');
+    expect(fieldValue(tester, repsField), '8');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('adjusting a target does not create or change logged sets',
+      (tester) async {
+    final entry = WorkoutExercise('bench_press')
+      ..target = ExerciseTarget(sets: 2, repsMin: 8, repsMax: 12);
+    final workout = session(exercises: [entry]);
+    store.workouts.add(workout);
+    await tester.pumpWidget(
+        MaterialApp(home: ExerciseLogScreen(workout: workout, entry: entry)));
+    await tester.ensureVisible(find.byKey(const ValueKey('edit-target')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('edit-target')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const ValueKey('target-sets')), '3');
+    await tester.tap(find.text('Save target'));
+    await tester.pumpAndSettle();
+    expect(entry.target!.sets, 3);
+    expect(entry.sets, isEmpty);
+    expect(workout.totalSets, 0);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'editing a legacy set does not silently assign effort or set type',
+      (tester) async {
+    final entry = WorkoutExercise('bench_press', [WorkSet(40, 8)]);
+    final workout = session(finished: true, exercises: [entry]);
+    await tester.pumpWidget(
+        MaterialApp(home: ExerciseLogScreen(workout: workout, entry: entry)));
+    await tester.ensureVisible(find.byKey(const ValueKey('logged-set-0')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('logged-set-0')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(repsField), '9');
+    await tester.tap(find.text('Save changes'));
+    await tester.pumpAndSettle();
+    expect(entry.sets.single.reps, 9);
+    expect(entry.sets.single.effort, isNull);
+    expect(entry.sets.single.isWarmup, isNull);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
       'editing a completed workout supports cancel, save and deleting a preceding set',
       (tester) async {
@@ -122,6 +322,8 @@ void main() {
     await tester.pumpWidget(
         MaterialApp(home: ExerciseLogScreen(workout: workout, entry: entry)));
     await tester.enterText(find.byKey(weightField), '70');
+    await tester.ensureVisible(find.byKey(const ValueKey('logged-set-1')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('logged-set-1')));
     await tester.pumpAndSettle();
     await tester.enterText(find.byKey(weightField), '100');
@@ -129,7 +331,11 @@ void main() {
     await tester.pumpAndSettle();
     expect(entry.sets.last.kg, 65);
     expect(fieldValue(tester, weightField), '70');
+    await tester.ensureVisible(find.byKey(const ValueKey('logged-set-1')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('logged-set-1')));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byTooltip('Delete set 1'));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Delete set 1'));
     await tester.pumpAndSettle();

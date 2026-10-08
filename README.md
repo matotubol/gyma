@@ -1,36 +1,47 @@
 # Gyma
 
-Personal, local-only iOS 26+ fitness tracker built with Flutter. Built in the cloud with GitHub Actions (`.github/workflows/ios.yml`).
+Personal, local-first iOS 26+ fitness tracker built with Flutter. Build the iPhone app with GitHub Actions (`.github/workflows/ios.yml`).
 
-## Workout flow
+## Train with a plan
 
-Start or resume a session from the dashboard. The workout screen shows a compact exercise list; choosing an exercise from the searchable picker opens its own logging screen immediately. Weight (kg), reps and **Log set** stay together above the scrolling set history. Tap a saved set to edit it in the same form, or return with **Done** to choose the next exercise. Sets save when logged; the last weight and reps are carried forward. Past workouts use the same editor.
+**Overview → Start workout** opens a short preparation conversation. Choose your energy, work shift and available time, then optionally add sleep, how you feel, movement limitations and training that was not logged here. Ask the coach to prepare a session or start a manual workout offline.
 
-Overview separates today's workout and optional soreness check-in from the selected period's activity. Higher and lower loads are presented neutrally, muscle bars show recorded sets rather than targets, and exercise history expands when needed. Both light and dark themes use consistent spacing and touch targets.
+The coach sees today's check-in, the active session, the last 28 days of completed workouts and daily soreness, plus the last recorded session and most recent exposure to each exercise from older history. A break in logging is not assumed to be a break in training. Goals, schedule, equipment, experience and preferences are editable in Coach.
 
-## Dashboard, recovery and corrections
+Discuss the draft before starting. Accepted exercises receive targets for sets, rep range, load where supported, and rest. Targets never count as completed sets. Changed data, a changed check-in or a new day requires a refreshed draft. During a workout, the toolbar's coach action can review and apply changes to the remaining plan. Target set counts describe the entire session; applying a revision preserves every completed set.
 
-Overview shows comparable increases/decreases, period totals and logged sets per primary muscle group. Trends compare the last two sessions in the chosen 7/28/84-day window at a shared rep count. These are limited observations, not causal conclusions or readiness scores.
+## Log effort and learn what to do next
 
-Daily soreness is optional and works on rest days. Record None/Mild/Moderate/Severe separately for 12 muscle groups, flag unusual pain separately, and use the date picker to review or correct past days. Unrecorded muscles remain unknown. Recovery is attached to a calendar day, not a workout; correcting a workout date does not move a recovery entry.
+Weight, reps and Log set stay together above the scrolling set history. A set can also record warm-up/working status and optional effort: several more reps, one or two more, or at your limit. Effort is not carried forward to the next set. Old data keeps unknown effort and set classification.
 
-Past workouts remain editable, including their date. Deleted workouts can be restored from **Your data**. That screen also provides JSON backup/restore and the last 100 corrections. Version 1 data migrates automatically to version 2 without inventing recovery entries. Back up your data before reinstalling the app.
+Exercise screens show planned targets separately and allow target adjustment. Fresh targets take precedence over older suggested values. Historical loads are only reusable with recent, suitable working-set context. The 14-day historical-load cutoff is a conservative product rule, not a medical threshold.
 
-## Optional AI coach — no server needed
+The session review suggests a repeatable target, holding the load, adding a rep or considering the smallest available increase. These are transparent, local rules using planned work and reported effort. Pain, low energy, a long gap or missing context limits progression suggestions. Advice is never applied automatically.
 
-The app calls OpenAI directly from your iPhone. Open **Settings → OpenAI API key** and paste your personal API key once. You can replace or remove it there. It is stored in device-only iOS Keychain, available while unlocked, and excluded from workout backups. No key is bundled in the IPA or passed through GitHub Actions. The local development .env is ignored by Git and never loaded by the app.
+## Progress you can see
 
-Workout tracking, soreness logs and analytics work offline. AI coaching requires internet and uses your own OpenAI API credits. The Coach tab sends data only after you tap Send: your question, up to three previous exchanges, training preferences, the last 28 days of workouts and daily recovery, exercise IDs and calculated trends. Deleted workouts and edit history are excluded. Use Preview data sent to AI to inspect the current training context. Conversation history stays in memory and can be cleared with Start a new conversation.
+Overview includes a seven-day review, workout activity, comparable load changes, and rep changes at matching weight. Marked warm-ups are excluded from these comparisons and muscle-group counts. Older unclassified sets remain explicitly identified. Muscle bars describe primary muscle groups, not growth or readiness.
 
-The integration uses the Responses API with gpt-6-luna, strict structured outputs and store: false. The app validates returned exercise IDs, evidence IDs and prescription ranges. Replies remain drafts; nothing is written into completed workouts. Drafts are marked outdated after local data changes or a new day starts. Soreness is self-reported context, not proof of growth, readiness, injury or an optimal routine. Effort, warm-up status, sleep and equipment variations are not yet recorded and these limitations are included in AI context.
+The **Progress** tab offers optional dated check-ins with front/side/back photos, weight, waist and notes. Compare selected check-ins side by side. Photos are selected from the system library, resized and re-encoded to app-owned PNGs without embedded metadata. They stay on the device and are never included in AI requests. There are no appearance scores or automatic body-fat estimates.
 
-### Validation
+Progress photos and measurements use a separate local store and are **not included in workout JSON backups**. Keep original photos and your own measurement record before reinstalling. The screen supports editing, deletion, missing-photo placeholders and recovery from an interrupted index save.
 
-Run flutter analyze and flutter test. Tests cover recovery persistence and migration, missing versus zero soreness, corrected trends, backup validation, small-screen layout, direct OpenAI response handling, and Keychain save/replace/remove using mocked secure storage.
+## Recovery, history and backups
 
-## iPhone build
+Daily soreness remains optional and can be recorded on rest days. None/Mild/Moderate/Severe are separate from unusual pain; unrecorded muscles remain unknown. Workout dates, check-ins and sets remain editable. Deleted workouts can be restored in Settings.
 
-- Push to `main` (or run the workflow manually) → analyze, test, and build an **unsigned** IPA.
-- Download it: `gh run download --name gyma-ios-<run number>` or from the run's Artifacts on GitHub.
-- Install it on an iPhone by re-signing with your Apple ID, e.g. via Sideloadly on Windows.
-- The `ios/` folder is generated in CI by `flutter create` until it's committed to the repo.
+Settings provides JSON backup/restore for workouts, targets, effort, session check-ins, recovery, preferences, coaching history, deleted workouts and recent corrections. Version 1 and 2 workout data migrates to version 3 without inventing missing effort, warm-up status or recovery. Invalid coaching caches cannot prevent valid workouts from loading. Backups contain personal conversations and should be stored privately.
+
+## Optional AI coach
+
+Settings → OpenAI API key stores your own key in device-only iOS Keychain, available while unlocked and excluded from backups. No key is bundled in the app or CI. The ignored local `.env` is never loaded by the app.
+
+Requests happen only after Send and the data-sharing dialog. They include the question, up to 40 saved messages, training preferences and the context described above. Photos, body measurements, deleted workouts and correction history are excluded from structured training context. Previous messages can still mention earlier training; clear the conversation to remove them. Preview shared data in Coach to inspect the payload.
+
+The integration uses the Responses API, `gpt-6-luna`, strict structured outputs and `store: false`. Exercise IDs, evidence IDs, unique exercises, set/rep ranges and rest values are validated. Coaching conversations persist locally; Clear conversation removes saved messages and the draft. Stale in-flight responses are not persisted. All logging and local progression feedback work offline; AI requires internet and your API credits.
+
+## Validation and iPhone build
+
+Run `flutter analyze` and `flutter test`. Tests cover migration and restoration, preparation and follow-ups, stale responses, accepted and revised plans, effort logging, progression rules, small-screen/keyboard layouts, photo persistence, path validation and Keychain handling. Native photo-library selection and real AI responses still need device testing.
+
+Push to `main` or run the iOS workflow manually to analyze, test and build an unsigned IPA. Download the `gyma-ios-<run number>` artifact and re-sign it with your Apple ID, for example using Sideloadly on Windows. CI generates `ios/` when absent and configures Keychain and photo-library usage settings.

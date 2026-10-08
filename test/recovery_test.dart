@@ -18,7 +18,7 @@ void main() {
     final data = GymaStore.fromJson(old);
     expect(data.workouts.single.id, 'w1');
     expect(data.recoveryDays, isEmpty);
-    expect(data.toJson()['version'], 2);
+    expect(data.toJson()['version'], 3);
   });
 
   test('daily soreness preserves unknown vs none, pain and edits across restart', () {

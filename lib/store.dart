@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'catalog.dart';
+import 'coach_client.dart';
 import 'models.dart';
 import 'recovery.dart';
 
@@ -22,7 +23,13 @@ class GymaStore extends ChangeNotifier {
   final List<Workout> deletedWorkouts = [];
   final List<Map<String, dynamic>> editHistory = [];
   Map<String, String> trainingProfile = {};
+  final List<Map<String, String>> coachConversation = [];
+  Map<String, dynamic>? coachDraft;
+  int? coachDraftRevision;
+  String? coachDraftDay;
   int revision = 0;
+  // In-memory generation lets open editors react to an explicit restore.
+  int restoreGeneration = 0;
   String? storageError;
 
   /// Newest first.
@@ -52,12 +59,18 @@ class GymaStore extends ChangeNotifier {
           deletedWorkouts.clear();
           editHistory.clear();
           trainingProfile.clear();
-          storageError = 'Saved data could not be read. The original file has been preserved on this device.';
+          coachConversation.clear();
+          coachDraft = null;
+          coachDraftRevision = null;
+          coachDraftDay = null;
+          storageError =
+              'Saved data could not be read. The original file has been preserved on this device.';
         }
       }
     } catch (e) {
       _file = null;
-      storageError = 'Device storage is unavailable. Export a backup before closing the app.';
+      storageError =
+          'Device storage is unavailable. Export a backup before closing the app.';
       debugPrint('Storage unavailable: $e');
     }
     notifyListeners();
@@ -65,7 +78,9 @@ class GymaStore extends ChangeNotifier {
 
   void _readJson(Map<String, dynamic> data) {
     final version = data['version'] as int? ?? 1;
-    if (version < 1 || version > 2) throw const FormatException('Unsupported backup version');
+    if (version < 1 || version > 3) {
+      throw const FormatException('Unsupported backup version');
+    }
     revision = data['revision'] as int? ?? 0;
     recoveryDays
       ..clear()
@@ -88,6 +103,22 @@ class GymaStore extends ChangeNotifier {
       ]);
     trainingProfile =
         Map<String, String>.from(data['trainingProfile'] as Map? ?? {});
+    coachConversation.clear();
+    try {
+      final messages = [
+        for (final m in data['coachConversation'] as List? ?? [])
+          Map<String, String>.from(m as Map)
+      ];
+      if (messages.length <= 40 &&
+          messages.every((m) =>
+              ['user', 'assistant'].contains(m['role']) &&
+              m['content'] != null &&
+              m['content']!.length <= 100000)) {
+        coachConversation.addAll(messages);
+      }
+    } catch (_) {
+      // An unusable advisory cache must never prevent workout recovery.
+    }
     customExercises
       ..clear()
       ..addAll([
@@ -124,25 +155,56 @@ class GymaStore extends ChangeNotifier {
       }
     }
     for (final entry in editHistory) {
-      if (entry['action'] is! String || entry['at'] is! String || entry['before'] is! Map) {
+      if (entry['action'] is! String ||
+          entry['at'] is! String ||
+          entry['before'] is! Map) {
         throw const FormatException('Invalid edit history');
       }
+    }
+    coachDraft = null;
+    coachDraftRevision = null;
+    coachDraftDay = null;
+    try {
+      final draft = data['coachDraft'] == null
+          ? null
+          : Map<String, dynamic>.from(data['coachDraft'] as Map);
+      if (draft != null) {
+        CoachClient.validateReply(draft, {
+          'workouts': [
+            for (final w in [...workouts, ...deletedWorkouts]) {'id': w.id}
+          ],
+          'exerciseCatalog': [
+            for (final e in exercises) {'id': e.id}
+          ]
+        });
+        coachDraft = draft;
+        coachDraftRevision = data['coachDraftRevision'] as int?;
+        coachDraftDay = data['coachDraftDay'] as String?;
+      }
+    } catch (_) {
+      coachDraft = null;
+      coachDraftRevision = null;
+      coachDraftDay = null;
     }
   }
 
   Map<String, dynamic> toJson() => {
-        'version': 2,
+        'version': 3,
         'revision': revision,
         'recoveryDays': [for (final r in recoveryDays.values) r.toJson()],
         'deletedWorkouts': [for (final w in deletedWorkouts) w.toJson()],
         'editHistory': editHistory,
         'trainingProfile': trainingProfile,
+        'coachConversation': coachConversation,
+        'coachDraft': coachDraft,
+        'coachDraftRevision': coachDraftRevision,
+        'coachDraftDay': coachDraftDay,
         'customExercises': [for (final e in customExercises) e.toJson()],
         'workouts': [for (final w in workouts) w.toJson()],
       };
 
-  void _changed() {
-    revision++;
+  void _changed({bool trainingChanged = true}) {
+    if (trainingChanged) revision++;
     notifyListeners();
     final file = _file;
     if (file == null) return;
@@ -204,19 +266,54 @@ class GymaStore extends ChangeNotifier {
           if (!w.isActive) w
       ];
 
-  Workout startWorkout(Shift shift, Energy energy) {
+  Workout startWorkout(Shift shift, Energy energy,
+      {SessionCheckIn? checkIn,
+      List<WorkoutExercise>? exercises,
+      String? planTitle}) {
+    if (activeWorkout != null) {
+      throw StateError('Resume or finish your current workout first.');
+    }
+    final entries = [
+      for (final e in exercises ?? <WorkoutExercise>[])
+        WorkoutExercise.fromJson(e.toJson())
+    ];
+    if (entries.any((e) => e.sets.isNotEmpty) ||
+        entries.map((e) => e.exerciseId).toSet().length != entries.length ||
+        entries
+            .any((e) => !this.exercises.any((def) => def.id == e.exerciseId))) {
+      throw const FormatException(
+          'A new session needs valid exercises with no completed sets.');
+    }
     final w = Workout(
-        id: _newId('w'), start: DateTime.now(), shift: shift, energy: energy);
+        id: _newId('w'),
+        start: DateTime.now(),
+        shift: shift,
+        energy: energy,
+        checkIn: checkIn,
+        exercises: entries,
+        planTitle: planTitle);
     workouts.insert(0, w);
     _changed();
     return w;
   }
 
   void updateCheckIn(Workout w, Shift shift, Energy energy) {
-    _audit('Edit workout check-in', {'id': w.id, 'shift': w.shift.name, 'energy': w.energy.name});
+    _audit('Edit workout check-in',
+        {'id': w.id, 'shift': w.shift.name, 'energy': w.energy.name});
     w
       ..shift = shift
       ..energy = energy;
+    final previous = w.checkIn;
+    if (previous != null) {
+      w.checkIn = SessionCheckIn(
+          shift: shift,
+          energy: energy,
+          timeMinutes: previous.timeMinutes,
+          sleepHours: previous.sleepHours,
+          notes: previous.notes,
+          recentTrainingNote: previous.recentTrainingNote,
+          painNote: previous.painNote);
+    }
     _changed();
   }
 
@@ -266,12 +363,95 @@ class GymaStore extends ChangeNotifier {
     _changed();
   }
 
+  /// Conversation writes do not make their own training evidence stale.
+  bool saveCoachExchange(String question, Map<String, dynamic> reply,
+      {required int sourceRevision, required String sourceDay}) {
+    if (sourceRevision != revision) return false;
+    coachConversation.addAll([
+      {'role': 'user', 'content': question},
+      {'role': 'assistant', 'content': jsonEncode(reply)}
+    ]);
+    while (coachConversation.length > 40) {
+      coachConversation.removeRange(0, 2);
+    }
+    coachDraft = jsonDecode(jsonEncode(reply)) as Map<String, dynamic>;
+    coachDraftRevision = sourceRevision;
+    coachDraftDay = sourceDay;
+    _changed(trainingChanged: false);
+    return true;
+  }
+
+  void clearCoachConversation() {
+    coachConversation.clear();
+    coachDraft = null;
+    coachDraftRevision = null;
+    coachDraftDay = null;
+    _changed(trainingChanged: false);
+  }
+
+  void updateTarget(WorkoutExercise exercise, ExerciseTarget? target) {
+    _audit('Edit session target', {
+      'exerciseId': exercise.exerciseId,
+      'target': exercise.target?.toJson()
+    });
+    exercise.target = target;
+    _changed();
+  }
+
+  /// Replace remaining intentions while retaining every completed set.
+  /// Targets describe totals for this session, never additional sets.
+  void applyPlanToActiveWorkout(Workout workout, List<WorkoutExercise> plan,
+      {String? planTitle,
+      required int sourceRevision,
+      required String sourceDay}) {
+    if (!identical(workout, activeWorkout) ||
+        sourceRevision != revision ||
+        sourceDay != dayKey(DateTime.now())) {
+      throw StateError(
+          'Your session has changed. Ask your coach to refresh the plan.');
+    }
+    final desired = [
+      for (final e in plan) WorkoutExercise.fromJson(e.toJson())
+    ];
+    if (desired.isEmpty ||
+        desired.length > 12 ||
+        desired.any((e) =>
+            e.sets.isNotEmpty ||
+            e.target == null ||
+            !exercises.any((def) => def.id == e.exerciseId)) ||
+        desired.map((e) => e.exerciseId).toSet().length != desired.length) {
+      throw const FormatException('Invalid remaining-session plan');
+    }
+    final existing = {for (final e in workout.exercises) e.exerciseId: e};
+    _audit('Adjust remaining session', workout.toJson());
+    final next = <WorkoutExercise>[];
+    for (final planned in desired) {
+      final entry = existing.remove(planned.exerciseId) ??
+          WorkoutExercise(planned.exerciseId);
+      entry.target = planned.target;
+      next.add(entry);
+    }
+    for (final entry in existing.values) {
+      if (entry.sets.isNotEmpty) {
+        entry.target = null;
+        next.add(entry);
+      }
+    }
+    workout.exercises
+      ..clear()
+      ..addAll(next);
+    workout.planTitle = planTitle;
+    _changed();
+  }
+
   void restoreBackup(Map<String, dynamic> data) {
     // Parse everything in isolation before replacing any current records.
     final parsed = GymaStore.fromJson(data);
     final nextRevision = revision + 1;
     _readJson(parsed.toJson());
     revision = nextRevision;
+    coachDraftRevision = null;
+    restoreGeneration++;
     _changed();
   }
 
