@@ -6,12 +6,24 @@ import 'package:path_provider/path_provider.dart';
 
 import 'catalog.dart';
 import 'models.dart';
+import 'recovery.dart';
 
 /// The single app-wide store. Everything lives in one JSON file on the device.
 final store = GymaStore();
 
 class GymaStore extends ChangeNotifier {
+  GymaStore();
+
+  factory GymaStore.fromJson(Map<String, dynamic> data) =>
+      GymaStore().._readJson(data);
+
   final List<ExerciseDef> customExercises = [];
+  final Map<String, RecoveryDay> recoveryDays = {};
+  final List<Workout> deletedWorkouts = [];
+  final List<Map<String, dynamic>> editHistory = [];
+  Map<String, String> trainingProfile = {};
+  int revision = 0;
+  String? storageError;
 
   /// Newest first.
   final List<Workout> workouts = [];
@@ -26,7 +38,9 @@ class GymaStore extends ChangeNotifier {
       _file = file;
       if (await file.exists()) {
         try {
-          _readJson(jsonDecode(await file.readAsString()) as Map<String, dynamic>);
+          final parsed = GymaStore.fromJson(
+              jsonDecode(await file.readAsString()) as Map<String, dynamic>);
+          _readJson(parsed.toJson());
         } catch (e) {
           // Keep the unreadable file instead of overwriting it on next save.
           debugPrint('Could not read data, backing it up: $e');
@@ -34,15 +48,46 @@ class GymaStore extends ChangeNotifier {
               '${dir.path}/gyma_data.broken-${DateTime.now().millisecondsSinceEpoch}.json');
           customExercises.clear();
           workouts.clear();
+          recoveryDays.clear();
+          deletedWorkouts.clear();
+          editHistory.clear();
+          trainingProfile.clear();
+          storageError = 'Saved data could not be read. The original file has been preserved on this device.';
         }
       }
     } catch (e) {
+      _file = null;
+      storageError = 'Device storage is unavailable. Export a backup before closing the app.';
       debugPrint('Storage unavailable: $e');
     }
     notifyListeners();
   }
 
   void _readJson(Map<String, dynamic> data) {
+    final version = data['version'] as int? ?? 1;
+    if (version < 1 || version > 2) throw const FormatException('Unsupported backup version');
+    revision = data['revision'] as int? ?? 0;
+    recoveryDays
+      ..clear()
+      ..addEntries([
+        for (final r in data['recoveryDays'] as List? ?? [])
+          MapEntry(r['day'] as String,
+              RecoveryDay.fromJson(r as Map<String, dynamic>))
+      ]);
+    deletedWorkouts
+      ..clear()
+      ..addAll([
+        for (final w in data['deletedWorkouts'] as List? ?? [])
+          Workout.fromJson(w as Map<String, dynamic>)
+      ]);
+    editHistory
+      ..clear()
+      ..addAll([
+        for (final e in data['editHistory'] as List? ?? [])
+          Map<String, dynamic>.from(e as Map)
+      ]);
+    trainingProfile =
+        Map<String, String>.from(data['trainingProfile'] as Map? ?? {});
     customExercises
       ..clear()
       ..addAll([
@@ -56,15 +101,48 @@ class GymaStore extends ChangeNotifier {
           Workout.fromJson(w as Map<String, dynamic>)
       ])
       ..sort((a, b) => b.start.compareTo(a.start));
+    final ids = <String>{};
+    for (final w in [...workouts, ...deletedWorkouts]) {
+      if (!ids.add(w.id) || (w.end?.isBefore(w.start) ?? false)) {
+        throw const FormatException('Invalid workout identity or duration');
+      }
+      for (final e in w.exercises) {
+        for (final s in e.sets) {
+          if (!s.kg.isFinite || s.kg < 0 || s.reps <= 0) {
+            throw const FormatException('Invalid set');
+          }
+        }
+      }
+    }
+    if (workouts.where((w) => w.isActive).length > 1) {
+      throw const FormatException('Multiple active workouts');
+    }
+    for (final r in recoveryDays.values) {
+      final parsed = DateTime.tryParse(r.day);
+      if (parsed == null || dayKey(parsed) != r.day) {
+        throw const FormatException('Invalid recovery day');
+      }
+    }
+    for (final entry in editHistory) {
+      if (entry['action'] is! String || entry['at'] is! String || entry['before'] is! Map) {
+        throw const FormatException('Invalid edit history');
+      }
+    }
   }
 
   Map<String, dynamic> toJson() => {
-        'version': 1,
+        'version': 2,
+        'revision': revision,
+        'recoveryDays': [for (final r in recoveryDays.values) r.toJson()],
+        'deletedWorkouts': [for (final w in deletedWorkouts) w.toJson()],
+        'editHistory': editHistory,
+        'trainingProfile': trainingProfile,
         'customExercises': [for (final e in customExercises) e.toJson()],
         'workouts': [for (final w in workouts) w.toJson()],
       };
 
   void _changed() {
+    revision++;
     notifyListeners();
     final file = _file;
     if (file == null) return;
@@ -78,7 +156,14 @@ class GymaStore extends ChangeNotifier {
       final tmp = File('${file.path}.tmp');
       await tmp.writeAsString(json, flush: true);
       await tmp.rename(file.path);
+      if (storageError != null) {
+        storageError = null;
+        notifyListeners();
+      }
     } catch (e) {
+      storageError =
+          'Changes could not be saved. Keep the app open and export a backup.';
+      notifyListeners();
       debugPrint('Save failed: $e');
     }
   }
@@ -98,7 +183,8 @@ class GymaStore extends ChangeNotifier {
   }
 
   ExerciseDef addCustomExercise(String name, Muscle muscle, String iconKey) {
-    final def = ExerciseDef(_newId('custom'), name, muscle, iconKey, custom: true);
+    final def =
+        ExerciseDef(_newId('custom'), name, muscle, iconKey, custom: true);
     customExercises.add(def);
     _changed();
     return def;
@@ -113,8 +199,10 @@ class GymaStore extends ChangeNotifier {
     return null;
   }
 
-  List<Workout> get finishedWorkouts =>
-      [for (final w in workouts) if (!w.isActive) w];
+  List<Workout> get finishedWorkouts => [
+        for (final w in workouts)
+          if (!w.isActive) w
+      ];
 
   Workout startWorkout(Shift shift, Energy energy) {
     final w = Workout(
@@ -125,6 +213,7 @@ class GymaStore extends ChangeNotifier {
   }
 
   void updateCheckIn(Workout w, Shift shift, Energy energy) {
+    _audit('Edit workout check-in', {'id': w.id, 'shift': w.shift.name, 'energy': w.energy.name});
     w
       ..shift = shift
       ..energy = energy;
@@ -137,8 +226,62 @@ class GymaStore extends ChangeNotifier {
   }
 
   void deleteWorkout(Workout w) {
-    workouts.remove(w);
+    if (!workouts.remove(w)) return;
+    deletedWorkouts.insert(0, w);
+    _audit('Delete workout', w.toJson());
     _changed();
+  }
+
+  void restoreWorkout(Workout w) {
+    if (w.isActive && activeWorkout != null) {
+      throw StateError('Finish the active workout before restoring this one.');
+    }
+    if (!deletedWorkouts.remove(w)) return;
+    workouts.add(w);
+    workouts.sort((a, b) => b.start.compareTo(a.start));
+    _audit('Restore workout', {'id': w.id});
+    _changed();
+  }
+
+  void updateWorkoutDate(Workout w, DateTime date) {
+    _audit(
+        'Edit workout date', {'id': w.id, 'before': w.start.toIso8601String()});
+    final duration = w.duration;
+    w.start =
+        DateTime(date.year, date.month, date.day, w.start.hour, w.start.minute);
+    if (w.end != null) w.end = w.start.add(duration);
+    workouts.sort((a, b) => b.start.compareTo(a.start));
+    _changed();
+  }
+
+  void saveRecovery(RecoveryDay day) {
+    _audit('Edit soreness ${day.day}', recoveryDays[day.day]?.toJson() ?? {});
+    recoveryDays[day.day] = day;
+    _changed();
+  }
+
+  void saveProfile(Map<String, String> profile) {
+    if (mapEquals(trainingProfile, profile)) return;
+    trainingProfile = Map.of(profile);
+    _changed();
+  }
+
+  void restoreBackup(Map<String, dynamic> data) {
+    // Parse everything in isolation before replacing any current records.
+    final parsed = GymaStore.fromJson(data);
+    final nextRevision = revision + 1;
+    _readJson(parsed.toJson());
+    revision = nextRevision;
+    _changed();
+  }
+
+  void _audit(String action, Map<String, dynamic> before) {
+    editHistory.insert(0, {
+      'action': action,
+      'at': DateTime.now().toUtc().toIso8601String(),
+      'before': jsonDecode(jsonEncode(before))
+    });
+    if (editHistory.length > 100) editHistory.removeLast();
   }
 
   void addExercise(Workout w, String exerciseId) {
@@ -147,6 +290,7 @@ class GymaStore extends ChangeNotifier {
   }
 
   void removeExercise(Workout w, WorkoutExercise e) {
+    _audit('Remove exercise', {'workoutId': w.id, ...e.toJson()});
     w.exercises.remove(e);
     _changed();
   }
@@ -157,11 +301,21 @@ class GymaStore extends ChangeNotifier {
   }
 
   void updateSet(WorkoutExercise e, int index, WorkSet set) {
+    _audit('Edit set', {
+      'exerciseId': e.exerciseId,
+      'index': index,
+      ...e.sets[index].toJson()
+    });
     e.sets[index] = set;
     _changed();
   }
 
   void removeSet(WorkoutExercise e, int index) {
+    _audit('Remove set', {
+      'exerciseId': e.exerciseId,
+      'index': index,
+      ...e.sets[index].toJson()
+    });
     e.sets.removeAt(index);
     _changed();
   }

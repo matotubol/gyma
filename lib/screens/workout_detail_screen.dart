@@ -16,7 +16,8 @@ class WorkoutDetailScreen extends StatelessWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete workout?'),
-        content: const Text('This cannot be undone.'),
+        content: const Text(
+            'You can restore it later from Your data → Deleted workouts.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -50,8 +51,9 @@ class WorkoutDetailScreen extends StatelessWidget {
             IconButton(
               tooltip: 'Edit',
               icon: const Icon(Icons.edit_outlined),
-              onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(
-                  builder: (_) => ActiveWorkoutScreen(workout: workout))),
+              onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                      builder: (_) => ActiveWorkoutScreen(workout: workout))),
             ),
             IconButton(
               tooltip: 'Delete',

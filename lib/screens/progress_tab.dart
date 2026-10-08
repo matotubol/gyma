@@ -1,243 +1,154 @@
 import 'package:flutter/material.dart';
-
+import '../analytics.dart';
 import '../format.dart';
 import '../models.dart';
 import '../store.dart';
-import '../widgets.dart';
 import 'exercise_progress_screen.dart';
+import 'recovery_screen.dart';
 
-class ProgressTab extends StatelessWidget {
+class ProgressTab extends StatefulWidget {
   const ProgressTab({super.key});
-
   @override
-  Widget build(BuildContext context) {
-    return ListenableBuilder(
+  State<ProgressTab> createState() => _ProgressTabState();
+}
+
+class _ProgressTabState extends State<ProgressTab> {
+  int _days = 28;
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
       listenable: store,
       builder: (context, _) {
-        final workouts = store.finishedWorkouts;
-        if (workouts.isEmpty) {
-          return const EmptyState(
-            icon: Icons.insights,
-            title: 'No progress yet',
-            message: 'Finish a workout and your progress shows up here.',
-          );
-        }
-
-        double avgVolume(Iterable<Workout> ws) => ws.isEmpty
-            ? 0
-            : ws.fold<double>(0, (a, w) => a + w.volume) / ws.length;
-
-        final exerciseIds = <String>{
+        final now = DateTime.now();
+        final from = DateTime(now.year, now.month, now.day - _days + 1);
+        final workouts = store.finishedWorkouts
+            .where((w) => !w.start.isBefore(from) && !w.start.isAfter(now))
+            .toList();
+        final trends = exerciseTrends(store, now, _days);
+        final up = trends.where((t) => t.delta > 0).take(3).toList();
+        final down = trends.reversed.where((t) => t.delta < 0).take(3).toList();
+        final ids = {
           for (final w in workouts)
-            for (final e in w.exercises)
-              if (e.sets.isNotEmpty) e.exerciseId
+            for (final e in w.exercises) e.exerciseId
         };
-
         return ListView(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
-          children: [
-            _BarsCard(
-              title: 'Energy vs. performance',
-              rows: [
-                for (final e in Energy.values)
-                  _Bar(
-                    leading: Text(e.emoji),
-                    label: e.label,
-                    color: e.color,
-                    workouts: [for (final w in workouts) if (w.energy == e) w],
-                    avg: avgVolume([for (final w in workouts) if (w.energy == e) w]),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            _BarsCard(
-              title: 'Shift vs. performance',
-              rows: [
-                for (final s in Shift.values)
-                  _Bar(
-                    leading: Icon(s.icon, size: 18),
-                    label: s.short,
-                    color: Theme.of(context).colorScheme.primary,
-                    workouts: [for (final w in workouts) if (w.shift == s) w],
-                    avg: avgVolume([for (final w in workouts) if (w.shift == s) w]),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 20),
-            Padding(
-              padding: const EdgeInsets.only(left: 4, bottom: 8),
-              child: Text('Exercises',
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 100),
+            children: [
+              Text('Your training, at a glance',
+                  style: Theme.of(context).textTheme.headlineSmall),
+              const SizedBox(height: 12),
+              SegmentedButton<int>(segments: const [
+                ButtonSegment(value: 7, label: Text('7 days')),
+                ButtonSegment(value: 28, label: Text('4 weeks')),
+                ButtonSegment(value: 84, label: Text('12 weeks'))
+              ], selected: {
+                _days
+              }, onSelectionChanged: (s) => setState(() => _days = s.first)),
+              const SizedBox(height: 12),
+              Card(
+                  child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Row(children: [
+                        Expanded(
+                            child: _Stat('${workouts.length}', 'Workouts')),
+                        Expanded(
+                            child: _Stat(
+                                '${workouts.fold<int>(0, (n, w) => n + w.totalSets)}',
+                                'Logged sets')),
+                        Expanded(child: _Stat('${ids.length}', 'Exercises')),
+                      ]))),
+              const RecoveryCard(),
+              _section(context, 'Top improvements', up,
+                  'No comparable increases in this period.'),
+              _section(context, 'Needs attention', down,
+                  'No comparable decreases in this period.'),
+              const Padding(
+                  padding: EdgeInsets.all(8),
+                  child: Text(
+                      'Latest two sessions in this period, at the same rep count. Effort and technique may differ. A decrease can be intentional; it is not automatically lost progress.')),
+              Card(
+                  child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Training balance',
+                                style: Theme.of(context).textTheme.titleMedium),
+                            const Text(
+                                'Logged sets by primary muscle group. Includes any warm-up sets you logged; no target assumed.'),
+                            const SizedBox(height: 12),
+                            for (final m in Muscle.values)
+                              Padding(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 6),
+                                  child: Row(children: [
+                                    Expanded(child: Text(m.label)),
+                                    Text(
+                                        '${workouts.fold<int>(0, (n, w) => n + w.exercises.where((e) => store.exercise(e.exerciseId).muscle == m).fold<int>(0, (a, e) => a + e.sets.length))} sets'),
+                                  ])),
+                          ]))),
+              const SizedBox(height: 16),
+              Text('Exercise history',
                   style: Theme.of(context).textTheme.titleMedium),
-            ),
-            for (final id in exerciseIds) _ExerciseRow(id),
-          ],
-        );
-      },
-    );
-  }
-}
+              if (ids.isEmpty)
+                const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Text(
+                        'Finish a workout to start building your progress.')),
+              for (final id in ids)
+                ListTile(
+                    title: Text(store.exercise(id).name),
+                    subtitle: const Text('View sessions and records'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute<void>(
+                            builder: (_) =>
+                                ExerciseProgressScreen(exerciseId: id)))),
+            ]);
+      });
 
-class _Bar {
-  const _Bar({
-    required this.leading,
-    required this.label,
-    required this.color,
-    required this.workouts,
-    required this.avg,
-  });
-
-  final Widget leading;
-  final String label;
-  final Color color;
-  final List<Workout> workouts;
-  final double avg;
-}
-
-/// Average kg lifted per workout, split by a check-in answer.
-class _BarsCard extends StatelessWidget {
-  const _BarsCard({required this.title, required this.rows});
-
-  final String title;
-  final List<_Bar> rows;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final top = rows.fold<double>(0, (a, r) => r.avg > a ? r.avg : a);
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: theme.textTheme.titleMedium),
-            Text('Average kg lifted per workout',
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: scheme.onSurfaceVariant)),
-            const SizedBox(height: 12),
-            for (final r in rows)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 5),
-                child: Row(
+  Widget _section(BuildContext context, String title,
+          List<ExerciseTrend> trends, String empty) =>
+      Card(
+          child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    SizedBox(
-                      width: 100,
-                      child: Row(
-                        children: [
-                          IconTheme(
-                            data: IconThemeData(color: r.color),
-                            child: r.leading,
-                          ),
-                          const SizedBox(width: 6),
-                          Flexible(
-                            child: Text(r.label,
-                                overflow: TextOverflow.ellipsis,
-                                style: theme.textTheme.labelLarge),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Expanded(
-                      child: Container(
-                        height: 10,
-                        alignment: Alignment.centerLeft,
-                        decoration: BoxDecoration(
-                          color: scheme.surfaceContainerHighest,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: FractionallySizedBox(
-                          widthFactor: top == 0 ? 0 : r.avg / top,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: r.color,
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                    SizedBox(
-                      width: 92,
-                      child: Text(
-                        r.workouts.isEmpty
-                            ? '–'
-                            : '${fmtKg(r.avg)} kg (${r.workouts.length}×)',
-                        textAlign: TextAlign.end,
-                        style: theme.textTheme.labelMedium,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
+                    Text(title, style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 8),
+                    if (trends.isEmpty) Text(empty),
+                    for (final t in trends)
+                      ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(
+                              t.delta > 0
+                                  ? Icons.trending_up
+                                  : Icons.trending_down,
+                              color: t.delta > 0
+                                  ? const Color(0xFF2E7D32)
+                                  : const Color(0xFFB56713)),
+                          title: Text(store.exercise(t.exerciseId).name),
+                          subtitle: Text(
+                              '${fmtKg(t.previousKg)} → ${fmtKg(t.currentKg)} kg × ${t.reps} reps\n2 sessions · limited evidence'),
+                          isThreeLine: true,
+                          trailing: Text(
+                              '${t.delta > 0 ? '+' : ''}${t.percent.toStringAsFixed(1)}%'),
+                          onTap: () => Navigator.push(
+                              context,
+                              MaterialPageRoute<void>(
+                                  builder: (_) => ExerciseProgressScreen(
+                                      exerciseId: t.exerciseId)))),
+                  ])));
 }
 
-class _ExerciseRow extends StatelessWidget {
-  const _ExerciseRow(this.exerciseId);
-
-  final String exerciseId;
-
+class _Stat extends StatelessWidget {
+  const _Stat(this.value, this.label);
+  final String value;
+  final String label;
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final def = store.exercise(exerciseId);
-    final history = store.historyFor(exerciseId);
-    final best = history.fold<double>(
-        0, (a, h) => h.$2.topKg > a ? h.$2.topKg : a);
-    final delta = history.length < 2
-        ? null
-        : history.last.$2.topKg - history[history.length - 2].$2.topKg;
-
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      clipBehavior: Clip.antiAlias,
-      child: ListTile(
-        leading: ExerciseAvatar(def),
-        title: Text(def.name),
-        subtitle: Text(
-            'Best ${fmtKg(best)} kg · ${history.length} session${history.length == 1 ? '' : 's'}'),
-        trailing: delta == null
-            ? const Icon(Icons.chevron_right)
-            : _Trend(delta, style: theme.textTheme.labelLarge),
-        onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
-            builder: (_) => ExerciseProgressScreen(exerciseId: exerciseId))),
-      ),
-    );
-  }
-}
-
-class _Trend extends StatelessWidget {
-  const _Trend(this.delta, {this.style});
-
-  final double delta;
-  final TextStyle? style;
-
-  @override
-  Widget build(BuildContext context) {
-    final up = delta > 0;
-    final color = delta == 0
-        ? Theme.of(context).colorScheme.onSurfaceVariant
-        : (up ? const Color(0xFF2E7D32) : const Color(0xFFE53935));
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(
-          delta == 0
-              ? Icons.trending_flat
-              : (up ? Icons.trending_up : Icons.trending_down),
-          color: color,
-          size: 20,
-        ),
-        const SizedBox(width: 4),
-        Text('${up ? '+' : ''}${fmtKg(delta)} kg',
-            style: style?.copyWith(color: color)),
-      ],
-    );
-  }
+  Widget build(BuildContext context) => Column(children: [
+        Text(value, style: Theme.of(context).textTheme.headlineSmall),
+        Text(label),
+      ]);
 }

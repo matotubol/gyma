@@ -46,7 +46,7 @@ class _ExerciseCardState extends State<ExerciseCard> {
   void _addSet() {
     final kg = parseKg(_kg.text);
     final reps = int.tryParse(_reps.text.trim());
-    if (kg == null || kg < 0 || reps == null || reps <= 0) {
+    if (kg == null || !kg.isFinite || kg < 0 || reps == null || reps <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Enter the kg and reps first')));
       return;
@@ -76,7 +76,8 @@ class _ExerciseCardState extends State<ExerciseCard> {
         context: context,
         builder: (context) => AlertDialog(
           title: const Text('Remove exercise?'),
-          content: Text('Its ${widget.entry.sets.length} sets will be deleted.'),
+          content:
+              Text('Its ${widget.entry.sets.length} sets will be deleted.'),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -131,7 +132,8 @@ class _ExerciseCardState extends State<ExerciseCard> {
                 PopupMenuButton<String>(
                   onSelected: (_) => _remove(),
                   itemBuilder: (_) => const [
-                    PopupMenuItem(value: 'remove', child: Text('Remove exercise')),
+                    PopupMenuItem(
+                        value: 'remove', child: Text('Remove exercise')),
                   ],
                 ),
               ],
@@ -148,20 +150,23 @@ class _ExerciseCardState extends State<ExerciseCard> {
               ),
             const SizedBox(height: 8),
             for (var i = 0; i < entry.sets.length; i++)
-              _SetRow(number: i + 1, set: entry.sets[i], onTap: () => _editSet(i)),
+              _SetRow(
+                  number: i + 1, set: entry.sets[i], onTap: () => _editSet(i)),
             const SizedBox(height: 8),
             Padding(
               padding: const EdgeInsets.only(right: 12),
               child: Row(
                 children: [
                   Expanded(
-                    child: NumberField(controller: _kg, label: 'kg', decimal: true),
+                    child: NumberField(
+                        controller: _kg, label: 'kg', decimal: true),
                   ),
                   const Padding(
                     padding: EdgeInsets.symmetric(horizontal: 8),
                     child: Text('×'),
                   ),
-                  Expanded(child: NumberField(controller: _reps, label: 'reps')),
+                  Expanded(
+                      child: NumberField(controller: _reps, label: 'reps')),
                   const SizedBox(width: 8),
                   IconButton.filled(
                     tooltip: 'Add set',
@@ -252,7 +257,9 @@ class _SetEditorDialogState extends State<_SetEditorDialog> {
   void _save() {
     final kg = parseKg(_kg.text);
     final reps = int.tryParse(_reps.text.trim());
-    if (kg == null || kg < 0 || reps == null || reps <= 0) return;
+    if (kg == null || !kg.isFinite || kg < 0 || reps == null || reps <= 0) {
+      return;
+    }
     Navigator.pop(context, _SetEdit(WorkSet(kg, reps)));
   }
 
@@ -262,7 +269,8 @@ class _SetEditorDialogState extends State<_SetEditorDialog> {
       title: Text('Set ${widget.number}'),
       content: Row(
         children: [
-          Expanded(child: NumberField(controller: _kg, label: 'kg', decimal: true)),
+          Expanded(
+              child: NumberField(controller: _kg, label: 'kg', decimal: true)),
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 8),
             child: Text('×'),

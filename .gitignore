@@ -22,3 +22,9 @@ Payload/
 # OS
 .DS_Store
 Thumbs.db
+
+# Private backend credentials
+.env
+.env.*
+!.env.example
+server/node_modules/

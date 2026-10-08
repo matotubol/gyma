@@ -10,6 +10,7 @@ import 'check_in_sheet.dart';
 import 'exercise_card.dart';
 import 'exercise_picker_screen.dart';
 import 'workout_detail_screen.dart';
+import 'recovery_screen.dart';
 
 /// Logs a running workout. Also used to edit a finished one.
 class ActiveWorkoutScreen extends StatefulWidget {
@@ -30,8 +31,8 @@ class _ActiveWorkoutScreenState extends State<ActiveWorkoutScreen> {
   void initState() {
     super.initState();
     if (_w.isActive) {
-      _ticker = Timer.periodic(
-          const Duration(seconds: 1), (_) => setState(() {}));
+      _ticker =
+          Timer.periodic(const Duration(seconds: 1), (_) => setState(() {}));
     }
   }
 
@@ -97,7 +98,8 @@ class _ActiveWorkoutScreenState extends State<ActiveWorkoutScreen> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Discard workout?'),
-        content: const Text('Nothing from this workout will be saved.'),
+        content: const Text(
+            'This moves the workout to Deleted workouts, where it can be restored.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -161,6 +163,25 @@ class _ActiveWorkoutScreenState extends State<ActiveWorkoutScreen> {
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
           children: [
             WorkoutSummaryCard(workout: _w, onEditCheckIn: _editCheckIn),
+            TextButton.icon(
+                onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(
+                        builder: (_) => RecoveryScreen(date: _w.start))),
+                icon: const Icon(Icons.accessibility_new),
+                label: const Text('Daily soreness (optional)')),
+            if (editing)
+              TextButton.icon(
+                  onPressed: () async {
+                    final date = await showDatePicker(
+                        context: context,
+                        initialDate: _w.start,
+                        firstDate: DateTime(2000),
+                        lastDate: DateTime.now());
+                    if (date != null) store.updateWorkoutDate(_w, date);
+                  },
+                  icon: const Icon(Icons.calendar_today),
+                  label: const Text('Correct workout date')),
             const SizedBox(height: 12),
             if (_w.exercises.isEmpty)
               const Padding(

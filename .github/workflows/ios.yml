@@ -29,6 +29,9 @@ jobs:
           fi
           grep -m1 IPHONEOS_DEPLOYMENT_TARGET ios/Runner.xcodeproj/project.pbxproj
 
+      - name: Configure private iOS Keychain storage
+        run: python3 tool/configure_ios.py
+
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
