@@ -57,7 +57,22 @@ The single-target Watch app uses `WKApplication` and `WKCompanionAppBundleIdenti
 
 For Sideloadly, use version 0.70.1 or newer: its [changelog](https://sideloadly.io/changelog) documents preserving and re-signing bundled WatchKit apps, while older releases stripped them. Install the combined IPA on the paired iPhone, then check the iPhone's Watch app under My Watch > Available Apps. Both devices must meet the deployment targets above. A correct unsigned IPA alone does not validate the re-signing tool's Watch provisioning or guarantee installation.
 
-Development-signed apps also require Developer Mode on the physical Watch. [Apple's documented setup](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device) exposes the setting through developer pairing with Xcode; GitHub Actions cannot toggle it remotely. TestFlight avoids that requirement but requires Apple Developer Program membership and a separately configured signed distribution workflow.
+Development-signed apps also require Developer Mode on the physical Watch. [Apple's documented setup](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device) exposes the setting through developer pairing with Xcode. The Windows helper below can also reveal the setting through the paired iPhone. GitHub Actions cannot reach the physical devices. TestFlight avoids Developer Mode but requires Apple Developer Program membership and a separately configured signed distribution workflow.
+
+### Windows Watch setup
+
+Connect the paired iPhone to Windows by USB, unlock both devices, and keep them nearby. Apple's USB driver/service must be installed. From the repository root in PowerShell:
+
+```powershell
+python -m venv native/build/device-tools/venv
+native/build/device-tools/venv/Scripts/python.exe -m pip install -r native/tools/requirements-device-tools.txt
+native/build/device-tools/venv/Scripts/python.exe native/tools/watch_developer_mode.py --inspect
+native/build/device-tools/venv/Scripts/python.exe native/tools/watch_developer_mode.py --reveal
+```
+
+Accept the Trust prompt **on the Watch**. After it confirms the reveal request, open the Watch's Settings > Privacy & Security > Developer Mode, enable it, restart, and confirm Turn On/Trust. Run `--inspect` again to verify that Developer Mode is enabled. The helper verifies the connected Watch's identity, refuses ambiguous device selections, and sends only the reveal request; it does not enable Developer Mode, restart devices, or change passcodes. Pairing records stay in the Git-ignored `native/build/device-tools/pairing/` directory. This reveal request succeeded against a physical iPhone on iOS 26.6.1 and Watch on watchOS 26.0.2; other combinations still need testing.
+
+For Watch provisioning and direct installation, the experimental [iLoader Watch companion project](https://github.com/Rzbck/iloader-watch-companion) reports a physically tested Windows path. Its pinned [iLoader build](https://github.com/Rzbck/iloader/actions/runs/34436587217) uses iLoader `70f37e9b4afc659ab44ec1944c034093f4cda416` and isideload `f7b9f3da570edd6824c29680545e710846d07df5`; select its `windows-exe` artifact. This is a community fork, not an official iLoader release. Sign in inside the desktop tool and select the combined Gyma IPA. Free-account installation of Gyma through this fork still needs physical verification. Its direct Watch installation removes an existing Watch app/placeholder before installing, so sync pending Watch actions to the phone before using it for updates.
 
 ## Device checks
 
