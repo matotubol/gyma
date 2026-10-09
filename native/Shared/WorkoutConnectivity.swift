@@ -105,7 +105,8 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
         sendPendingCommand()
         if session.isReachable {
             session.sendMessage(Wire.request, replyHandler: { [weak self] reply in
-                Task { @MainActor in await self?.receive(reply) }
+                let packet = SessionPacket(reply)
+                Task { @MainActor in await self?.receive(packet.dictionary) }
             }, errorHandler: { [weak self] _ in
                 Task { @MainActor in self?.updateConnectionState() }
             })
@@ -229,9 +230,10 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
             guard session.isReachable, interactiveCommandID != command.id else { return }
             interactiveCommandID = command.id
             session.sendMessage(packet, replyHandler: { [weak self] reply in
+                let packet = SessionPacket(reply)
                 Task { @MainActor in
                     self?.interactiveCommandID = nil
-                    await self?.receive(reply)
+                    await self?.receive(packet.dictionary)
                 }
             }, errorHandler: { [weak self] _ in
                 Task { @MainActor in
@@ -404,19 +406,26 @@ extension WorkoutConnectivity: WCSessionDelegate {
     }
 
     nonisolated func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
-        Task { @MainActor in await self.receive(applicationContext) }
+        let packet = SessionPacket(applicationContext)
+        Task { @MainActor in await self.receive(packet.dictionary) }
     }
 
     nonisolated func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any]) {
-        Task { @MainActor in await self.receive(userInfo) }
+        let packet = SessionPacket(userInfo)
+        Task { @MainActor in await self.receive(packet.dictionary) }
     }
 
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
-        Task { @MainActor in await self.receive(message, reply: replyHandler) }
+        let packet = SessionPacket(message)
+        let reply = SessionReply(replyHandler)
+        Task { @MainActor in
+            await self.receive(packet.dictionary, reply: { reply.send(SessionPacket($0)) })
+        }
     }
 
     nonisolated func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
-        Task { @MainActor in await self.receive(message) }
+        let packet = SessionPacket(message)
+        Task { @MainActor in await self.receive(packet.dictionary) }
     }
 
     nonisolated func session(_ session: WCSession, didFinish userInfoTransfer: WCSessionUserInfoTransfer, error: Error?) {
@@ -457,10 +466,57 @@ private struct AcknowledgedState: Codable {
     let snapshot: CompanionSnapshot
 }
 
+/// Copy only the protocol's immutable, Sendable values at the Objective-C
+/// delegate boundary. No heterogeneous dictionary crosses into the main actor.
+private struct SessionPacket: Sendable {
+    let version: Int?
+    let kind: String?
+    let payload: Data?
+    let message: String?
+
+    init(_ dictionary: [String: Any]) {
+        version = dictionary["version"] as? Int
+        kind = dictionary["kind"] as? String
+        payload = dictionary["payload"] as? Data
+        message = dictionary["message"] as? String
+    }
+
+    var dictionary: [String: Any] {
+        var value: [String: Any] = [:]
+        if let version { value["version"] = version }
+        if let kind { value["kind"] = kind }
+        if let payload { value["payload"] = payload }
+        if let message { value["message"] = message }
+        return value
+    }
+}
+
+/// WCSession supplies an escaping reply callback for asynchronous responses.
+/// The SDK callback lacks a Sendable annotation; this narrow bridge transfers
+/// it to the processing actor and uses a lock to guarantee exactly one call.
+/// Every mutable field is protected, and the outgoing dictionary is constructed
+/// at invocation rather than shared across threads.
+private final class SessionReply: @unchecked Sendable {
+    private let lock = NSLock()
+    private var callback: (([String: Any]) -> Void)?
+
+    init(_ callback: @escaping ([String: Any]) -> Void) {
+        self.callback = callback
+    }
+
+    func send(_ packet: SessionPacket) {
+        lock.lock()
+        let reply = callback
+        callback = nil
+        lock.unlock()
+        reply?(packet.dictionary)
+    }
+}
+
 private enum Wire {
     enum Kind: String { case request, snapshot, command, acknowledgement, error, received }
-    static let request: [String: Any] = ["version": 1, "kind": "request"]
-    static let received: [String: Any] = ["version": 1, "kind": "received"]
+    static var request: [String: Any] { ["version": 1, "kind": "request"] }
+    static var received: [String: Any] { ["version": 1, "kind": "received"] }
 
     static func kind(_ packet: [String: Any]) throws -> Kind {
         guard packet["version"] as? Int == 1, let name = packet["kind"] as? String,

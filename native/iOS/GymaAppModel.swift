@@ -188,12 +188,12 @@ final class GymaAppModel: ObservableObject {
         let previous = notificationTask
         let timer = state.restTimer
         let enabled = notificationEnabled && !storageBlocked
-        let name = timer.map { name(for: $0.exerciseID) } ?? "Your next set"
+        let exerciseName = timer.map { self.name(for: $0.exerciseID) } ?? "Your next set"
         notificationTask = Task { [weak self] in
             // Serialize OS changes so a delayed schedule cannot resurrect a skipped rest.
             await previous?.value
             guard let self else { return }
-            do { try await notifications.replace(timer: timer, exerciseName: name, enabled: enabled) }
+            do { try await notifications.replace(timer: timer, exerciseName: exerciseName, enabled: enabled) }
             catch { errorMessage = "The workout is saved, but its rest alert could not be scheduled. \(error.localizedDescription)" }
         }
     }
