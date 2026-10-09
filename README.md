@@ -1,47 +1,68 @@
 # Gyma
 
-Personal, local-first iOS 26+ fitness tracker built with Flutter. Build the iPhone app with GitHub Actions (`.github/workflows/ios.yml`).
+A native, local-first strength training app built from scratch with Swift and SwiftUI for **iOS 26 and watchOS 26**. The iPhone and Apple Watch apps share a Swift package and communicate directly through Apple's WatchConnectivity APIs.
 
-## Train with a plan
+## Train on iPhone and Apple Watch
 
-**Overview → Start workout** opens a short preparation conversation. Choose your energy, work shift and available time, then optionally add sleep, how you feel, movement limitations and training that was not logged here. Ask the coach to prepare a session or start a manual workout offline.
+On iPhone, check in before a workout, choose or create exercises, set targets, and log weight, reps, warm-up status and optional effort. Rest countdowns use persisted deadlines. Review workout history and training totals, restore deleted workouts, and export or restore native JSON backups in Settings.
 
-The coach sees today's check-in, the active session, the last 28 days of completed workouts and daily soreness, plus the last recorded session and most recent exposure to each exercise from older history. A break in logging is not assumed to be a break in training. Goals, schedule, equipment, experience and preferences are editable in Coach.
+The Watch app shows the active workout, targets and rest countdown. Log sets, extend/skip rest, or finish the workout from your wrist. Connection and pending-action indicators distinguish saved phone data from changes waiting to sync. Notification permission is requested only when enabling rest alerts on each device.
 
-Discuss the draft before starting. Accepted exercises receive targets for sets, rep range, load where supported, and rest. Targets never count as completed sets. Changed data, a changed check-in or a new day requires a refreshed draft. During a workout, the toolbar's coach action can review and apply changes to the remaining plan. Target set counts describe the entire session; applying a revision preserves every completed set.
+This first version focuses on logging and reliable phone–Watch communication. It does not yet include AI coaching, a body-photo journal, HealthKit workout recording or heart-rate tracking.
 
-## Log effort and learn what to do next
+## Build through GitHub Actions
 
-Weight, reps and Log set stay together above the scrolling set history. A set can also record warm-up/working status and optional effort: several more reps, one or two more, or at your limit. Effort is not carried forward to the next set. Old data keeps unknown effort and set classification.
+Push native changes to `swift` to run **Swift iPhone + Watch build**. Native changes on `main` and pull requests also run it. Manual dispatch:
 
-Exercise screens show planned targets separately and allow target adjustment. Fresh targets take precedence over older suggested values. Historical loads are only reusable with recent, suitable working-set context. The 14-day historical-load cutoff is a conservative product rule, not a medical threshold.
+```sh
+gh workflow run swift.yml --ref swift
+```
 
-The session review suggests a repeatable target, holding the load, adding a rep or considering the smallest available increase. These are transparent, local rules using planned work and reported effort. Pain, low energy, a long gap or missing context limits progression suggestions. Advice is never applied automatically.
+The macOS 26 job uses Xcode 26.0.1, runs shared Swift tests, generates the project with XcodeGen, and archives the iPhone app with its embedded Watch app. Download `gyma-swift-ios-watch-<run number>` for `gyma-swift-unsigned.ipa`. Compiler/test logs are uploaded separately, including on failures. The unsigned build needs no signing credentials.
 
-## Progress you can see
+Sign both bundles with compatible provisioning before installing: `com.mato.gyma` and `com.mato.gyma.watchkitapp`. If a signing tool changes the phone bundle identifier, update the Watch prefix and `WKCompanionAppBundleIdentifier` to match. Connectivity needs a physical paired iPhone and Watch for validation.
 
-Overview includes a seven-day review, workout activity, comparable load changes, and rep changes at matching weight. Marked warm-ups are excluded from these comparisons and muscle-group counts. Older unclassified sets remain explicitly identified. Muscle bars describe primary muscle groups, not growth or readiness.
+## Project structure
 
-The **Progress** tab offers optional dated check-ins with front/side/back photos, weight, waist and notes. Compare selected check-ins side by side. Photos are selected from the system library, resized and re-encoded to app-owned PNGs without embedded metadata. They stay on the device and are never included in AI requests. There are no appearance scores or automatic body-fat estimates.
+| Path | Responsibility |
+| --- | --- |
+| `native/iOS` | SwiftUI iPhone screens, authoritative store, rest notifications |
+| `native/Watch` | SwiftUI Watch screens and rest notifications |
+| `native/Shared` | WCSession lifecycle, snapshots, durable Watch command outbox |
+| `native/GymaCore` | Foundation models, workout rules, native persistence, command validation and tests |
+| `native/project.yml` | App targets, bundle relationship and schemes |
+| `.github/workflows/swift.yml` | macOS tests, archive and unsigned IPA artifact |
 
-Progress photos and measurements use a separate local store and are **not included in workout JSON backups**. Keep original photos and your own measurement record before reinstalling. The screen supports editing, deletion, missing-photo placeholders and recovery from an interrupted index save.
+Local development on a Mac:
 
-## Recovery, history and backups
+```sh
+brew install xcodegen
+cd native
+swift test --package-path GymaCore
+xcodegen generate
+open Gyma.xcodeproj
+```
 
-Daily soreness remains optional and can be recorded on rest days. None/Mild/Moderate/Severe are separate from unusual pain; unrecorded muscles remain unknown. Workout dates, check-ins and sets remain editable. Deleted workouts can be restored in Settings.
+Select the same signing team for both targets. `Gyma` builds both apps; `GymaWatch` runs the companion. Edit `project.yml`; generated Xcode files are ignored. Swift 6 tooling runs in Swift 5 language mode with concurrency checking enabled.
 
-Settings provides JSON backup/restore for workouts, targets, effort, session check-ins, recovery, preferences, coaching history, deleted workouts and recent corrections. Version 1 and 2 workout data migrates to version 3 without inventing missing effort, warm-up status or recovery. Invalid coaching caches cannot prevent valid workouts from loading. Backups contain personal conversations and should be stored privately.
+## Connection and persistence
 
-## Optional AI coach
+The phone owns workout state. The Watch persists a command before sending it and waits for confirmation before allowing another change. The phone checks its store identity, workout and revision, then atomically writes the change and receipt before acknowledging. Repeated delivery cannot log another set. Rest controls check timer identity. Restoring a native backup creates a new store identity so old Watch commands cannot change restored data.
 
-Settings → OpenAI API key stores your own key in device-only iOS Keychain, available while unlocked and excluded from backups. No key is bundled in the app or CI. The ignored local `.env` is never loaded by the app.
+Snapshots use `updateApplicationContext`, with `sendMessage` for prompt updates when reachable. Commands also use `transferUserInfo` for queued delivery. Activation, reachability, Watch switching and WatchConnectivity background tasks are handled. Routine snapshots contain a bounded active workout, not full history. See [Apple's WatchConnectivity APIs](https://developer.apple.com/documentation/watchconnectivity/transferring-data-with-watch-connectivity).
 
-Requests happen only after Send and the data-sharing dialog. They include the question, up to 40 saved messages, training preferences and the context described above. Photos, body measurements, deleted workouts and correction history are excluded from structured training context. Previous messages can still mention earlier training; clear the conversation to remove them. Preview shared data in Coach to inspect the payload.
+Data lives in `gyma-native.json`. Unreadable files block mutations instead of being overwritten; Settings can export their original bytes. Restoring a backup first preserves existing native workout data in the app's Documents directory. This protects user workout data, not source-code backups.
 
-The integration uses the Responses API, `gpt-6-luna`, strict structured outputs and `store: false`. Exercise IDs, evidence IDs, unique exercises, set/rep ranges and rest values are validated. Coaching conversations persist locally; Clear conversation removes saved messages and the draft. Stale in-flight responses are not persisted. All logging and local progression feedback work offline; AI requires internet and your API credits.
+The single-target Watch app uses `WKApplication` and `WKCompanionAppBundleIdentifier`. Its explicit embedding destination accounts for the [XcodeGen Xcode 26 issue](https://github.com/yonaskolb/XcodeGen/issues/1613). Physical-device installation still needs verification.
 
-## Validation and iPhone build
+## Device checks
 
-Run `flutter analyze` and `flutter test`. Tests cover migration and restoration, preparation and follow-ups, stale responses, accepted and revised plans, effort logging, progression rules, small-screen/keyboard layouts, photo persistence, path validation and Keychain handling. Native photo-library selection and real AI responses still need device testing.
+1. Start a phone workout; verify Watch exercises and targets.
+2. Log a Watch set; confirm exactly one saved record after reconnecting/reopening both apps.
+3. Disconnect, queue an action, reconnect, and confirm its pending state resolves once.
+4. Change/end the phone workout while an action is pending; verify visible stale-action rejection.
+5. Background both apps during rest; verify deadlines, skip/extend and notification opt-in. Warm-ups and the final target set must not start rest.
+6. Restore a native backup, reinstall the phone app and switch Watches; cached state must not resurrect another store's workout.
+7. Import an invalid backup or simulate unavailable storage; verify previous data remains recoverable and uncommitted Watch actions stay pending.
 
-Push to `main` or run the iOS workflow manually to analyze, test and build an unsigned IPA. Download the `gyma-ios-<run number>` artifact and re-sign it with your Apple ID, for example using Sideloadly on Windows. CI generates `ios/` when absent and configures Keychain and photo-library usage settings.
+CI verifies compilation, core behavior and IPA packaging. Pairing, notification routing, delivery timing and device UI layout require device testing.

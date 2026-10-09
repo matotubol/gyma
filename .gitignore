@@ -1,30 +1,19 @@
-# Flutter/Dart
-.dart_tool/
-.flutter-plugins
-.flutter-plugins-dependencies
-.pub-cache/
-.pub/
-build/
-
-# iOS
-ios/Pods/
-ios/.symlinks/
-ios/Flutter/Generated.xcconfig
-ios/Flutter/flutter_export_environment.sh
+# Swift / Xcode output
+**/.build/
+**/.swiftpm/
 **/xcuserdata/
+**/DerivedData/
+build/
 Payload/
+__pycache__/
 
-# IDE
+# Local tooling caches
+.dart_tool/
 .idea/
 .vscode/
-*.iml
-
-# OS
 .DS_Store
 Thumbs.db
 
-# Private backend credentials
+# Local secrets
 .env
 .env.*
-!.env.example
-server/node_modules/

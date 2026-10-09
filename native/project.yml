@@ -1,0 +1,89 @@
+name: Gyma
+options:
+  minimumXcodeGenVersion: 2.44.0
+  xcodeVersion: "26.0"
+  deploymentTarget:
+    iOS: "26.0"
+    watchOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    MARKETING_VERSION: "0.4.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+packages:
+  GymaCore:
+    path: GymaCore
+targets:
+  Gyma:
+    type: application
+    platform: iOS
+    sources:
+      - iOS
+      - Shared
+      - Resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mato.gyma
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+    info:
+      path: Generated/iOS-Info.plist
+      properties:
+        CFBundleDisplayName: Gyma
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+    dependencies:
+      - package: GymaCore
+      - target: GymaWatch
+        embed: true
+        link: false
+        copy:
+          destination: plugins
+  GymaWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - Watch
+      - Shared
+      - Resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mato.gyma.watchkitapp
+        TARGETED_DEVICE_FAMILY: "4"
+        SKIP_INSTALL: YES
+    info:
+      path: Generated/watchOS-Info.plist
+      properties:
+        CFBundleDisplayName: Gyma
+        ITSAppUsesNonExemptEncryption: false
+        WKApplication: true
+        WKCompanionAppBundleIdentifier: com.mato.gyma
+        WKRunsIndependentlyOfCompanionApp: false
+    dependencies:
+      - package: GymaCore
+schemes:
+  Gyma:
+    build:
+      targets:
+        Gyma: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  GymaWatch:
+    build:
+      targets:
+        GymaWatch: all
+    run:
+      config: Debug
