@@ -7,6 +7,8 @@ import UserNotifications
 /// deadline. There is no background timer or promise of a background haptic.
 @MainActor
 final class WatchRestNotifications: ObservableObject {
+    static let shared = WatchRestNotifications()
+
     @Published private(set) var enabled = UserDefaults.standard.bool(forKey: "watchRestReminders")
     @Published private(set) var message: String?
     private let center = UNUserNotificationCenter.current()
@@ -15,6 +17,8 @@ final class WatchRestNotifications: ObservableObject {
     private var latestGeneration = 0
     private var taskTail: Task<Void, Never>?
     private var scheduledKey: String?
+
+    private init() {}
 
     func update(_ snapshot: CompanionSnapshot?) {
         self.snapshot = snapshot

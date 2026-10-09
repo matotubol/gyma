@@ -19,7 +19,8 @@ public struct GymaState: Codable, Sendable, Equatable {
         catalog.first { $0.id == id } ?? .init(id: id, name: "Unknown exercise", muscle: .core, iconKey: "bolt")
     }
     public func validate() throws {
-        guard schemaVersion == 1, !storeID.isEmpty, storeID.count <= 200, (0...1_000_000_000_000).contains(revision), workouts.filter(\.isActive).count <= 1 else { throw GymaError.invalid("Invalid state version or multiple active workouts.") }
+        // Keep wire revisions representable on watchOS arm64_32 as well as iPhone.
+        guard schemaVersion == 1, !storeID.isEmpty, storeID.count <= 200, (0...1_000_000_000).contains(revision), workouts.filter(\.isActive).count <= 1 else { throw GymaError.invalid("Invalid state version or multiple active workouts.") }
         guard commandReceipts.count <= 50_000, Set(commandReceipts.keys) == Set(commandPayloads.keys),
               commandReceipts.allSatisfy({ key, receipt in
                   key == receipt.commandID && !key.isEmpty && key.count <= 200 &&
@@ -37,8 +38,9 @@ public struct GymaState: Codable, Sendable, Equatable {
                   exerciseIDs.insert(exercise.id).inserted else { throw GymaError.invalid("Invalid custom exercise identity or name.") }
         }
         if let timer = restTimer {
+            let supportedDates = -2_208_988_800.0...4_102_444_800.0
             guard restEnabled, !timer.id.isEmpty, timer.id.count <= 200,
-                  timer.startedAt.timeIntervalSince1970.isFinite, timer.endsAt.timeIntervalSince1970.isFinite, timer.endsAt >= timer.startedAt,
+                  supportedDates.contains(timer.startedAt.timeIntervalSince1970), supportedDates.contains(timer.endsAt.timeIntervalSince1970), timer.endsAt >= timer.startedAt,
                   timer.endsAt.timeIntervalSince(timer.startedAt) <= 86400,
                   let workout = activeWorkout, workout.id == timer.workoutID,
                   let exercise = workout.exercises.first(where: { $0.exerciseID == timer.exerciseID }),

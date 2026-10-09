@@ -9,7 +9,7 @@ struct GymaWatchApp: App {
 
     init() {
         let connectivity = WorkoutConnectivity.shared
-        let reminders = WatchRestNotifications()
+        let reminders = WatchRestNotifications.shared
         _connectivity = StateObject(wrappedValue: connectivity)
         _restNotifications = StateObject(wrappedValue: reminders)
         // App initialization also runs for background connectivity launches;

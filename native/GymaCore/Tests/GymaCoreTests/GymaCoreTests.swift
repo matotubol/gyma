@@ -108,6 +108,8 @@ final class GymaCoreTests: XCTestCase {
         invalid = state
         invalid.revision = Int.max
         XCTAssertThrowsError(try NativeBackup.decode(JSONEncoder().encode(invalid)))
+        invalid = state; invalid.workouts[0].start = Date(timeIntervalSince1970: 1e30)
+        XCTAssertThrowsError(try NativeBackup.decode(JSONEncoder().encode(invalid)))
     }
     func testInvalidBackupDoesNotOverwriteExistingFile() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -130,5 +132,27 @@ final class GymaCoreTests: XCTestCase {
         let encoded = try JSONEncoder().encode(snapshot)
         XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains("history never sent"))
         XCTAssertEqual(snapshot.catalog.map(\.id), ["bench_press"])
+    }
+    func testSnapshotByteLimitWithMultibyteIdentifiers() throws {
+        var state = try activeState()
+        state.workouts[0].exercises = state.catalog.prefix(12).enumerated().map { ei, definition in
+            WorkoutExercise(exerciseID: definition.id, sets: (0..<20).map { si in
+                WorkSet(id: String(repeating: "🏋️", count: 180) + "-\(ei)-\(si)", kg: 20, reps: 5)
+            })
+        }
+        try state.validate()
+        let snapshot = CompanionSnapshot(state: state, now: now)
+        XCTAssertTrue(snapshot.isTruncated)
+        XCTAssertLessThanOrEqual(try JSONEncoder().encode(snapshot).count, 48 * 1024)
+        XCTAssertEqual(state.activeWorkout?.totalSets, 240)
+    }
+    func testInvalidSaveKeepsLastGoodFile() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = JSONFileStore(url: directory.appendingPathComponent("data.json"))
+        let good = try activeState(); try store.save(good)
+        var invalid = good; invalid.workouts[0].exercises.append(.init(exerciseID: "bench_press"))
+        XCTAssertThrowsError(try store.save(invalid))
+        XCTAssertEqual(try store.load(), good)
     }
 }

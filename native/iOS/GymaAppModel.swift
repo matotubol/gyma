@@ -102,7 +102,9 @@ final class GymaAppModel: ObservableObject {
     func readImport(_ url: URL) throws -> GymaState {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        let data = try Data(contentsOf: url)
+        let fileSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        guard let fileSize, fileSize <= 100 * 1024 * 1024 else { throw AppError.backupTooLarge }
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
         let imported = try NativeBackup.decode(data)
         try imported.validate()
         return imported
@@ -162,7 +164,23 @@ final class GymaAppModel: ObservableObject {
     }
 
     func refresh() {
-        if !storageBlocked { connectivity.refresh() }
+        if storageBlocked {
+            do {
+                // Protected device data may become readable after an unlock.
+                // Retrying never rewrites or replaces an unreadable file.
+                let recovered = try store.load()
+                try recovered.validate()
+                state = recovered
+                storageBlocked = false
+                errorMessage = nil
+                configureConnectivity()
+                notice = "Saved data is available again."
+            } catch {
+                // Keep the existing recovery banner without repeating alerts.
+                return
+            }
+        }
+        connectivity.refresh()
         synchronizeNotifications()
     }
 
@@ -187,6 +205,7 @@ enum AppError: LocalizedError {
     case invalidTarget
     case invalidCustomName
     case invalidRevision
+    case backupTooLarge
 
     var errorDescription: String? {
         switch self {
@@ -195,6 +214,7 @@ enum AppError: LocalizedError {
         case .invalidTarget: return "Enter 1–10 sets, 1–50 reps, a load from 0 to 1,000 kg, and 15–600 seconds of rest."
         case .invalidCustomName: return "Enter an exercise name with no more than 100 characters."
         case .invalidRevision: return "This backup has an invalid revision number."
+        case .backupTooLarge: return "The backup must be a readable JSON file no larger than 100 MB."
         }
     }
 }
