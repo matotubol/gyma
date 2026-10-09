@@ -18,6 +18,7 @@ struct ProgramWorkoutStartView: View {
     @State private var preview: PreparedSession?
     @State private var error: String?
     @State private var coachPresented = false
+    @State private var discussionFirstMessageID: String?
 
     private struct PreparedSession {
         let plan: WorkoutPlan
@@ -109,6 +110,7 @@ struct ProgramWorkoutStartView: View {
     @ViewBuilder
     private func sessionPreview(_ preview: PreparedSession, at now: Date) -> some View {
         let current = isCurrent(preview, at: now)
+        let continuingDiscussion = canContinueDiscussion(preview, at: now)
         Section {
             Text(preview.plan.title).font(.title2.bold())
             Text("\(preview.plan.exercises.count) exercises · \(preview.plan.exercises.reduce(0) { $0 + ($1.target?.sets ?? 0) }) sets")
@@ -133,7 +135,11 @@ struct ProgramWorkoutStartView: View {
             }
             Text("Checked at \(preview.readiness.recordedAt.formatted(date: .omitted, time: .shortened))")
                 .font(.caption).foregroundStyle(.secondary)
-            Button("Edit check-in") { self.preview = nil; error = nil }
+            Button("Edit check-in") {
+                self.preview = nil
+                discussionFirstMessageID = nil
+                error = nil
+            }
         }
         Section("Today's exercises") {
             ForEach(preview.plan.exercises) { exercise in
@@ -150,8 +156,13 @@ struct ProgramWorkoutStartView: View {
         }
         if !current {
             Section {
-                Text("Your training information changed or this check-in is more than five minutes old. Review the workout again before starting.")
-                    .foregroundStyle(.orange)
+                if continuingDiscussion {
+                    Text("Your daily coach discussion is saved. Continue it to review the coach's reply and accept the adjusted workout.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Your training information changed or this check-in is more than five minutes old. Review the workout again before starting.")
+                        .foregroundStyle(.orange)
+                }
                 if canConfirmReadiness(preview, at: now) {
                     Text("Your coach-adjusted targets are kept. Review the check-in above and confirm it still describes how you feel now, or edit it if anything changed.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -164,19 +175,32 @@ struct ProgramWorkoutStartView: View {
             }
         }
         Section {
-            Button("Ask coach to adjust", systemImage: "bubble.left.and.bubble.right") {
-                guard isCurrent(preview, at: Date()) else {
-                    error = "Review today's check-in before asking for adjustments."
-                    return
-                }
-                if model.discussProgramWorkout(plan: preview.plan, expectedStoreID: preview.storeID, expectedRevision: preview.revision) {
+            if continuingDiscussion {
+                Button("Continue discussion", systemImage: "bubble.left.and.bubble.right") {
+                    guard canContinueDiscussion(preview, at: Date()) else {
+                        error = "This workout discussion changed. Review today's session again."
+                        return
+                    }
                     error = nil
                     coachPresented = true
-                } else {
-                    error = model.errorMessage ?? "The coach discussion could not be opened."
                 }
+                .disabled(model.storageBlocked || model.state.activeWorkout != nil)
+            } else {
+                Button("Ask coach to adjust", systemImage: "bubble.left.and.bubble.right") {
+                    guard isCurrent(preview, at: Date()) else {
+                        error = "Review today's check-in before asking for adjustments."
+                        return
+                    }
+                    if model.discussProgramWorkout(plan: preview.plan, expectedStoreID: preview.storeID, expectedRevision: preview.revision) {
+                        discussionFirstMessageID = model.state.coachConversation?.messages.first?.id
+                        error = nil
+                        coachPresented = true
+                    } else {
+                        error = model.errorMessage ?? "The coach discussion could not be opened."
+                    }
+                }
+                .disabled(unavailable || !current || !model.hasCoachAPIKey)
             }
-            .disabled(unavailable || !current || !model.hasCoachAPIKey)
         } footer: {
             Text("Discuss pain, soreness or changes before starting. Your existing check-in goes with this workout discussion; your saved program stays unchanged.")
         }
@@ -206,10 +230,28 @@ struct ProgramWorkoutStartView: View {
             && age >= 0 && age <= 300 && preview.plan.isScheduledForToday(at: now)
     }
 
+    private func matchesDiscussion(_ preview: PreparedSession, at now: Date) -> Bool {
+        guard let discussionFirstMessageID,
+              model.state.storeID == preview.storeID,
+              let conversation = model.state.coachConversation,
+              conversation.purpose == .workout, conversation.startedWorkoutID == nil,
+              conversation.messages.first?.id == discussionFirstMessageID,
+              conversation.checkIn == preview.plan.checkIn,
+              preview.plan.programID != nil, preview.plan.isScheduledForToday(at: now) else { return false }
+        return (try? model.state.validateProgramLink(preview.plan, now: now)) != nil
+            && (try? model.state.validatePlanningContext(preview.plan)) != nil
+    }
+
+    private func canContinueDiscussion(_ preview: PreparedSession, at now: Date) -> Bool {
+        guard matchesDiscussion(preview, at: now) else { return false }
+        // Once its accepted targets are back in the preview, a new adjustment can start afresh.
+        return model.state.coachConversation?.plan?.acceptedAt == nil || model.state.coachConversation?.plan != preview.plan
+    }
+
     private func acceptCoachAdjustment() {
         coachPresented = false
         guard let previous = preview,
-              model.state.storeID == previous.storeID,
+              matchesDiscussion(previous, at: Date()),
               let conversation = model.state.coachConversation, !conversation.isProgramPlanning,
               let plan = conversation.plan, plan.acceptedAt != nil,
               plan.checkIn == previous.plan.checkIn,
@@ -251,6 +293,7 @@ struct ProgramWorkoutStartView: View {
 
     private func preparePreview() {
         error = nil
+        discussionFirstMessageID = nil
         let hours = sleep.trimmingCharacters(in: .whitespacesAndNewlines)
         let value = Double(hours.replacingOccurrences(of: ",", with: "."))
         guard hours.isEmpty || value.map({ $0.isFinite && (0...24).contains($0) }) == true else {
