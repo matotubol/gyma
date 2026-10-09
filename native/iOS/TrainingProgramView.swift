@@ -19,11 +19,17 @@ struct TrainingProgramView: View {
                 }
                 if let next = program.nextSession(history: model.state.workouts) {
                     Section {
+                        let discomfort = recentDiscomfort(program: program, session: next)
                         ForEach(program.recommendations(for: next, history: model.state.workouts, catalog: model.state.catalog, priorPrograms: model.state.programHistory ?? [])) { recommendation in
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(model.name(for: recommendation.exerciseID)).font(.headline)
-                                Text(programTargetDescription(recommendation.target)).font(.subheadline)
-                                Text(recommendation.reason).font(.caption).foregroundStyle(.secondary)
+                                if discomfort {
+                                    Text("Discomfort was recorded after this session. Check in and discuss a comfortable target before progressing.")
+                                        .font(.subheadline).foregroundStyle(.orange)
+                                } else {
+                                    Text(programTargetDescription(recommendation.target)).font(.subheadline)
+                                    Text(recommendation.reason).font(.caption).foregroundStyle(.secondary)
+                                }
                             }.padding(.vertical, 3)
                         }
                         Button("Prepare next session", systemImage: "list.clipboard") { checkingIn = true }
@@ -74,6 +80,15 @@ struct TrainingProgramView: View {
         .confirmationDialog("Archive this program?", isPresented: $archivePresented, titleVisibility: .visible) {
             Button("Archive program", role: .destructive) { model.update { try $0.archiveTrainingProgram() } }
         } message: { Text("Your training and program versions are kept. You can restore a previous version or plan a new program.") }
+    }
+
+    private func recentDiscomfort(program: TrainingProgram, session: ProgramSession) -> Bool {
+        let latest = model.completedWorkouts.filter { $0.programID == program.id && $0.programSessionID == session.id }
+            .max { ($0.end ?? $0.start) < ($1.end ?? $1.start) }
+        return (model.state.workoutFeedback ?? []).contains {
+            $0.workoutID == latest?.id && !$0.painNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            Date().timeIntervalSince($0.recordedAt) >= 0 && Date().timeIntervalSince($0.recordedAt) < 14 * 86400
+        }
     }
 }
 

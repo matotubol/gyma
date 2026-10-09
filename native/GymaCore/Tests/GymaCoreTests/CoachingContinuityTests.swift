@@ -2,6 +2,30 @@ import XCTest
 @testable import GymaCore
 
 final class CoachingContinuityTests: XCTestCase {
+    func testChangedEquipmentIncrementRequiresCompatibleProgramRules() throws {
+        var state = GymaState()
+        state.trainingProgram = program
+        state.athleteProfile = .init(equipment: [.barbell], loadIncrements: [.init(equipment: .barbell, incrementKg: 5)], updatedAt: now)
+        XCTAssertThrowsError(try state.nextProgramPlan(checkIn: checkIn, now: now))
+        try state.updateProgressionRule(.init(loadIncrementKg: 5), now: now)
+        XCTAssertNoThrow(try state.nextProgramPlan(checkIn: checkIn, now: now))
+    }
+
+    func testNewFeedbackInvalidatesAnAlreadyPreparedDraftUntilItIsRegenerated() throws {
+        var state = GymaState()
+        state.trainingProgram = program
+        state.workouts = [completedExposure(id: "previous", daysAgo: 1, program: program)]
+        let draft = try state.nextProgramPlan(checkIn: checkIn, now: now)
+        try state.saveCoachConversation(.init(checkIn: checkIn, messages: [.init(role: .assistant, content: "Prepared")], plan: draft))
+        try state.acceptCoachPlan(planID: draft.id, now: now)
+        try state.saveWorkoutFeedback(.init(workoutID: "previous", recordedAt: now.addingTimeInterval(1), painNote: "Discomfort after training"))
+        XCTAssertNil(state.coachConversation?.plan?.acceptedAt)
+        XCTAssertThrowsError(try state.acceptCoachPlan(planID: draft.id, now: now.addingTimeInterval(2)))
+        let updated = try state.nextProgramPlan(checkIn: checkIn, now: now.addingTimeInterval(3))
+        try state.saveCoachConversation(.init(checkIn: checkIn, plan: updated))
+        XCTAssertNoThrow(try state.acceptCoachPlan(planID: updated.id, now: now.addingTimeInterval(4)))
+    }
+
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
     private var checkIn: SessionCheckIn { .init(shift: .off, energy: .good) }
     private var calendar: Calendar {

@@ -19,6 +19,14 @@ public struct WorkoutFeedback: Codable, Sendable, Equatable, Identifiable {
 }
 
 public extension GymaState {
+    func validatePlanningContext(_ plan: WorkoutPlan) throws {
+        let knownWorkoutIDs = Set(workouts.map(\.id))
+        let newerFeedback = (workoutFeedback ?? []).contains { knownWorkoutIDs.contains($0.workoutID) && $0.recordedAt > plan.createdAt }
+        guard !(athleteProfile.map { $0.updatedAt > plan.createdAt } ?? false), !newerFeedback else {
+            throw GymaError.stale("Your profile or workout feedback changed after this draft. Prepare the next session again or ask the coach to update it.")
+        }
+    }
+
     func validateProgramLink(_ plan: WorkoutPlan, now: Date = Date()) throws {
         guard let id = plan.programID else { return }
         guard let program = trainingProgram, program.id == id, program.revision == plan.programRevision,
@@ -26,6 +34,7 @@ public extension GymaState {
             throw GymaError.stale("Your program or next session changed. Prepare a fresh session from your program.")
         }
         try CoachingConstraints.validate(exercises: plan.exercises, profile: athleteProfile, catalog: catalog)
+        try validateAvailableIncrements(program)
     }
 
     mutating func acceptProgramProposal(programID: String, now: Date = Date()) throws {
@@ -57,6 +66,7 @@ public extension GymaState {
         }
         try program.validate(catalog: catalog)
         try checkIn.validate()
+        try validateAvailableIncrements(program)
         var exercises = program.nextExercises(history: workouts, now: now, catalog: catalog, priorPrograms: programHistory ?? [])
         // A local rule cannot assess a new pain report. Preserve the plan for discussion, with no increase.
         let latestSession = workouts.filter { $0.programID == program.id && $0.programSessionID == session.id && !$0.isActive }
@@ -145,6 +155,20 @@ public extension GymaState {
         if workoutFeedback == nil { workoutFeedback = [] }
         workoutFeedback?.removeAll { $0.workoutID == feedback.workoutID }
         workoutFeedback?.append(feedback)
+        coachConversation?.plan?.acceptedAt = nil
+        coachConversation?.proposedProgram = nil
         revision += 1
+    }
+
+    private func validateAvailableIncrements(_ program: TrainingProgram) throws {
+        for id in Set(program.sessions.flatMap { $0.exercises.map(\.exerciseID) }) {
+            guard let equipment = catalog.first(where: { $0.id == id })?.trainingMetadata?.equipment,
+                  let available = athleteProfile?.loadIncrements.first(where: { $0.equipment == equipment })?.incrementKg else { continue }
+            let configured = program.progressionRule.exerciseIncrements[id] ?? program.progressionRule.loadIncrementKg
+            let multiple = configured / available
+            guard multiple >= 1 - 0.000001, abs(multiple - multiple.rounded()) < 0.000001 else {
+                throw GymaError.invalid("The saved increase for \(exercise(id).name) no longer matches your available equipment increment. Update the program's progression rules or discuss a revision with the coach.")
+            }
+        }
     }
 }

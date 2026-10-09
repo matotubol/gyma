@@ -103,6 +103,7 @@ public struct GymaState: Codable, Sendable, Equatable {
             throw GymaError.stale("That coach plan has changed. Review the current proposal first.")
         }
         try validateProgramLink(plan, now: now)
+        try validatePlanningContext(plan)
         try CoachingConstraints.validate(exercises: plan.exercises, profile: athleteProfile, catalog: catalog)
         plan.acceptedAt = now; conversation.plan = plan
         try conversation.validate(catalog: catalog)
@@ -120,6 +121,7 @@ public struct GymaState: Codable, Sendable, Equatable {
             guard abs(now.timeIntervalSince(readiness.recordedAt)) <= 300 else { throw GymaError.stale("Your readiness check expired. Check your energy and soreness again before starting.") }
         }
         try validateProgramLink(plan, now: now)
+        try validatePlanningContext(plan)
         try CoachingConstraints.validate(exercises: plan.exercises, profile: athleteProfile, catalog: catalog)
         var workout = Workout(start: now, shift: plan.checkIn.shift, energy: readiness?.energy ?? plan.checkIn.energy, checkIn: plan.checkIn, readiness: readiness,
                               coachConversation: WorkoutCoachConversation(messages: conversation.messages),
