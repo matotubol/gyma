@@ -66,7 +66,7 @@ final class WorkoutCoachAPITests: XCTestCase {
         let data = try WorkoutCoachAPI.requestBody(workout: active, storeID: "store", revision: 7, restTimer: timer,
                                                    catalog: catalog, history: [previous], now: date.addingTimeInterval(60))
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(body["model"] as? String, "gpt-6-luna")
+        XCTAssertEqual(body["model"] as? String, "gpt-6.1-sol")
         XCTAssertEqual(body["store"] as? Bool, false)
         let input = try XCTUnwrap(body["input"] as? [[String: String]])
         XCTAssertEqual(input.count, 41)

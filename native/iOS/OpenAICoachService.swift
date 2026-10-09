@@ -53,7 +53,7 @@ enum OpenAICoachService {
         switch response.statusCode {
         case 200...299: break
         case 401: throw GymaError.invalid("OpenAI did not accept the API key. Update it in Settings.")
-        case 403, 404: throw GymaError.invalid("This API project cannot use GPT Luna. Check your OpenAI project’s model access.")
+        case 403, 404: throw GymaError.invalid("This API project cannot use GPT-6.1 Sol. Check your OpenAI project’s model access.")
         case 429: throw GymaError.invalid("OpenAI's usage or rate limit was reached. Check your API billing or try again later.")
         default: throw GymaError.invalid("The coach request failed (HTTP \(response.statusCode)). Your saved workout is unchanged. Try again.")
         }

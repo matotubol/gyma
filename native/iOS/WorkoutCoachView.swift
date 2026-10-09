@@ -104,7 +104,7 @@ struct WorkoutCoachView: View {
     private var keySetup: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label("Connect your coach", systemImage: "key").font(.headline)
-            Text("Add your OpenAI API key to use GPT Luna.").font(.subheadline).foregroundStyle(.secondary)
+            Text("Add your OpenAI API key to use GPT-6.1 Sol.").font(.subheadline).foregroundStyle(.secondary)
             NavigationLink { SettingsView() } label: { Text("Open coach settings") }
                 .buttonStyle(.bordered)
         }
@@ -115,7 +115,7 @@ struct WorkoutCoachView: View {
     private func chatMessage(_ message: CoachMessage) -> some View {
         let isCoach = message.role == .assistant
         return VStack(alignment: .leading, spacing: 7) {
-            Text(isCoach ? "GPT Luna" : "You")
+            Text(isCoach ? "GPT-6.1 Sol" : "You")
                 .font(.caption.weight(.semibold)).foregroundStyle(isCoach ? GymaStyle.accent : .secondary)
             Text(message.content).font(.body).textSelection(.enabled)
         }

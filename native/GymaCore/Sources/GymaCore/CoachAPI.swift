@@ -9,7 +9,7 @@ public struct CoachReply: Sendable, Equatable {
 
 /// Pure request/response boundary, shared with tests. No credentials enter this payload.
 public enum CoachAPI {
-    public static let model = "gpt-6-luna"
+    public static let model = "gpt-6.1-sol"
 
     public static func requestBody(conversation: CoachConversation, catalog: [ExerciseDefinition], history: [Workout],
                                    profile: AthleteProfile? = nil, program: TrainingProgram? = nil,

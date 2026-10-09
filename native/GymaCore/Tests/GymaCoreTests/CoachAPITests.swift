@@ -49,7 +49,7 @@ final class CoachAPITests: XCTestCase {
         XCTAssertThrowsError(try CoachAPI.parseResponse(refusal, checkIn: checkIn, catalog: catalog))
     }
 
-    func testRequestUsesLunaSchemaAndBoundedContextWithoutPrivateHistoryNotes() throws {
+    func testRequestUsesSolSchemaAndBoundedContextWithoutPrivateHistoryNotes() throws {
         let messages = (0..<50).map { CoachMessage(role: .user, content: "Question \($0)") }
         let conversation = CoachConversation(checkIn: checkIn, messages: messages)
         let privateCheckIn = SessionCheckIn(shift: .off, energy: .good, notes: "OLD_PRIVATE_NOTE")
@@ -59,7 +59,7 @@ final class CoachAPITests: XCTestCase {
         }
         let data = try CoachAPI.requestBody(conversation: conversation, catalog: catalog, history: history)
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(body["model"] as? String, "gpt-6-luna")
+        XCTAssertEqual(body["model"] as? String, "gpt-6.1-sol")
         XCTAssertEqual(body["store"] as? Bool, false)
         let input = try XCTUnwrap(body["input"] as? [[String: String]])
         XCTAssertEqual(input.count, 41)

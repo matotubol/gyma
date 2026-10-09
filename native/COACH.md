@@ -18,7 +18,7 @@ Training principles and their limits are recorded in `GymaCore/CoachContext.swif
 
 ## Use the app
 
-1. In iPhone Settings → AI coach, save your personal OpenAI API key. Gyma uses `gpt-6-luna`; the API project must have access and API billing. Keys stay in this iPhone's Keychain, excluded from JSON backups and Watch sync.
+1. In iPhone Settings → AI coach, save your personal OpenAI API key. Gyma uses `gpt-6.1-sol`; the API project must have access and API billing. Keys stay in this iPhone's Keychain, excluded from JSON backups and Watch sync.
 2. Save your goals, equipment and preferences in Settings → Profile. Open Coach and check in with energy and soreness for chest, back, legs, shoulders, arms and core. New check-ins default every group to None. Messages, profile, program, current check-in, exercise catalog, relevant training summaries and feedback are sent directly to OpenAI when you request a reply. Past check-in notes are excluded. API requests use `store: false`.
 3. Discuss changes to the draft. Each exercise has working sets, reps, optional target kilograms, rest seconds and a reason. Gyma validates the complete plan against the exercise library before saving it. Missing loads mean you choose the load; zero means bodyweight.
 4. Tap **Accept workout plan** to close the planning chat and return to Overview. The Coach tab has no Start or Finish workout controls. Today's accepted plan can be started from Overview or the Watch. Before either start, review energy and soreness; the final timestamped readiness check is stored with that workout. Watch start waits for a phone acknowledgment, expires after five minutes, and cannot cross midnight or create a second session. Plans default to their creation day; earlier drafts without a scheduled date use that day too. Revising a plan requires accepting again.
@@ -52,4 +52,4 @@ Device checks:
 
 Live AI calls need a user-supplied API key. Physical pairing, haptic delivery and on-device layout require an iPhone/Watch check after signing and installing the combined IPA locally. Workout mode requires the signed Watch provisioning profile to grant `com.apple.developer.healthkit`. The custom iLoader now enables that capability when the Watch bundle requests workout runtime and checks the profile before signing. This capability update needs the updated local installer; subsequent ordinary app changes do not require rebuilding it.
 
-API references: [GPT Luna](https://developers.openai.com/api/docs/models/gpt-6-luna), [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=responses).
+API references: [GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol), [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs?api-mode=responses).

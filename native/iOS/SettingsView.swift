@@ -36,7 +36,7 @@ struct SettingsView: View {
             } header: { Text("About you") }
 
             Section {
-                LabeledContent("Model", value: "GPT Luna")
+                LabeledContent("Model", value: "GPT-6.1 Sol")
                 if model.hasCoachAPIKey {
                     Label("API key saved on this iPhone", systemImage: "checkmark.shield")
                         .foregroundStyle(GymaStyle.accent)
