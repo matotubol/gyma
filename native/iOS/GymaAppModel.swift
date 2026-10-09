@@ -227,6 +227,7 @@ struct BackupDocument: FileDocument {
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { FileWrapper(regularFileWithContents: data) }
 }
 
+@MainActor
 private final class RestNotifications: NSObject, UNUserNotificationCenterDelegate {
     private let center = UNUserNotificationCenter.current()
     private let identifier = "gyma.native.rest"
@@ -252,7 +253,7 @@ private final class RestNotifications: NSObject, UNUserNotificationCenterDelegat
         try await center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: trigger))
     }
 
-    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .sound])
     }
