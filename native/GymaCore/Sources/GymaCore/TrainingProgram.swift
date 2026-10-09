@@ -190,6 +190,11 @@ public struct TrainingProgram: Codable, Sendable, Identifiable, Equatable {
                 return result(.review, "The load convention or machine increment is unspecified. Set an increment for this exercise before proposing more weight.", evidence: successful)
             }
             let increment = progressionRule.exerciseIncrements[planned.exerciseID] ?? progressionRule.loadIncrementKg
+            // Product guardrail: the available plate/stack step can be too large for an automatic proposal.
+            // This is not a physiological threshold; the coach can discuss repetitions or another explicit plan.
+            guard increment <= max(2.5, load * 0.15) else {
+                return result(.review, "The configured \(increment) kg step is too large for automatic progression from \(load) kg. Keep this load and review repetitions or another available increment with the coach. The app's limit is a conservative product rule, not a physiological threshold.", evidence: successful)
+            }
             let nextLoad = (load + increment) * 1000
             guard nextLoad.isFinite, nextLoad / 1000 <= 1000 else { return result(.review, "The next load exceeds supported limits. Review the prescription.", evidence: successful) }
             target.loadKg = nextLoad.rounded() / 1000

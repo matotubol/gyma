@@ -71,26 +71,48 @@ public struct TrainingAnalytics: Codable, Sendable, Equatable {
         let definitions = Dictionary(catalog.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let week = completed.filter { ($0.end ?? $0.start) > now.addingTimeInterval(-7 * 86400) }
         let month = completed.filter { ($0.end ?? $0.start) > now.addingTimeInterval(-28 * 86400) }
-        let ids = relevantExerciseIDs.isEmpty ? Set(completed.flatMap { $0.exercises.map(\.exerciseID) }).sorted() : Array(Set(relevantExerciseIDs)).sorted()
-        let exposures = ids.map { exerciseID in
-            let records: [ExerciseExposure] = completed.compactMap { workout in
-                guard let entry = workout.exercises.first(where: { $0.exerciseID == exerciseID }), entry.sets.contains(where: { $0.isWarmup != true }) else { return nil }
-                let sets = entry.sets.filter { $0.isWarmup == false }
-                return .init(workoutID: workout.id, completedAt: workout.end ?? workout.start, target: entry.target,
-                             workingSetCount: sets.count, unclassifiedSetCount: entry.sets.filter { $0.isWarmup == nil }.count,
-                             totalWorkingReps: sets.reduce(0) { $0 + $1.reps }, topWorkingLoadKg: sets.map(\.kg).max(),
-                             easySets: sets.filter { $0.effort == .easy }.count,
-                             challengingSets: sets.filter { $0.effort == .challenging }.count,
-                             limitSets: sets.filter { $0.effort == .limit }.count,
-                             unknownEffortSets: sets.filter { $0.effort == nil }.count)
+        let ids: [String] = relevantExerciseIDs.isEmpty ? Set(completed.flatMap { $0.exercises.map(\.exerciseID) }).sorted() : Array(Set(relevantExerciseIDs)).sorted()
+        var exposures: [ExerciseExposureSummary] = []
+        for exerciseID in ids {
+            var records: [ExerciseExposure] = []
+            for workout in completed {
+                guard let entry = workout.exercises.first(where: { $0.exerciseID == exerciseID }),
+                      entry.sets.contains(where: { $0.isWarmup != true }) else { continue }
+                records.append(exposure(workout: workout, entry: entry))
             }
-            return ExerciseExposureSummary(exerciseID: exerciseID, totalCompletedExposures: records.count,
-                                           lastPerformedAt: records.first?.completedAt, recentExposures: Array(records.prefix(4)))
+            let recentRecords = Array(records.prefix(4))
+            let summary = ExerciseExposureSummary(exerciseID: exerciseID, totalCompletedExposures: records.count,
+                                                  lastPerformedAt: records.first?.completedAt, recentExposures: recentRecords)
+            exposures.append(summary)
         }
         return .init(asOf: now, volume7Days: volume(workouts: week, definitions: definitions), volume28Days: volume(workouts: month, definitions: definitions),
                      exposures: exposures, dataQuality: quality(workouts: completed, definitions: definitions),
                      quality7Days: quality(workouts: week, definitions: definitions), quality28Days: quality(workouts: month, definitions: definitions),
                      interpretation: "Direct and secondary sets are separate catalog estimates, not fractional or effective sets. Warm-ups and unclassified sets are excluded. Windows use workout completion time. Missing effort stays unknown; these counts do not measure recovery or muscle growth.")
+    }
+
+    private static func exposure(workout: Workout, entry: WorkoutExercise) -> ExerciseExposure {
+        var workingCount = 0, unclassifiedCount = 0, totalReps = 0
+        var easyCount = 0, challengingCount = 0, limitCount = 0, unknownEffortCount = 0
+        var topLoad: Double?
+        for set in entry.sets {
+            if set.isWarmup == nil { unclassifiedCount += 1 }
+            guard set.isWarmup == false else { continue }
+            workingCount += 1
+            totalReps += set.reps
+            topLoad = topLoad.map { max($0, set.kg) } ?? set.kg
+            switch set.effort {
+            case .some(.easy): easyCount += 1
+            case .some(.challenging): challengingCount += 1
+            case .some(.limit): limitCount += 1
+            case nil: unknownEffortCount += 1
+            }
+        }
+        return ExerciseExposure(workoutID: workout.id, completedAt: workout.end ?? workout.start, target: entry.target,
+                                workingSetCount: workingCount, unclassifiedSetCount: unclassifiedCount,
+                                totalWorkingReps: totalReps, topWorkingLoadKg: topLoad,
+                                easySets: easyCount, challengingSets: challengingCount,
+                                limitSets: limitCount, unknownEffortSets: unknownEffortCount)
     }
 
     private static func volume(workouts: [Workout], definitions: [String: ExerciseDefinition]) -> [MuscleVolume] {

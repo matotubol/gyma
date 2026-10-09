@@ -55,6 +55,7 @@ public extension GymaState {
         guard let program = trainingProgram, let session = program.nextSession(history: workouts, now: now) else {
             throw GymaError.invalid("Save a program before preparing its next session.")
         }
+        try program.validate(catalog: catalog)
         try checkIn.validate()
         var exercises = program.nextExercises(history: workouts, now: now, catalog: catalog, priorPrograms: programHistory ?? [])
         // A local rule cannot assess a new pain report. Preserve the plan for discussion, with no increase.
@@ -95,7 +96,8 @@ public extension GymaState {
             exercises[index].target?.sets -= 1; shortened = true
         }
         if shortened {
-            exercises[0].target?.reason = "Shortened today's draft to fit about \(checkIn.timeMinutes) minutes while keeping the program's first-priority work. Duration is an estimate. The saved program is unchanged. " + (exercises[0].target?.reason ?? "")
+            let previousReason = exercises[0].target?.reason ?? ""
+            exercises[0].target?.reason = "Shortened today's draft to fit about \(checkIn.timeMinutes) minutes while keeping the program's first-priority work. Duration is an estimate. The saved program is unchanged. " + previousReason
         }
         var plan = WorkoutPlan(title: session.title, exercises: exercises, checkIn: checkIn, createdAt: now, scheduledFor: now)
         plan.programID = program.id; plan.programSessionID = session.id; plan.programRevision = program.revision

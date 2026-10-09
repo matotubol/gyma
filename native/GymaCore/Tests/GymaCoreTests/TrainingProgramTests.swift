@@ -152,6 +152,27 @@ final class TrainingProgramTests: XCTestCase {
         XCTAssertEqual(try recommendation(plan, records).target.loadKg, 65)
     }
 
+    func testOversizedAvailableIncrementRequiresReviewWithoutRaisingLoad() throws {
+        var smallTarget = target; smallTarget.loadKg = 10
+        var plan = program(target: smallTarget)
+        plan.progressionRule.exerciseIncrements["bench_press"] = 100
+        var records = [completed(id: "latest", daysAgo: 1, target: smallTarget), completed(id: "older", daysAgo: 5, target: smallTarget)]
+        for workoutIndex in records.indices {
+            for setIndex in records[workoutIndex].exercises[0].sets.indices {
+                records[workoutIndex].exercises[0].sets[setIndex].kg = 10
+            }
+        }
+        let oversized = try recommendation(plan, records)
+        XCTAssertEqual(oversized.action, .review)
+        XCTAssertEqual(oversized.target.loadKg, 10)
+        XCTAssertTrue(oversized.reason.contains("too large"))
+        XCTAssertTrue(oversized.reason.contains("product rule"))
+        plan.progressionRule.exerciseIncrements["bench_press"] = 2.5
+        let available = try recommendation(plan, records)
+        XCTAssertEqual(available.action, .increaseLoad)
+        XCTAssertEqual(available.target.loadKg, 12.5)
+    }
+
     func testNextExercisesIncludeTheReasonAndValidationRejectsUnsupportedPlans() throws {
         let plan = program()
         let next = try XCTUnwrap(plan.nextExercises(history: [], now: now).first)
