@@ -1,0 +1,125 @@
+diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
+index a0f478c..2714194 100644
+--- a/src-tauri/Cargo.lock
++++ b/src-tauri/Cargo.lock
+@@ -2731,8 +2731,6 @@ dependencies = [
+ [[package]]
+ name = "isideload"
+ version = "0.4.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "46de455a50785bb772f4a1e586420a12861a07f4607fe5b0a5b2507da6a5c4bd"
+ dependencies = [
+  "aes 0.9.3",
+  "aes-gcm",
+diff --git a/src-tauri/Cargo.toml b/src-tauri/Cargo.toml
+index d6dbdf2..8d6f5fe 100644
+--- a/src-tauri/Cargo.toml
++++ b/src-tauri/Cargo.toml
+@@ -23,7 +23,7 @@ tauri-plugin-opener = "2"
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+ idevice = { version = "0.1.68", features = ["usbmuxd", "house_arrest", "afc", "core_device_proxy", "remote_pairing", "tcp", "tunnel_tcp_stack", "xpc", "rsd", "pair"] }
+-isideload = { version = "0.4.3", features = ["fs-storage"] } #, git = "https://github.com/nab138/isideload", package = "isideload", branch = "apple-codesign-quick" }
++isideload = { version = "0.4.3", path = "../../isideload/isideload", features = ["fs-storage"] }
+ keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-sync-persistent"] }
+ tauri-plugin-store = "2"
+ futures = "0.3.31"
+diff --git a/src-tauri/src/device.rs b/src-tauri/src/device.rs
+index c62e6ca..2ad70d2 100644
+--- a/src-tauri/src/device.rs
++++ b/src-tauri/src/device.rs
+@@ -185,11 +185,17 @@ pub async fn get_provider_from_connection(
+     device_info: &DeviceInfo,
+     connection: &mut UsbmuxdConnection,
+ ) -> Result<UsbmuxdProvider, AppError> {
+-    let device = connection
+-        .get_device(&device_info.udid)
+-        .await
+-        .map_err(|e| {
+-            AppError::DeviceComsWithMessage("Failed to get device".into(), e.to_string())
++    let devices = connection.get_devices().await.map_err(|e| {
++        AppError::DeviceComsWithMessage("Failed to list device connections".into(), e.to_string())
++    })?;
++    let device = devices
++        .into_iter()
++        .find(|device| device.device_id == device_info.id && device.udid == device_info.udid)
++        .ok_or_else(|| {
++            AppError::DeviceComs(
++                "Selected device connection is no longer available; refresh and select it again"
++                    .into(),
++            )
+         })?;
+ 
+     let provider = device.to_provider(UsbmuxdAddr::from_env_var().unwrap(), "iloader");
+diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
+index f96ce33..ce1d3e2 100644
+--- a/src-tauri/tauri.conf.json
++++ b/src-tauri/tauri.conf.json
+@@ -12,7 +12,7 @@
+   "app": {
+     "windows": [
+       {
+-        "title": "iloader",
++        "title": "iloader 2.3.6 — Unofficial Watch build",
+         "width": 800,
+         "height": 600,
+         "minHeight": 300,
+@@ -25,16 +25,14 @@
+   },
+   "plugins": {
+     "updater": {
+-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUwRDc0NjBERkEzN0U1MzYKUldRMjVUZjZEVWJYNFA0eWtoOGRyRFBtc3BnN20zWFpzbmVNaiswVmhlNm9GUzFzTjRPYmxSaHIK",
+-      "endpoints": [
+-        "https://github.com/nab138/iloader/releases/latest/download/latest.json"
+-      ]
++      "pubkey": "",
++      "endpoints": []
+     }
+   },
+   "bundle": {
+     "active": true,
+     "targets": "all",
+-    "createUpdaterArtifacts": true,
++    "createUpdaterArtifacts": false,
+     "category": "Utility",
+     "icon": [
+       "icons/32x32.png",
+@@ -44,4 +42,4 @@
+       "icons/icon.ico"
+     ]
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/src/App.tsx b/src/App.tsx
+index 61f0916..cdf174c 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -22,7 +22,6 @@ import { AppIds } from "./pages/AppIds";
+ import { Settings } from "./pages/Settings";
+ import { Pairing } from "./pages/Pairing";
+ import { getVersion } from "@tauri-apps/api/app";
+-import { checkForUpdates } from "./update";
+ import logo from "./iloader.svg";
+ import { GlassCard } from "./components/GlassCard";
+ import { useTranslation } from "react-i18next";
+@@ -68,10 +67,6 @@ function App() {
+     fetchVersion();
+   }, []);
+ 
+-  useEffect(() => {
+-    checkForUpdates();
+-  }, []);
+-
+   const shortcutLabel = useCallback(
+     (mac: string, windows: string, linux?: string) => {
+       if (platform === "mac") return mac;
+@@ -186,7 +181,7 @@ function App() {
+             <img src={logo} alt={t("app.logo_alt")} className="logo" />
+             <div>
+               <h1 className="title">iloader</h1>
+-              <p className="subtitle">{t("subtitle")}</p>
++              <p className="subtitle">Unofficial Watch build · Gyma</p>
+             </div>
+           </div>
+           <span className="version-pill">

@@ -1,0 +1,1830 @@
+diff --git a/isideload/Cargo.toml b/isideload/Cargo.toml
+index cc3a8c5..87b63ed 100644
+--- a/isideload/Cargo.toml
++++ b/isideload/Cargo.toml
+@@ -23,7 +23,7 @@ fs-storage = []
+ # Once that becomes stable, hopefuly duplicate dependencies should clean up.\
+ # Until then, I will wince in pain every time I see how long the output of cargo tree -d is.
+ [dependencies]
+-idevice = { version = "0.1.61", optional = true, default-features = false, features = ["ring", "afc", "installation_proxy", "remote_pairing", "rsd"]}
++idevice = { version = "0.1.61", optional = true, default-features = false, features = ["ring", "afc", "installation_proxy", "remote_pairing", "rsd", "companion_proxy", "pair"]}
+ plist = "1.8"
+ plist-macro = "0.1.4"
+ reqwest = { version = "0.13.2", default-features = false, features = ["json", "gzip", "rustls-no-provider", "http2", "charset", "system-proxy"] }
+@@ -47,7 +47,7 @@ cbc = { version = "0.2.0", features = ["alloc"] }
+ aes = "0.9.0"
+ aes-gcm = "0.11.1"
+ rsa = { version = "0.9.10" }
+-tokio = { version = "1.49" }
++tokio = { version = "1.49", features = ["time"] }
+ keyring = { version = "3.6.3", features = ["apple-native", "linux-native-sync-persistent", "windows-native"], optional = true }
+ rcgen = { version = "0.14.7", default-features = false, features = ["ring", "pem"] }
+ p12-keystore = { version = "0.3.0-rc4", package = "isideload-p12-keystore" }
+diff --git a/isideload/src/dev/app_ids.rs b/isideload/src/dev/app_ids.rs
+index 37203a1..6924f79 100644
+--- a/isideload/src/dev/app_ids.rs
++++ b/isideload/src/dev/app_ids.rs
+@@ -1,7 +1,7 @@
+ use crate::{
+     dev::{
+         developer_session::DeveloperSession,
+-        device_type::{DeveloperDeviceType, dev_url},
++        device_type::{DeveloperDeviceType, apply_platform_to_body, dev_url},
+         normalize_app_names,
+         teams::DeveloperTeam,
+     },
+@@ -64,11 +64,13 @@ pub trait AppIdsApi {
+         identifier: &str,
+         device_type: impl Into<Option<DeveloperDeviceType>> + Send,
+     ) -> Result<AppId, Report> {
+-        let body = plist!(dict {
++        let device_type = device_type.into();
++        let mut body = plist!(dict {
+             "teamId": &team.team_id,
+             "identifier": identifier,
+             "name": normalize_app_names(name),
+         });
++        apply_platform_to_body(&mut body, &device_type);
+ 
+         let app_id: AppId = self
+             .developer_session()
+@@ -84,9 +86,11 @@ pub trait AppIdsApi {
+         team: &DeveloperTeam,
+         device_type: impl Into<Option<DeveloperDeviceType>> + Send,
+     ) -> Result<ListAppIdsResponse, Report> {
+-        let body = plist!(dict {
++        let device_type = device_type.into();
++        let mut body = plist!(dict {
+             "teamId": &team.team_id,
+         });
++        apply_platform_to_body(&mut body, &device_type);
+ 
+         let response: Value = self
+             .developer_session()
+@@ -116,6 +120,7 @@ pub trait AppIdsApi {
+         features: Dictionary,
+         device_type: impl Into<Option<DeveloperDeviceType>> + Send,
+     ) -> Result<AppId, Report> {
++        let device_type = device_type.into();
+         let mut body = plist!(dict {
+             "teamId": &team.team_id,
+             "appIdId": &app_id.app_id_id
+@@ -124,6 +129,7 @@ pub trait AppIdsApi {
+         for (key, value) in features {
+             body.insert(key.clone(), value.clone());
+         }
++        apply_platform_to_body(&mut body, &device_type);
+ 
+         Ok(self
+             .developer_session()
+@@ -138,10 +144,12 @@ pub trait AppIdsApi {
+         app_id_id: &str,
+         device_type: impl Into<Option<DeveloperDeviceType>> + Send,
+     ) -> Result<(), Report> {
+-        let body = plist!(dict {
++        let device_type = device_type.into();
++        let mut body = plist!(dict {
+             "teamId": &team.team_id,
+             "appIdId": app_id_id,
+         });
++        apply_platform_to_body(&mut body, &device_type);
+ 
+         self.developer_session()
+             .send_dev_request_no_response(&dev_url("deleteAppId", device_type), body)
+@@ -157,10 +165,12 @@ pub trait AppIdsApi {
+         app_id: &AppId,
+         device_type: impl Into<Option<DeveloperDeviceType>> + Send,
+     ) -> Result<Profile, Report> {
+-        let body = plist!(dict {
++        let device_type = device_type.into();
++        let mut body = plist!(dict {
+             "teamId": &team.team_id,
+             "appIdId": &app_id.app_id_id,
+         });
++        apply_platform_to_body(&mut body, &device_type);
+ 
+         let response: Profile = self
+             .developer_session()
+diff --git a/isideload/src/dev/device_type.rs b/isideload/src/dev/device_type.rs
+index d2a1001..8dd3458 100644
+--- a/isideload/src/dev/device_type.rs
++++ b/isideload/src/dev/device_type.rs
+@@ -1,3 +1,5 @@
++use plist::{Dictionary, Value};
++
+ #[derive(Debug, Clone)]
+ pub enum DeveloperDeviceType {
+     Any,
+@@ -12,11 +14,20 @@ impl DeveloperDeviceType {
+             DeveloperDeviceType::Any => "",
+             DeveloperDeviceType::Ios => "ios/",
+             DeveloperDeviceType::Tvos => "tvos/",
+-            DeveloperDeviceType::Watchos => "watchos/",
++            DeveloperDeviceType::Watchos => "ios/",
+         }
+     }
+ }
+ 
++pub fn apply_platform_to_body(body: &mut Dictionary, device_type: &Option<DeveloperDeviceType>) {
++    if let Some(DeveloperDeviceType::Watchos) = device_type.as_ref() {
++        body.insert(
++            "DTDK_Platform".to_string(),
++            Value::String("watchos".to_string()),
++        );
++    }
++}
++
+ pub fn dev_url(endpoint: &str, device_type: impl Into<Option<DeveloperDeviceType>>) -> String {
+     format!(
+         "https://developerservices2.apple.com/services/QH65B2/{}{}.action?clientId=XABBG36SBA",
+@@ -27,3 +38,73 @@ pub fn dev_url(endpoint: &str, device_type: impl Into<Option<DeveloperDeviceType
+         endpoint,
+     )
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn watchos_uses_ios_developer_service_path() {
++        assert_eq!(
++            dev_url("listDevices", Some(DeveloperDeviceType::Watchos),),
++            "https://developerservices2.apple.com/services/QH65B2/ios/listDevices.action?clientId=XABBG36SBA"
++        );
++    }
++
++    #[test]
++    fn watchos_sets_platform_marker() {
++        let mut body = Dictionary::new();
++
++        apply_platform_to_body(&mut body, &Some(DeveloperDeviceType::Watchos));
++
++        assert_eq!(
++            body.get("DTDK_Platform").and_then(Value::as_string),
++            Some("watchos")
++        );
++    }
++
++    #[test]
++    fn watch_registration_and_profiles_use_ios_path_with_watch_body() {
++        for endpoint in [
++            "listDevices",
++            "addDevice",
++            "listAppIds",
++            "addAppId",
++            "updateAppId",
++            "deleteAppId",
++            "downloadTeamProvisioningProfile",
++        ] {
++            let device_type = Some(DeveloperDeviceType::Watchos);
++            let mut body = Dictionary::new();
++            body.insert("teamId".into(), Value::String("test-team".into()));
++            apply_platform_to_body(&mut body, &device_type);
++            let url = dev_url(endpoint, device_type);
++            assert!(url.contains(&format!("/ios/{endpoint}.action")));
++            assert_eq!(
++                body.get("DTDK_Platform").and_then(Value::as_string),
++                Some("watchos")
++            );
++            assert_eq!(
++                body.get("teamId").and_then(Value::as_string),
++                Some("test-team")
++            );
++        }
++    }
++
++    #[test]
++    fn existing_ios_and_tvos_requests_are_unchanged() {
++        for (kind, path) in [
++            (None, "ios/"),
++            (Some(DeveloperDeviceType::Ios), "ios/"),
++            (Some(DeveloperDeviceType::Tvos), "tvos/"),
++            (Some(DeveloperDeviceType::Any), ""),
++        ] {
++            let mut body = Dictionary::new();
++            apply_platform_to_body(&mut body, &kind);
++            assert!(!body.contains_key("DTDK_Platform"));
++            assert!(
++                dev_url("listDevices", kind).contains(&format!("/QH65B2/{path}listDevices.action"))
++            );
++        }
++    }
++}
+diff --git a/isideload/src/dev/devices.rs b/isideload/src/dev/devices.rs
+index 8fb5208..59ebe09 100644
+--- a/isideload/src/dev/devices.rs
++++ b/isideload/src/dev/devices.rs
+@@ -2,7 +2,7 @@ use crate::{
+     SideloadError,
+     dev::{
+         developer_session::DeveloperSession,
+-        device_type::{DeveloperDeviceType, dev_url},
++        device_type::{DeveloperDeviceType, apply_platform_to_body, dev_url},
+         teams::DeveloperTeam,
+     },
+ };
+@@ -30,9 +30,12 @@ pub trait DevicesApi {
+         team: &DeveloperTeam,
+         device_type: impl Into<Option<DeveloperDeviceType>> + Send,
+     ) -> Result<Vec<DeveloperDevice>, Report> {
+-        let body = plist!(dict {
++        let device_type = device_type.into();
++
++        let mut body = plist!(dict {
+             "teamId": &team.team_id,
+         });
++        apply_platform_to_body(&mut body, &device_type);
+ 
+         let devices: Vec<DeveloperDevice> = self
+             .developer_session()
+@@ -50,11 +53,14 @@ pub trait DevicesApi {
+         udid: &str,
+         device_type: impl Into<Option<DeveloperDeviceType>> + Send,
+     ) -> Result<DeveloperDevice, Report> {
+-        let body = plist!(dict {
++        let device_type = device_type.into();
++
++        let mut body = plist!(dict {
+             "teamId": &team.team_id,
+             "name": name,
+             "deviceNumber": udid,
+         });
++        apply_platform_to_body(&mut body, &device_type);
+ 
+         let device: DeveloperDevice = self
+             .developer_session()
+diff --git a/isideload/src/sideload/application.rs b/isideload/src/sideload/application.rs
+index 49e1c58..920911c 100644
+--- a/isideload/src/sideload/application.rs
++++ b/isideload/src/sideload/application.rs
+@@ -4,6 +4,7 @@
+ use crate::SideloadError;
+ use crate::dev::app_ids::{AppId, AppIdsApi};
+ use crate::dev::developer_session::DeveloperSession;
++use crate::dev::device_type::DeveloperDeviceType;
+ use crate::dev::teams::DeveloperTeam;
+ use crate::sideload::bundle::Bundle;
+ use crate::sideload::cert_identity::CertificateIdentity;
+@@ -16,6 +17,7 @@ use rootcause::option_ext::OptionExt;
+ use rootcause::prelude::*;
+ use sha1::Digest;
+ use sha2::Sha256;
++use std::collections::HashSet;
+ use std::io::Write;
+ use std::path::PathBuf;
+ use tracing::{info, warn};
+@@ -163,97 +165,114 @@ impl Application {
+         main_app_bundle_id: &str,
+         main_app_id_str: &str,
+     ) -> Result<(), Report> {
+-        let extensions = self.bundle.app_extensions_mut();
+-        for ext in extensions.iter_mut() {
+-            if let Some(id) = ext.bundle_identifier() {
+-                if !(id.starts_with(main_app_bundle_id) && id.len() > main_app_bundle_id.len()) {
+-                    bail!(SideloadError::InvalidBundle(format!(
+-                        "Extension {} is not part of the main app bundle identifier: {}",
+-                        ext.bundle_name().unwrap_or("Unknown"),
+-                        id
+-                    )));
+-                } else {
+-                    ext.set_bundle_identifier(&format!(
+-                        "{}{}",
+-                        main_app_id_str,
+-                        &id[main_app_bundle_id.len()..]
+-                    ));
+-                }
+-            }
+-        }
++        self.bundle
++            .rewrite_embedded_bundle_ids(main_app_bundle_id, main_app_id_str)?;
+         self.bundle.set_bundle_identifier(main_app_id_str);
+ 
+         Ok(())
+     }
+ 
++    pub fn watch_bundle_ids(&self) -> HashSet<String> {
++        self.bundle
++            .collect_watch_apps()
++            .into_iter()
++            .flat_map(|watch_app| watch_app.collect_app_id_bundles())
++            .filter_map(|bundle| bundle.bundle_identifier().map(str::to_string))
++            .collect()
++    }
++
+     pub async fn register_app_ids(
+         &self,
+         //mode: &ExtensionsBehavior,
+         dev_session: &mut DeveloperSession,
+         team: &DeveloperTeam,
+     ) -> Result<Vec<AppId>, Report> {
+-        let extension_refs: Vec<_> = self.bundle.app_extensions().iter().collect();
+-        let mut bundles_with_app_id = vec![&self.bundle];
+-        bundles_with_app_id.extend(extension_refs);
+-
+-        let list_app_ids_response = dev_session
+-            .list_app_ids(team, None)
+-            .await
+-            .context("Failed to list app IDs for the developer team")?;
+-        let app_ids_to_register = bundles_with_app_id
++        let bundles_with_app_id = self.bundle.collect_app_id_bundles();
++        let watch_bundle_ids = self.watch_bundle_ids();
++
++        let ios_bundles: Vec<_> = bundles_with_app_id
+             .iter()
++            .copied()
+             .filter(|bundle| {
+-                let bundle_id = bundle.bundle_identifier().unwrap_or("");
+-                !list_app_ids_response
+-                    .app_ids
+-                    .iter()
+-                    .any(|app_id| app_id.identifier == bundle_id)
++                bundle
++                    .bundle_identifier()
++                    .is_some_and(|id| !watch_bundle_ids.contains(id))
+             })
+-            .collect::<Vec<_>>();
++            .collect();
+ 
+-        if let Some(available) = list_app_ids_response.available_quantity {
+-            if available < 0 {
+-                warn!(
+-                    "Apple reports a negative number of available app IDs ({}), which shouldn't be possible.",
+-                    available
+-                );
+-                // Since the App IDs should never be negative in the first place, it might still be worth trying to register them anyways. Who knows.
+-            } else {
+-                // We only do the conversion if available is positive, else we get an integral conversion error
+-                if app_ids_to_register.len() > available.try_into()? {
++        let watch_bundles: Vec<_> = bundles_with_app_id
++            .iter()
++            .copied()
++            .filter(|bundle| {
++                bundle
++                    .bundle_identifier()
++                    .is_some_and(|id| watch_bundle_ids.contains(id))
++            })
++            .collect();
++
++        let mut registered_app_ids = Vec::new();
++
++        for (device_type, bundles) in [
++            (DeveloperDeviceType::Ios, ios_bundles),
++            (DeveloperDeviceType::Watchos, watch_bundles),
++        ] {
++            if bundles.is_empty() {
++                continue;
++            }
++
++            let list_app_ids_response = dev_session
++                .list_app_ids(team, Some(device_type.clone()))
++                .await
++                .context("Failed to list app IDs for the developer team")?;
++
++            let app_ids_to_register = bundles
++                .iter()
++                .filter(|bundle| {
++                    let bundle_id = bundle.bundle_identifier().unwrap_or("");
++                    !list_app_ids_response
++                        .app_ids
++                        .iter()
++                        .any(|app_id| app_id.identifier == bundle_id)
++                })
++                .collect::<Vec<_>>();
++
++            if let Some(available) = list_app_ids_response.available_quantity {
++                if available < 0 {
++                    warn!(
++                        "Apple reports a negative number of available app IDs ({}), which shouldn't be possible.",
++                        available
++                    );
++                } else if app_ids_to_register.len() > available.try_into()? {
+                     bail!(
+-                        "Not enough available app IDs. {} {} required, but only {} {} available.",
++                        "Not enough available app IDs. {} required, but only {} available.",
+                         app_ids_to_register.len(),
+-                        if app_ids_to_register.len() == 1 {
+-                            "is"
+-                        } else {
+-                            "are"
+-                        },
+-                        available,
+-                        if available == 1 { "is" } else { "are" }
++                        available
+                     );
+                 }
+             }
+-        }
+ 
+-        for bundle in app_ids_to_register {
+-            let id = bundle.bundle_identifier().unwrap_or("");
+-            let name = bundle.bundle_name().unwrap_or("");
+-            dev_session.add_app_id(team, name, id, None).await?;
+-        }
+-        let list_app_id_response = dev_session.list_app_ids(team, None).await?;
+-        let app_ids: Vec<_> = list_app_id_response
+-            .app_ids
+-            .into_iter()
+-            .filter(|app_id| {
+-                bundles_with_app_id
++            for bundle in app_ids_to_register {
++                let id = bundle.bundle_identifier().unwrap_or("");
++                let name = bundle.bundle_name().unwrap_or("");
++
++                dev_session
++                    .add_app_id(team, name, id, Some(device_type.clone()))
++                    .await?;
++            }
++
++            let response = dev_session
++                .list_app_ids(team, Some(device_type.clone()))
++                .await?;
++
++            registered_app_ids.extend(response.app_ids.into_iter().filter(|app_id| {
++                bundles
+                     .iter()
+                     .any(|bundle| app_id.identifier == bundle.bundle_identifier().unwrap_or(""))
+-            })
+-            .collect();
++            }));
++        }
+ 
+         info!("Registered app IDs");
+-        Ok(app_ids)
++        Ok(registered_app_ids)
+     }
+ 
+     pub async fn apply_special_app_behavior(
+diff --git a/isideload/src/sideload/bundle.rs b/isideload/src/sideload/bundle.rs
+index 7b1fb69..966880b 100644
+--- a/isideload/src/sideload/bundle.rs
++++ b/isideload/src/sideload/bundle.rs
+@@ -18,6 +18,7 @@ pub struct Bundle {
+ 
+     app_extensions: Vec<Bundle>,
+     frameworks: Vec<Bundle>,
++    watch_apps: Vec<Bundle>,
+     _libraries: Vec<String>,
+ }
+ 
+@@ -81,6 +82,27 @@ impl Bundle {
+             Vec::new()
+         };
+ 
++        // Watch companions are app-ID-bearing bundles, separate from PlugIns.
++        // Do not silently drop a malformed Watch app: that would install only
++        // the phone while appearing to have successfully handled its companion.
++        let watch_dir = bundle_path.join("Watch");
++        let mut watch_apps = Vec::new();
++        if isideload_vfs::fs::metadata(&watch_dir).is_ok() {
++            for entry in
++                isideload_vfs::fs::read_dir(&watch_dir).context("Failed to read Watch directory")?
++            {
++                let entry = entry.context("Failed to read Watch directory entry")?;
++                if entry.file_type()?.is_dir()
++                    && entry
++                        .path()
++                        .extension()
++                        .is_some_and(|extension| extension == "app")
++                {
++                    watch_apps.push(Bundle::new(entry.path())?);
++                }
++            }
++        }
++
+         // Find all .dylib files in the bundle directory (recursive)
+         let libraries = find_dylibs(&bundle_path, &bundle_path)?;
+ 
+@@ -89,6 +111,7 @@ impl Bundle {
+             bundle_dir: bundle_path,
+             app_extensions,
+             frameworks,
++            watch_apps,
+             _libraries: libraries,
+         })
+     }
+@@ -143,6 +166,121 @@ impl Bundle {
+         &mut self.frameworks
+     }
+ 
++    pub fn watch_apps(&self) -> &[Bundle] {
++        &self.watch_apps
++    }
++
++    pub fn watch_apps_mut(&mut self) -> &mut [Bundle] {
++        &mut self.watch_apps
++    }
++
++    fn rewritten_child_id(id: &str, old_host: &str, new_host: &str) -> Result<String, Report> {
++        let suffix = id
++            .strip_prefix(old_host)
++            .filter(|suffix| suffix.starts_with('.'));
++        match suffix {
++            Some(suffix) => Ok(format!("{new_host}{suffix}")),
++            None => bail!(SideloadError::InvalidBundle(format!(
++                "Nested app identifier {id} is not a child of {old_host}"
++            ))),
++        }
++    }
++
++    fn rewrite_reference(
++        info: &mut Dictionary,
++        key: &str,
++        old_host: &str,
++        new_host: &str,
++    ) -> Result<(), Report> {
++        if let Some(value) = info.get_mut(key) {
++            let id = value
++                .as_string()
++                .ok_or_else(|| report!("{key} must be a bundle identifier string"))?;
++            let rewritten = if id == old_host {
++                new_host.to_string()
++            } else {
++                Self::rewritten_child_id(id, old_host, new_host)?
++            };
++            *value = Value::String(rewritten);
++        }
++        Ok(())
++    }
++
++    pub fn rewrite_embedded_bundle_ids(
++        &mut self,
++        old_host: &str,
++        new_host: &str,
++    ) -> Result<(), Report> {
++        // Older WatchKit extensions link back to the Watch app in this nested
++        // dictionary; rewriting only CFBundleIdentifier breaks that relationship.
++        Self::rewrite_reference(
++            &mut self.app_info,
++            "WKAppBundleIdentifier",
++            old_host,
++            new_host,
++        )?;
++        if let Some(attributes) = self
++            .app_info
++            .get_mut("NSExtension")
++            .and_then(Value::as_dictionary_mut)
++            .and_then(|extension| extension.get_mut("NSExtensionAttributes"))
++            .and_then(Value::as_dictionary_mut)
++        {
++            Self::rewrite_reference(attributes, "WKAppBundleIdentifier", old_host, new_host)?;
++        }
++
++        for extension in &mut self.app_extensions {
++            let id = extension
++                .bundle_identifier()
++                .ok_or_else(|| report!("Extension is missing CFBundleIdentifier"))?;
++            let rewritten = Self::rewritten_child_id(id, old_host, new_host)?;
++            extension.set_bundle_identifier(&rewritten);
++            extension.rewrite_embedded_bundle_ids(old_host, new_host)?;
++        }
++        for watch in &mut self.watch_apps {
++            if let Some(companion) = watch.app_info.get("WKCompanionAppBundleIdentifier") {
++                if companion.as_string() != Some(old_host) {
++                    bail!(SideloadError::InvalidBundle(
++                        "Watch companion identifier does not match the iPhone app".to_string()
++                    ));
++                }
++            }
++            let id = watch
++                .bundle_identifier()
++                .ok_or_else(|| report!("Watch app is missing CFBundleIdentifier"))?;
++            let rewritten = Self::rewritten_child_id(id, old_host, new_host)?;
++            watch.set_bundle_identifier(&rewritten);
++            watch.app_info.insert(
++                "WKCompanionAppBundleIdentifier".to_string(),
++                Value::String(new_host.to_string()),
++            );
++            watch.rewrite_embedded_bundle_ids(old_host, new_host)?;
++        }
++        Ok(())
++    }
++
++    fn collect_app_id_bundles_into<'a>(&'a self, bundles: &mut Vec<&'a Bundle>) {
++        for child in self.app_extensions.iter().chain(&self.watch_apps) {
++            bundles.push(child);
++            child.collect_app_id_bundles_into(bundles);
++        }
++    }
++
++    pub fn collect_app_id_bundles(&self) -> Vec<&Bundle> {
++        let mut bundles = vec![self];
++        self.collect_app_id_bundles_into(&mut bundles);
++        bundles
++    }
++
++    pub fn collect_watch_apps(&self) -> Vec<&Bundle> {
++        let mut watches = Vec::new();
++        for child in self.app_extensions.iter().chain(&self.watch_apps) {
++            watches.extend(child.collect_watch_apps());
++        }
++        watches.extend(self.watch_apps.iter());
++        watches
++    }
++
+     pub fn write_info(&self) -> Result<(), Report> {
+         let info_plist_path = self.bundle_dir.join("Info.plist");
+         // plist::to_file_binary(&info_plist_path, &self.app_info).context(
+@@ -161,12 +299,26 @@ impl Bundle {
+         Ok(())
+     }
+ 
++    pub fn write_info_recursive(&self) -> Result<(), Report> {
++        self.write_info()?;
++        for child in self
++            .app_extensions
++            .iter()
++            .chain(&self.watch_apps)
++            .chain(&self.frameworks)
++        {
++            child.write_info_recursive()?;
++        }
++        Ok(())
++    }
++
+     fn from_dylib_path(dylib_path: PathBuf) -> Self {
+         Self {
+             app_info: Dictionary::new(),
+             bundle_dir: dylib_path,
+             app_extensions: Vec::new(),
+             frameworks: Vec::new(),
++            watch_apps: Vec::new(),
+             _libraries: Vec::new(),
+         }
+     }
+@@ -188,6 +340,10 @@ impl Bundle {
+             bundles.push(bundle.clone());
+             bundle.collect_nested_bundles_into(bundles);
+         }
++        for bundle in &self.watch_apps {
++            bundles.push(bundle.clone());
++            bundle.collect_nested_bundles_into(bundles);
++        }
+     }
+ 
+     pub fn collect_nested_bundles(&self) -> Vec<Bundle> {
+@@ -259,3 +415,221 @@ fn find_dylibs(dir: &Path, bundle_root: &Path) -> Result<Vec<String>, Report> {
+     collect_dylibs(dir, bundle_root, &mut libraries)?;
+     Ok(libraries)
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::sideload::application::Application;
++
++    fn bundle(id: &str) -> Bundle {
++        let mut info = Dictionary::new();
++        info.insert("CFBundleIdentifier".into(), Value::String(id.into()));
++        Bundle {
++            app_info: info,
++            bundle_dir: PathBuf::from(id),
++            app_extensions: Vec::new(),
++            frameworks: Vec::new(),
++            watch_apps: Vec::new(),
++            _libraries: Vec::new(),
++        }
++    }
++
++    fn paired_app() -> Application {
++        let mut host = bundle("com.example.gyma");
++        let mut watch = bundle("com.example.gyma.watchkitapp");
++        watch.app_info.insert(
++            "WKCompanionAppBundleIdentifier".into(),
++            Value::String("com.example.gyma".into()),
++        );
++        let mut extension = bundle("com.example.gyma.watchkitapp.extension");
++        let mut attributes = Dictionary::new();
++        attributes.insert(
++            "WKAppBundleIdentifier".into(),
++            Value::String("com.example.gyma.watchkitapp".into()),
++        );
++        let mut metadata = Dictionary::new();
++        metadata.insert(
++            "NSExtensionAttributes".into(),
++            Value::Dictionary(attributes),
++        );
++        extension
++            .app_info
++            .insert("NSExtension".into(), Value::Dictionary(metadata));
++        extension.app_info.insert(
++            "BGTaskSchedulerPermittedIdentifiers".into(),
++            Value::Array(vec![Value::String(
++                "com.example.gyma.watchkitapp.extension.refresh".into(),
++            )]),
++        );
++        watch.app_extensions.push(extension);
++        host.watch_apps.push(watch);
++        host.app_extensions.push(bundle("com.example.gyma.widget"));
++        host.frameworks.push(bundle("org.example.framework"));
++        Application { bundle: host }
++    }
++
++    #[test]
++    fn rewrites_host_watch_extension_relationships_and_background_tasks() {
++        let mut app = paired_app();
++        app.update_bundle_id("com.example.gyma", "com.example.gyma.TEAM")
++            .unwrap();
++        let watch = &app.bundle.watch_apps()[0];
++        let extension = &watch.app_extensions()[0];
++        assert_eq!(
++            app.bundle.bundle_identifier(),
++            Some("com.example.gyma.TEAM")
++        );
++        assert_eq!(
++            watch.bundle_identifier(),
++            Some("com.example.gyma.TEAM.watchkitapp")
++        );
++        assert_eq!(
++            watch.app_info["WKCompanionAppBundleIdentifier"].as_string(),
++            Some("com.example.gyma.TEAM")
++        );
++        assert_eq!(
++            extension.bundle_identifier(),
++            Some("com.example.gyma.TEAM.watchkitapp.extension")
++        );
++        let attributes =
++            extension.app_info["NSExtension"].as_dictionary().unwrap()["NSExtensionAttributes"]
++                .as_dictionary()
++                .unwrap();
++        assert_eq!(
++            attributes["WKAppBundleIdentifier"].as_string(),
++            Some("com.example.gyma.TEAM.watchkitapp")
++        );
++        assert_eq!(
++            extension.app_info["BGTaskSchedulerPermittedIdentifiers"]
++                .as_array()
++                .unwrap()[0]
++                .as_string(),
++            Some("com.example.gyma.TEAM.watchkitapp.extension.refresh")
++        );
++        assert_eq!(
++            app.bundle.app_extensions()[0].bundle_identifier(),
++            Some("com.example.gyma.TEAM.widget")
++        );
++        assert_eq!(
++            app.bundle.frameworks()[0].bundle_identifier(),
++            Some("org.example.framework")
++        );
++    }
++
++    #[test]
++    fn partitions_watch_app_ids_from_iphone_extensions_and_frameworks() {
++        let app = paired_app();
++        let watch_ids = app.watch_bundle_ids();
++        assert_eq!(watch_ids.len(), 2);
++        assert!(watch_ids.contains("com.example.gyma.watchkitapp"));
++        assert!(watch_ids.contains("com.example.gyma.watchkitapp.extension"));
++        assert!(!watch_ids.contains("com.example.gyma.widget"));
++        let app_ids = app.bundle.collect_app_id_bundles();
++        assert_eq!(app_ids.len(), 4);
++        assert!(
++            !app_ids
++                .iter()
++                .any(|b| b.bundle_identifier() == Some("org.example.framework"))
++        );
++    }
++
++    #[test]
++    fn rejects_similar_but_unrelated_child_identifier() {
++        let mut app = paired_app();
++        app.bundle.watch_apps[0].set_bundle_identifier("com.example.gymax.watchkitapp");
++        assert!(
++            app.update_bundle_id("com.example.gyma", "com.example.gyma.TEAM")
++                .is_err()
++        );
++    }
++
++    #[test]
++    fn rejects_watch_linked_to_another_phone_app() {
++        let mut app = paired_app();
++        app.bundle.watch_apps[0].app_info.insert(
++            "WKCompanionAppBundleIdentifier".into(),
++            Value::String("com.other.app".into()),
++        );
++        assert!(
++            app.update_bundle_id("com.example.gyma", "com.example.gyma.TEAM")
++                .is_err()
++        );
++    }
++
++    #[cfg(not(target_arch = "wasm32"))]
++    struct Fixture(PathBuf);
++
++    #[cfg(not(target_arch = "wasm32"))]
++    impl Fixture {
++        fn new() -> Self {
++            let path =
++                std::env::temp_dir().join(format!("isideload-watch-test-{}", uuid::Uuid::new_v4()));
++            std::fs::create_dir_all(&path).unwrap();
++            Self(path)
++        }
++
++        fn write(&self, relative: &str, info: &Dictionary) {
++            let directory = self.0.join(relative);
++            std::fs::create_dir_all(&directory).unwrap();
++            plist::to_file_binary(directory.join("Info.plist"), info).unwrap();
++        }
++    }
++
++    #[cfg(not(target_arch = "wasm32"))]
++    impl Drop for Fixture {
++        fn drop(&mut self) {
++            let root = self.0.canonicalize().unwrap();
++            assert_eq!(
++                root.parent().unwrap(),
++                std::env::temp_dir().canonicalize().unwrap()
++            );
++            assert!(
++                root.file_name()
++                    .unwrap()
++                    .to_string_lossy()
++                    .starts_with("isideload-watch-test-")
++            );
++            std::fs::remove_dir_all(root).unwrap();
++        }
++    }
++
++    #[cfg(not(target_arch = "wasm32"))]
++    #[test]
++    fn discovers_nested_watch_bundles_and_persists_rewritten_plists() {
++        let fixture = Fixture::new();
++        let original = paired_app();
++        let watch = &original.bundle.watch_apps()[0];
++        fixture.write("Host.app", &original.bundle.app_info);
++        fixture.write("Host.app/Watch/Watch.app", &watch.app_info);
++        fixture.write(
++            "Host.app/Watch/Watch.app/PlugIns/Extension.appex",
++            &watch.app_extensions()[0].app_info,
++        );
++        let mut app = Application {
++            bundle: Bundle::new(fixture.0.join("Host.app")).unwrap(),
++        };
++        assert_eq!(app.watch_bundle_ids().len(), 2);
++        app.update_bundle_id("com.example.gyma", "com.example.gyma.TEAM")
++            .unwrap();
++        app.bundle.write_info_recursive().unwrap();
++        let reread = Bundle::new(fixture.0.join("Host.app")).unwrap();
++        assert_eq!(reread.bundle_identifier(), Some("com.example.gyma.TEAM"));
++        assert_eq!(
++            reread.watch_apps()[0].app_info["WKCompanionAppBundleIdentifier"].as_string(),
++            Some("com.example.gyma.TEAM")
++        );
++        assert_eq!(
++            reread.watch_apps()[0].app_extensions()[0].bundle_identifier(),
++            Some("com.example.gyma.TEAM.watchkitapp.extension")
++        );
++    }
++
++    #[cfg(not(target_arch = "wasm32"))]
++    #[test]
++    fn does_not_silently_drop_a_malformed_watch_app() {
++        let fixture = Fixture::new();
++        fixture.write("Host.app", &bundle("com.example.gyma").app_info);
++        std::fs::create_dir_all(fixture.0.join("Host.app/Watch/Broken.app")).unwrap();
++        assert!(Bundle::new(fixture.0.join("Host.app")).is_err());
++    }
++}
+diff --git a/isideload/src/sideload/mod.rs b/isideload/src/sideload/mod.rs
+index 5e59ac5..ff70446 100644
+--- a/isideload/src/sideload/mod.rs
++++ b/isideload/src/sideload/mod.rs
+@@ -4,6 +4,8 @@ pub mod bundle;
+ pub mod cert_identity;
+ #[cfg(feature = "install")]
+ pub mod install;
++#[cfg(feature = "install")]
++pub mod watch_install;
+ pub mod sideloader;
+ pub mod sign;
+ pub use builder::{SideloaderBuilder, TeamSelection};
+diff --git a/isideload/src/sideload/sideloader.rs b/isideload/src/sideload/sideloader.rs
+index 1c0bb91..e6f5455 100644
+--- a/isideload/src/sideload/sideloader.rs
++++ b/isideload/src/sideload/sideloader.rs
+@@ -3,6 +3,7 @@ use crate::{
+         app_groups::AppGroupsApi,
+         app_ids::{AppIdsApi, Profile},
+         developer_session::DeveloperSession,
++        device_type::DeveloperDeviceType,
+         devices::DevicesApi,
+         teams::{DeveloperTeam, TeamsApi},
+     },
+@@ -10,6 +11,7 @@ use crate::{
+         TeamSelection,
+         application::{Application, SpecialApp},
+         builder::MaxCertsBehavior,
++        bundle::Bundle,
+         cert_identity::CertificateIdentity,
+         sign,
+     },
+@@ -106,6 +108,7 @@ impl<C: MaxCertsCallback> Sideloader<C> {
+         let main_app_name = app.main_app_name()?;
+         let main_app_id_str = format!("{}.{}", main_bundle_id, team.team_id);
+         app.update_bundle_id(&main_bundle_id, &main_app_id_str)?;
++        let watch_bundle_ids = app.watch_bundle_ids();
+         let mut app_ids = app
+             .register_app_ids(
+                 /*&self.extensions_behavior, */ &mut self.dev_session,
+@@ -141,6 +144,11 @@ impl<C: MaxCertsCallback> Sideloader<C> {
+             .await?;
+ 
+         for app_id in app_ids.iter_mut() {
++            // Synthetic iPhone app groups and its memory entitlement must not
++            // be requested for separately provisioned watchOS identifiers.
++            if watch_bundle_ids.contains(&app_id.identifier) {
++                continue;
++            }
+             app_id
+                 .ensure_group_feature(&mut self.dev_session, &team)
+                 .await?;
+@@ -185,9 +193,15 @@ impl<C: MaxCertsCallback> Sideloader<C> {
+         {
+             let bundle_id = id.identifier.clone();
+ 
++            let profile_device_type = if watch_bundle_ids.contains(&bundle_id) {
++                Some(DeveloperDeviceType::Watchos)
++            } else {
++                None
++            };
++
+             let profile = self
+                 .dev_session
+-                .download_team_provisioning_profile(&team, &id, None)
++                .download_team_provisioning_profile(&team, &id, profile_device_type)
+                 .await
+                 .context(format!(
+                     "Failed to download provisioning profile for {}",
+@@ -206,13 +220,7 @@ impl<C: MaxCertsCallback> Sideloader<C> {
+ 
+         info!("Acquired provisioning profile");
+ 
+-        app.bundle.write_info()?;
+-        for ext in app.bundle.app_extensions_mut() {
+-            ext.write_info()?;
+-        }
+-        for ext in app.bundle.frameworks_mut() {
+-            ext.write_info()?;
+-        }
++        app.bundle.write_info_recursive()?;
+ 
+         // isideload_vfs::fs::write(
+         //     app.bundle.bundle_dir.join("embedded.mobileprovision"),
+@@ -258,6 +266,11 @@ impl<C: MaxCertsCallback> Sideloader<C> {
+         F: Fn(f32) -> Fut,
+         Fut: Future<Output = ()>,
+     {
++        // Unpack once before provisioning. Passing the extracted .app below
++        // avoids deleting/recreating its temporary tree during signing.
++        let unsigned_app = Application::new(app_path)?;
++        let app_path = unsigned_app.bundle.bundle_dir.clone();
++        let has_watch_apps = !unsigned_app.bundle.watch_apps().is_empty();
+         let device_info = IdeviceInfo::from_device(device_provider).await?;
+ 
+         let team = self.get_team().await?;
+@@ -265,6 +278,24 @@ impl<C: MaxCertsCallback> Sideloader<C> {
+             .ensure_device_registered(&team, &device_info.name, &device_info.udid, None)
+             .await?;
+ 
++        let selected_watch = if has_watch_apps {
++            let watch = crate::sideload::watch_install::discover_single_watch(device_provider)
++                .await
++                .context("Cannot select the paired Apple Watch for this app")?;
++            self.dev_session
++                .ensure_device_registered(
++                    &team,
++                    &watch.name,
++                    &watch.udid,
++                    Some(DeveloperDeviceType::Watchos),
++                )
++                .await
++                .context("Failed to register the paired Apple Watch for development")?;
++            Some(watch)
++        } else {
++            None
++        };
++
+         let (signed_app_path, special_app) = self
+             .sign_app(
+                 app_path,
+@@ -289,6 +320,21 @@ impl<C: MaxCertsCallback> Sideloader<C> {
+         .await
+         .context("Failed to install app on device")?;
+ 
++        if let Some(watch) = selected_watch {
++            let signed_bundle = Bundle::new(signed_app_path.clone())?;
++            crate::sideload::watch_install::install_watch_apps(
++                device_provider,
++                signed_bundle.watch_apps(),
++                &watch.udid,
++                &self.machine_name,
++                |progress| info!("Installing Apple Watch app: {}%", progress),
++            )
++            .await
++            .context(
++                "iPhone app installed, but the Apple Watch companion could not be installed",
++            )?;
++        }
++
+         if self.delete_app_after_install
+             && let Err(e) = isideload_vfs::fs::remove_dir_all(signed_app_path)
+         {
+diff --git a/isideload/src/sideload/sign.rs b/isideload/src/sideload/sign.rs
+index cd414b3..566c226 100644
+--- a/isideload/src/sideload/sign.rs
++++ b/isideload/src/sideload/sign.rs
+@@ -79,5 +79,23 @@ where
+         callback(0.5).await;
+     }
+ 
++    // apple-codesign-quick discovers PlugIns and Frameworks, but not Watch.
++    // Its per-ID settings take precedence over root defaults. Require a Watch
++    // profile for every app-ID-bearing bundle before treating a Watch as a
++    // signing root; otherwise a missing profile could fall back to the phone's.
++    for watch_id in app.watch_bundle_ids() {
++        if !settings
++            .embedded_mobileprovisions_by_bundle_id
++            .contains_key(&watch_id)
++            || !settings.entitlements_by_bundle_id.contains_key(&watch_id)
++        {
++            bail!("Missing Watch provisioning profile or entitlements for {watch_id}");
++        }
++    }
++    for watch_app in app.bundle.collect_watch_apps() {
++        sign_bundle(&watch_app.bundle_dir, &settings)
++            .context("Failed to sign embedded Apple Watch application")?;
++    }
++
+     Ok(sign_bundle(&app.bundle.bundle_dir, &settings)?)
+ }
+diff --git a/isideload/src/sideload/watch_install.rs b/isideload/src/sideload/watch_install.rs
+new file mode 100644
+index 0000000..6d9b457
+--- /dev/null
++++ b/isideload/src/sideload/watch_install.rs
+@@ -0,0 +1,765 @@
++use idevice::{
++    Idevice, IdeviceService,
++    pairing_file::PairingFile,
++    provider::IdeviceProvider,
++    services::{
++        companion_proxy::CompanionProxy, installation_proxy::InstallationProxyClient,
++        lockdown::LockdownClient,
++    },
++};
++use plist::{Dictionary, Value};
++use rootcause::{option_ext::OptionExt, prelude::*};
++use std::{
++    path::{Path, PathBuf},
++    time::Duration,
++};
++use tracing::{info, warn};
++
++use crate::{SideloadError as Error, sideload::bundle::Bundle};
++
++const WATCH_LOCKDOWN_PORT: u16 = 62078;
++const WATCH_LOCKDOWN_SERVICE: &str = "com.apple.mobile.lockdownd";
++const WATCH_INSTALL_PROXY_SERVICE: &str = "com.apple.mobile.installation_proxy";
++const WATCH_ZIP_SERVICE: &str = "com.apple.streaming_zip_conduit";
++const WATCH_FORWARD_CONNECT_ATTEMPTS: usize = 20;
++const WATCH_FORWARD_CONNECT_DELAY_MS: u64 = 50;
++const WATCH_INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
++const WATCH_REPLY_TIMEOUT: Duration = Duration::from_secs(90);
++const MAX_WATCH_PLIST_BYTES: usize = 1024 * 1024;
++const CENTRAL_DIRECTORY_HEADER: &[u8] = &[0x50, 0x4b, 0x01, 0x02];
++const ZIP_EXTRA: &[u8] = &[
++    0x55, 0x54, 0x0d, 0x00, 0x07, 0xf3, 0xa2, 0xec, 0x60, 0xf6, 0xa2, 0xec, 0x60, 0xf3, 0xa2, 0xec,
++    0x60, 0x75, 0x78, 0x0b, 0x00, 0x01, 0x04, 0xf5, 0x01, 0x00, 0x00, 0x04, 0x14, 0x00, 0x00, 0x00,
++];
++
++/// Install already-signed embedded Watch apps directly on the paired Apple Watch.
++///
++/// iPhone installation can leave an embedded Watch app as a placeholder.
++/// Only an explicitly identified placeholder may be removed. Existing installed
++/// apps are upgraded in place to preserve their data; failures never trigger an
++/// automatic uninstall/reinstall fallback.
++pub async fn install_watch_apps(
++    device_provider: &impl IdeviceProvider,
++    watch_apps: &[Bundle],
++    expected_watch_udid: &str,
++    host_name: &str,
++    progress_callback: impl Fn(u64) + Send + Sync,
++) -> Result<(), Report> {
++    if watch_apps.is_empty() {
++        return Ok(());
++    }
++
++    let selected = discover_single_watch(device_provider).await?;
++    ensure_watch_identity(expected_watch_udid, &selected.udid)?;
++
++    let iphone_pairing = device_provider
++        .get_pairing_file()
++        .await
++        .map_err(Error::IdeviceError)?;
++
++    let forwarded_lockdown_port = {
++        let mut companion_proxy = CompanionProxy::connect(device_provider)
++            .await
++            .map_err(Error::IdeviceError)
++            .context(
++                "Failed to connect to fresh Apple Watch companion proxy for lockdown forwarding",
++            )?;
++
++        companion_proxy
++            .start_forwarding_service_port(WATCH_LOCKDOWN_PORT, Some(WATCH_LOCKDOWN_SERVICE), None)
++            .await
++            .map_err(Error::IdeviceError)
++            .context("Failed to forward Apple Watch lockdown")?
++    };
++
++    let result = async {
++        let watch_connection =
++            connect_forwarded_watch_port(device_provider, forwarded_lockdown_port, "lockdown")
++                .await?;
++        let mut watch_lockdown = LockdownClient::new(watch_connection);
++
++        // Forwarding has no documented per-watch selector in this protocol.
++        // Verify the actual remote device rather than trusting registry order.
++        verify_watch_identity(&mut watch_lockdown, expected_watch_udid).await?;
++
++        let watch_pairing = watch_lockdown
++            .pair(
++                iphone_pairing.host_id.clone(),
++                iphone_pairing.system_buid.clone(),
++                Some(host_name),
++            )
++            .await
++            .map_err(Error::IdeviceError)
++            .context("Failed to pair with the Apple Watch through companion proxy")?;
++
++        let legacy = watch_lockdown
++            .start_session(&watch_pairing)
++            .await
++            .map_err(Error::IdeviceError)
++            .context("Failed to start Apple Watch lockdown session")?;
++
++        for watch_app in watch_apps {
++            let bundle_id = watch_app
++                .bundle_identifier()
++                .ok_or_report()
++                .context("Watch app is missing CFBundleIdentifier")?;
++
++            verify_watch_identity(&mut watch_lockdown, expected_watch_udid).await?;
++            remove_watch_placeholder(
++                device_provider,
++                &mut watch_lockdown,
++                &watch_pairing,
++                legacy,
++                bundle_id,
++            )
++            .await?;
++
++            install_watch_app_zip_conduit(
++                device_provider,
++                &mut watch_lockdown,
++                &watch_pairing,
++                legacy,
++                watch_app,
++                &progress_callback,
++            )
++            .await?;
++        }
++
++        Ok(())
++    }
++    .await;
++
++    match CompanionProxy::connect(device_provider).await {
++        Ok(mut companion_proxy) => {
++            if let Err(e) = companion_proxy
++                .stop_forwarding_service_port(WATCH_LOCKDOWN_PORT)
++                .await
++            {
++                warn!("Failed to stop Apple Watch lockdown forwarding: {e}");
++            }
++        }
++        Err(e) => {
++            warn!(
++                "Failed to open fresh Apple Watch companion proxy to stop lockdown forwarding: {e}"
++            );
++        }
++    }
++
++    result
++}
++
++pub struct PairedWatch {
++    pub udid: String,
++    pub name: String,
++}
++
++/// Refuse ambiguous routing instead of provisioning one watch and installing on
++/// whichever watch happens to be active when a forwarded port is opened.
++pub async fn discover_single_watch(
++    device_provider: &impl IdeviceProvider,
++) -> Result<PairedWatch, Report> {
++    let registry = CompanionProxy::connect(device_provider)
++        .await
++        .map_err(Error::IdeviceError)
++        .context("Failed to connect to Apple Watch companion proxy")?
++        .get_device_registry()
++        .await
++        .map_err(Error::IdeviceError)
++        .context("Failed to list paired Apple Watches")?;
++    let udid = single_watch_udid(&registry)?.to_string();
++    // Each companion-proxy command gets a fresh connection. Provisioning and
++    // iPhone app installation can invalidate an earlier proxy session.
++    let name = match CompanionProxy::connect(device_provider).await {
++        Ok(mut proxy) => proxy
++            .get_value(&udid, "DeviceName")
++            .await
++            .ok()
++            .and_then(|value| value.as_string().map(str::to_string)),
++        Err(_) => None,
++    }
++    .unwrap_or_else(|| "Apple Watch".to_string());
++    Ok(PairedWatch { udid, name })
++}
++
++fn single_watch_udid(registry: &[String]) -> Result<&str, Report> {
++    match registry {
++        [udid] if !udid.is_empty() => Ok(udid),
++        [] => bail!(
++            "No paired Apple Watch was found. Connect and unlock your paired Watch, then retry."
++        ),
++        [_] => bail!("The paired Apple Watch has no device identifier."),
++        _ => bail!(
++            "Multiple Apple Watches are paired. This installer cannot safely target one Watch; no Watch installation was attempted."
++        ),
++    }
++}
++
++fn ensure_watch_identity(expected: &str, actual: &str) -> Result<(), Report> {
++    if expected.is_empty() || !expected.eq_ignore_ascii_case(actual) {
++        bail!(
++            "The forwarded Apple Watch differs from the registered Watch. No Watch app was changed; reconnect the intended Watch and retry."
++        );
++    }
++    Ok(())
++}
++
++async fn verify_watch_identity(
++    lockdown: &mut LockdownClient,
++    expected: &str,
++) -> Result<(), Report> {
++    let value = lockdown
++        .get_value(Some("UniqueDeviceID"), None)
++        .await
++        .map_err(Error::IdeviceError)
++        .context("Could not verify the forwarded Apple Watch identity")?;
++    let actual = value
++        .as_string()
++        .ok_or_else(|| report!("Apple Watch returned no device identity"))?;
++    ensure_watch_identity(expected, actual)
++}
++
++async fn connect_forwarded_watch_port(
++    device_provider: &impl IdeviceProvider,
++    forwarded_port: u16,
++    service: &str,
++) -> Result<Idevice, Report> {
++    for attempt in 1..=WATCH_FORWARD_CONNECT_ATTEMPTS {
++        match device_provider.connect(forwarded_port).await {
++            Ok(connection) => {
++                if attempt > 1 {
++                    info!(
++                        "Connected to Apple Watch {} on forwarded port {} after {} attempts",
++                        service, forwarded_port, attempt
++                    );
++                }
++                return Ok(connection);
++            }
++            Err(error) if attempt < WATCH_FORWARD_CONNECT_ATTEMPTS => {
++                warn!(
++                    "Apple Watch {} forwarded port {} is not ready (attempt {}/{}): {}",
++                    service, forwarded_port, attempt, WATCH_FORWARD_CONNECT_ATTEMPTS, error
++                );
++                tokio::time::sleep(Duration::from_millis(WATCH_FORWARD_CONNECT_DELAY_MS)).await;
++            }
++            Err(error) => {
++                bail!(
++                    "Failed to connect to Apple Watch {} on forwarded iPhone port {} after {} attempts: {}",
++                    service,
++                    forwarded_port,
++                    WATCH_FORWARD_CONNECT_ATTEMPTS,
++                    error
++                );
++            }
++        }
++    }
++
++    unreachable!("bounded forwarded-port retry loop must return")
++}
++async fn remove_watch_placeholder(
++    device_provider: &impl IdeviceProvider,
++    watch_lockdown: &mut LockdownClient,
++    watch_pairing: &PairingFile,
++    legacy: bool,
++    bundle_id: &str,
++) -> Result<(), Report> {
++    let (remote_port, ssl) = watch_lockdown
++        .start_service(WATCH_INSTALL_PROXY_SERVICE)
++        .await
++        .map_err(Error::IdeviceError)
++        .context("Failed to start Apple Watch installation proxy")?;
++
++    let forwarded_port = {
++        let mut companion_proxy = CompanionProxy::connect(device_provider)
++            .await
++            .map_err(Error::IdeviceError)
++            .context("Failed to connect to fresh Apple Watch companion proxy for installation proxy forwarding")?;
++
++        companion_proxy
++            .start_forwarding_service_port(remote_port, Some(WATCH_INSTALL_PROXY_SERVICE), None)
++            .await
++            .map_err(Error::IdeviceError)
++            .context("Failed to forward Apple Watch installation proxy")?
++    };
++
++    let result = async {
++        let mut connection =
++            connect_forwarded_watch_port(device_provider, forwarded_port, "installation proxy")
++                .await?;
++
++        if ssl {
++            connection
++                .start_session(watch_pairing, legacy)
++                .await
++                .map_err(Error::IdeviceError)
++                .context("Failed to secure Apple Watch installation proxy connection")?;
++        }
++
++        let mut install_proxy = InstallationProxyClient::new(connection);
++        let apps = install_proxy
++            .get_apps(None, Some(vec![bundle_id.to_string()]))
++            .await
++            .map_err(Error::IdeviceError)
++            .context("Could not inspect the existing Watch app; refusing to remove any app")?;
++        if apps.get(bundle_id).is_some_and(is_explicit_placeholder) {
++            install_proxy
++                .uninstall(bundle_id, None)
++                .await
++                .map_err(Error::IdeviceError)
++                .context("Failed to remove the incomplete Watch app placeholder")?;
++            info!("Removed incomplete Apple Watch placeholder: {bundle_id}");
++        } else if apps.contains_key(bundle_id) {
++            info!("Updating installed Apple Watch app in place; retaining app data: {bundle_id}");
++        }
++
++        Ok(())
++    }
++    .await;
++
++    match CompanionProxy::connect(device_provider).await {
++        Ok(mut companion_proxy) => {
++            if let Err(e) = companion_proxy
++                .stop_forwarding_service_port(remote_port)
++                .await
++            {
++                warn!("Failed to stop Apple Watch installation proxy forwarding: {e}");
++            }
++        }
++        Err(e) => {
++            warn!(
++                "Failed to open fresh Apple Watch companion proxy to stop installation proxy forwarding: {e}"
++            );
++        }
++    }
++
++    result
++}
++
++async fn install_watch_app_zip_conduit(
++    device_provider: &impl IdeviceProvider,
++    watch_lockdown: &mut LockdownClient,
++    watch_pairing: &PairingFile,
++    legacy: bool,
++    watch_app: &Bundle,
++    progress_callback: &(impl Fn(u64) + Send + Sync),
++) -> Result<(), Report> {
++    let (remote_port, ssl) = watch_lockdown
++        .start_service(WATCH_ZIP_SERVICE)
++        .await
++        .map_err(Error::IdeviceError)
++        .context("Failed to start Apple Watch streaming_zip_conduit")?;
++
++    let forwarded_port = {
++        let mut companion_proxy = CompanionProxy::connect(device_provider)
++            .await
++            .map_err(Error::IdeviceError)
++            .context("Failed to connect to fresh Apple Watch companion proxy for streaming_zip_conduit forwarding")?;
++
++        companion_proxy
++            .start_forwarding_service_port(remote_port, Some(WATCH_ZIP_SERVICE), None)
++            .await
++            .map_err(Error::IdeviceError)
++            .context("Failed to forward Apple Watch streaming_zip_conduit")?
++    };
++
++    let result = async {
++        let mut connection =
++            connect_forwarded_watch_port(device_provider, forwarded_port, "streaming_zip_conduit")
++                .await?;
++
++        if ssl {
++            connection
++                .start_session(watch_pairing, legacy)
++                .await
++                .map_err(Error::IdeviceError)
++                .context("Failed to secure Apple Watch streaming_zip_conduit connection")?;
++        }
++
++        tokio::time::timeout(
++            WATCH_INSTALL_TIMEOUT,
++            stream_watch_app(&mut connection, watch_app, progress_callback),
++        )
++        .await
++        .context("Apple Watch installation timed out; no installed app was automatically erased")?
++    }
++    .await;
++
++    match CompanionProxy::connect(device_provider).await {
++        Ok(mut companion_proxy) => {
++            if let Err(e) = companion_proxy
++                .stop_forwarding_service_port(remote_port)
++                .await
++            {
++                warn!("Failed to stop Apple Watch streaming_zip_conduit forwarding: {e}");
++            }
++        }
++        Err(e) => {
++            warn!(
++                "Failed to open fresh Apple Watch companion proxy to stop streaming_zip_conduit forwarding: {e}"
++            );
++        }
++    }
++
++    result
++}
++
++async fn stream_watch_app(
++    connection: &mut Idevice,
++    watch_app: &Bundle,
++    progress_callback: &(impl Fn(u64) + Send + Sync),
++) -> Result<(), Report> {
++    let app_name = watch_app
++        .bundle_dir
++        .file_name()
++        .ok_or_report()
++        .context("Watch app path has no file name")?
++        .to_string_lossy()
++        .to_string();
++
++    let mut files = Vec::new();
++    collect_files(&watch_app.bundle_dir, &mut files)?;
++    files.sort();
++
++    let mut entries = Vec::with_capacity(files.len());
++    let mut total_uncompressed = 0u64;
++
++    for source in files {
++        let relative = source
++            .strip_prefix(&watch_app.bundle_dir)
++            .context("Failed to create relative Watch app path")?;
++        let relative = relative.to_string_lossy().replace('\\', "/");
++        let destination = format!("Payload/{app_name}/{relative}");
++        let size = isideload_vfs::fs::metadata(&source)?.len();
++        total_uncompressed = total_uncompressed.saturating_add(size);
++        entries.push((source, destination));
++    }
++
++    let media_subdir = format!("PublicStaging/{app_name}.ipa");
++    let mut install_options = Dictionary::new();
++    insert_integer(&mut install_options, "DisableDeltaTransfer", 1);
++    insert_string(
++        &mut install_options,
++        "InstallDeltaTypeKey",
++        "InstallDeltaTypeSparseIPAFiles",
++    );
++    insert_integer(&mut install_options, "IsUserInitiated", 1);
++    insert_string(&mut install_options, "PackageType", "Customer");
++    insert_integer(&mut install_options, "PreferWifi", 1);
++
++    let mut init_transfer = Dictionary::new();
++    init_transfer.insert(
++        "InstallOptionsDictionary".to_string(),
++        Value::Dictionary(install_options),
++    );
++    insert_integer(&mut init_transfer, "InstallTransferredDirectory", 1);
++    insert_string(&mut init_transfer, "MediaSubdir", media_subdir);
++    insert_integer(&mut init_transfer, "UserInitiatedTransfer", 0);
++
++    send_prefixed_plist(connection, init_transfer).await?;
++
++    let mut metadata = Dictionary::new();
++    insert_integer(&mut metadata, "StandardDirectoryPerms", 16877);
++    insert_integer(&mut metadata, "StandardFilePerms", -32348);
++    insert_integer(
++        &mut metadata,
++        "RecordCount",
++        i64::try_from(entries.len() + 2).context("Too many Watch app files")?,
++    );
++    insert_integer(
++        &mut metadata,
++        "TotalUncompressedBytes",
++        i64::try_from(total_uncompressed).context("Watch app is too large")?,
++    );
++    insert_integer(&mut metadata, "Version", 2);
++
++    let mut metadata_bytes = Vec::new();
++    Value::Dictionary(metadata).to_writer_xml(&mut metadata_bytes)?;
++
++    send_zip_directory(connection, "META-INF/").await?;
++    send_zip_file(
++        connection,
++        "META-INF/com.apple.ZipMetadata.plist",
++        &metadata_bytes,
++    )
++    .await?;
++
++    for (source, destination) in entries {
++        let data = isideload_vfs::fs::read(&source)?;
++        send_zip_file(connection, &destination, &data).await?;
++    }
++
++    connection
++        .send_raw(CENTRAL_DIRECTORY_HEADER)
++        .await
++        .map_err(Error::IdeviceError)?;
++
++    wait_for_watch_install(connection, progress_callback).await
++}
++
++async fn wait_for_watch_install(
++    connection: &mut Idevice,
++    progress_callback: &(impl Fn(u64) + Send + Sync),
++) -> Result<(), Report> {
++    loop {
++        let response = tokio::time::timeout(WATCH_REPLY_TIMEOUT, read_prefixed_plist(connection))
++            .await
++            .context("Timed out waiting for an Apple Watch installation response")??;
++
++        match install_response(&response)? {
++            WatchInstallResponse::Complete => {
++                progress_callback(100);
++                info!("Apple Watch installation completed");
++                return Ok(());
++            }
++            WatchInstallResponse::Progress(percent, status) => {
++                info!("Installing Apple Watch app: {percent}% {status}");
++                progress_callback(percent);
++            }
++        }
++    }
++}
++
++#[derive(Debug, PartialEq)]
++enum WatchInstallResponse<'a> {
++    Complete,
++    Progress(u64, &'a str),
++}
++
++fn install_response(response: &Dictionary) -> Result<WatchInstallResponse<'_>, Report> {
++    let progress = response
++        .get("InstallProgressDict")
++        .and_then(Value::as_dictionary);
++    for dictionary in std::iter::once(response).chain(progress) {
++        if let Some(error) = dictionary.get("Error").and_then(Value::as_string) {
++            let description = dictionary
++                .get("ErrorDescription")
++                .and_then(Value::as_string)
++                .unwrap_or("No ErrorDescription returned by watchOS");
++            bail!("Apple Watch installation failed: {error}: {description}");
++        }
++    }
++    if response.get("Status").and_then(Value::as_string) == Some("DataComplete") {
++        return Ok(WatchInstallResponse::Complete);
++    }
++    let progress =
++        progress.ok_or_else(|| report!("Unexpected Apple Watch install response: {response:?}"))?;
++    Ok(WatchInstallResponse::Progress(
++        progress
++            .get("PercentComplete")
++            .and_then(Value::as_unsigned_integer)
++            .unwrap_or(0),
++        progress
++            .get("Status")
++            .and_then(Value::as_string)
++            .unwrap_or("Unknown"),
++    ))
++}
++
++fn collect_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), Report> {
++    for entry in isideload_vfs::fs::read_dir(dir)? {
++        let entry = entry?;
++        let path = entry.path();
++        let metadata = isideload_vfs::fs::metadata(&path)?;
++
++        if metadata.is_dir() {
++            collect_files(&path, files)?;
++        } else if metadata.is_file() {
++            files.push(path);
++        }
++    }
++
++    Ok(())
++}
++
++async fn send_prefixed_plist(
++    connection: &mut Idevice,
++    dictionary: Dictionary,
++) -> Result<(), Report> {
++    let mut payload = Vec::new();
++    Value::Dictionary(dictionary).to_writer_xml(&mut payload)?;
++    let payload_len = u32::try_from(payload.len()).context("Watch plist is too large")?;
++
++    let mut frame = Vec::with_capacity(payload.len() + 4);
++    frame.extend_from_slice(&payload_len.to_be_bytes());
++    frame.extend_from_slice(&payload);
++
++    connection
++        .send_raw(&frame)
++        .await
++        .map_err(Error::IdeviceError)?;
++    Ok(())
++}
++
++async fn read_prefixed_plist(connection: &mut Idevice) -> Result<Dictionary, Report> {
++    let len = connection.read_raw(4).await.map_err(Error::IdeviceError)?;
++    let length_bytes: [u8; 4] = len
++        .as_slice()
++        .try_into()
++        .context("Truncated Apple Watch response header")?;
++    let payload_len = u32::from_be_bytes(length_bytes) as usize;
++    validate_plist_length(payload_len)?;
++    let payload = connection
++        .read_raw(payload_len)
++        .await
++        .map_err(Error::IdeviceError)?;
++    let value: Value = plist::from_bytes(&payload)?;
++
++    match value {
++        Value::Dictionary(dictionary) => Ok(dictionary),
++        other => bail!("Expected dictionary plist from Apple Watch, got {other:?}"),
++    }
++}
++
++fn validate_plist_length(length: usize) -> Result<(), Report> {
++    if length == 0 || length > MAX_WATCH_PLIST_BYTES {
++        bail!("Invalid Apple Watch response length: {length}");
++    }
++    Ok(())
++}
++
++fn is_explicit_placeholder(app: &Value) -> bool {
++    app.as_dictionary()
++        .and_then(|info| info.get("IsPlaceholder"))
++        .and_then(Value::as_boolean)
++        == Some(true)
++}
++
++async fn send_zip_directory(connection: &mut Idevice, name: &str) -> Result<(), Report> {
++    let header = zip_header(name, 0, 0)?;
++    connection
++        .send_raw(&header)
++        .await
++        .map_err(Error::IdeviceError)?;
++    Ok(())
++}
++
++async fn send_zip_file(connection: &mut Idevice, name: &str, data: &[u8]) -> Result<(), Report> {
++    let size = u32::try_from(data.len()).context("Watch app file is too large")?;
++    let header = zip_header(name, size, crc32_ieee(data))?;
++
++    connection
++        .send_raw(&header)
++        .await
++        .map_err(Error::IdeviceError)?;
++    connection
++        .send_raw(data)
++        .await
++        .map_err(Error::IdeviceError)?;
++    Ok(())
++}
++
++fn zip_header(name: &str, size: u32, crc32: u32) -> Result<Vec<u8>, Report> {
++    let name_bytes = name.as_bytes();
++    let name_len = u16::try_from(name_bytes.len()).context("Watch zip path is too long")?;
++    let extra_len = u16::try_from(ZIP_EXTRA.len()).context("Watch zip extra data is too large")?;
++
++    let mut header = Vec::with_capacity(30 + name_bytes.len() + ZIP_EXTRA.len());
++    push_u32_le(&mut header, 0x04034b50);
++    push_u16_le(&mut header, 20);
++    push_u16_le(&mut header, 0);
++    push_u16_le(&mut header, 0);
++    push_u16_le(&mut header, 0xbdef);
++    push_u16_le(&mut header, 0x52ec);
++    push_u32_le(&mut header, crc32);
++    push_u32_le(&mut header, size);
++    push_u32_le(&mut header, size);
++    push_u16_le(&mut header, name_len);
++    push_u16_le(&mut header, extra_len);
++    header.extend_from_slice(name_bytes);
++    header.extend_from_slice(ZIP_EXTRA);
++    Ok(header)
++}
++
++fn push_u16_le(buffer: &mut Vec<u8>, value: u16) {
++    buffer.extend_from_slice(&value.to_le_bytes());
++}
++
++fn push_u32_le(buffer: &mut Vec<u8>, value: u32) {
++    buffer.extend_from_slice(&value.to_le_bytes());
++}
++
++fn insert_string(dictionary: &mut Dictionary, key: &str, value: impl Into<String>) {
++    dictionary.insert(key.to_string(), Value::String(value.into()));
++}
++
++fn insert_integer(dictionary: &mut Dictionary, key: &str, value: i64) {
++    dictionary.insert(key.to_string(), Value::Integer(value.into()));
++}
++
++fn crc32_ieee(data: &[u8]) -> u32 {
++    let mut crc = 0xffff_ffffu32;
++
++    for byte in data {
++        crc ^= u32::from(*byte);
++        for _ in 0..8 {
++            let mask = (crc & 1).wrapping_neg();
++            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
++        }
++    }
++
++    !crc
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn refuses_missing_or_ambiguous_watch() {
++        assert!(single_watch_udid(&[]).is_err());
++        assert!(single_watch_udid(&["one".into(), "two".into()]).is_err());
++        assert_eq!(
++            single_watch_udid(&["only-watch".into()]).unwrap(),
++            "only-watch"
++        );
++        assert!(ensure_watch_identity("registered-watch", "other-watch").is_err());
++        assert!(ensure_watch_identity("WATCH-ID", "watch-id").is_ok());
++    }
++
++    #[test]
++    fn only_explicit_placeholders_can_be_removed() {
++        let mut app = Dictionary::new();
++        assert!(!is_explicit_placeholder(&Value::Dictionary(app.clone())));
++        app.insert("IsPlaceholder".into(), Value::Boolean(false));
++        assert!(!is_explicit_placeholder(&Value::Dictionary(app.clone())));
++        app.insert("IsPlaceholder".into(), Value::String("true".into()));
++        assert!(!is_explicit_placeholder(&Value::Dictionary(app.clone())));
++        app.insert("IsPlaceholder".into(), Value::Boolean(true));
++        assert!(is_explicit_placeholder(&Value::Dictionary(app)));
++    }
++
++    #[test]
++    fn bounds_untrusted_watch_response_lengths() {
++        assert!(validate_plist_length(0).is_err());
++        assert!(validate_plist_length(MAX_WATCH_PLIST_BYTES + 1).is_err());
++        assert!(validate_plist_length(256).is_ok());
++    }
++
++    #[test]
++    fn install_complete_and_remote_errors_are_distinct() {
++        let mut response = Dictionary::new();
++        response.insert("Status".into(), Value::String("DataComplete".into()));
++        assert_eq!(
++            install_response(&response).unwrap(),
++            WatchInstallResponse::Complete
++        );
++        let mut progress = Dictionary::new();
++        progress.insert(
++            "Error".into(),
++            Value::String("ApplicationVerificationFailed".into()),
++        );
++        progress.insert(
++            "ErrorDescription".into(),
++            Value::String("Developer Mode is disabled".into()),
++        );
++        response.insert("InstallProgressDict".into(), Value::Dictionary(progress));
++        let error = install_response(&response).unwrap_err().to_string();
++        assert!(error.contains("ApplicationVerificationFailed"));
++        assert!(error.contains("Developer Mode is disabled"));
++        assert!(install_response(&Dictionary::new()).is_err());
++    }
++
++    #[test]
++    fn streaming_crc_matches_standard_vector() {
++        assert_eq!(crc32_ieee(b"123456789"), 0xcbf4_3926);
++    }
++}

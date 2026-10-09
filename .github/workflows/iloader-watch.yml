@@ -1,0 +1,123 @@
+name: iLoader 2.3.6 Watch build
+
+on:
+  push:
+    branches: [swift, main]
+    paths:
+      - 'native/tools/iloader-watch/**'
+      - '.github/workflows/iloader-watch.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: iloader-watch-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check out iLoader 2.3.6
+        uses: actions/checkout@v6
+        with:
+          repository: nab138/iloader
+          ref: dc396af059fd46982062cd8fc90252d7e27085e9
+          path: native/build/iloader-watch-custom/iloader
+
+      - name: Check out matching isideload 0.4.3
+        uses: actions/checkout@v6
+        with:
+          repository: nab138/isideload
+          ref: c23db688c7f6079413bf82dad4e4f19e5ddf4ce7
+          path: native/build/iloader-watch-custom/isideload
+
+      - name: Apply the Watch port
+        run: |
+          $patches = Join-Path $env:GITHUB_WORKSPACE 'native/tools/iloader-watch'
+          git -C native/build/iloader-watch-custom/iloader apply --check "$patches/iloader.patch"
+          if ($LASTEXITCODE -ne 0) { throw 'iLoader patch check failed' }
+          git -C native/build/iloader-watch-custom/iloader apply "$patches/iloader.patch"
+          if ($LASTEXITCODE -ne 0) { throw 'iLoader patch failed' }
+          git -C native/build/iloader-watch-custom/isideload apply --check "$patches/isideload.patch"
+          if ($LASTEXITCODE -ne 0) { throw 'isideload patch check failed' }
+          git -C native/build/iloader-watch-custom/isideload apply "$patches/isideload.patch"
+          if ($LASTEXITCODE -ne 0) { throw 'isideload patch failed' }
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Windows build dependencies
+        run: choco install strawberryperl make --no-progress -y
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/build/iloader-watch-custom/iloader/src-tauri/target
+          key: windows-iloader-watch-${{ hashFiles('native/tools/iloader-watch/*.patch') }}
+          restore-keys: windows-iloader-watch-
+
+      - name: Verify the custom backend is selected
+        working-directory: native/build/iloader-watch-custom/iloader/src-tauri
+        run: |
+          $metadata = cargo metadata --locked --format-version 1 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cargo metadata failed' }
+          $backends = @($metadata.packages | Where-Object name -eq 'isideload')
+          if ($backends.Count -ne 1 -or $null -ne $backends[0].source) { throw 'Expected exactly one local isideload backend' }
+          $devices = @($metadata.packages | Where-Object name -eq 'idevice')
+          if ($devices.Count -ne 1) { throw 'Multiple incompatible idevice versions' }
+          Write-Output "Custom backend: $($backends[0].manifest_path)"
+          Write-Output "Device library: $($devices[0].version)"
+
+      - name: Test Watch signing and provisioning logic
+        working-directory: native/build/iloader-watch-custom/iloader/src-tauri
+        run: cargo test --locked --release -p isideload --lib
+
+      - name: Install frontend dependencies
+        working-directory: native/build/iloader-watch-custom/iloader
+        run: bun install --frozen-lockfile
+
+      - name: Build the Windows installer
+        working-directory: native/build/iloader-watch-custom/iloader
+        run: bun run tauri build --bundles nsis --config src-tauri/ci.conf.json -- --locked
+
+      - name: Package installer, provenance, and licenses
+        run: |
+          $out = New-Item -ItemType Directory -Force native/build/iloader-watch-artifact
+          $installers = @(Get-ChildItem native/build/iloader-watch-custom/iloader/src-tauri/target/release/bundle/nsis -Filter '*.exe' -File)
+          if ($installers.Count -ne 1) { throw 'Expected exactly one NSIS installer' }
+          Copy-Item -LiteralPath $installers[0].FullName -Destination "$out/iloader-2.3.6-watch-windows-x64.exe"
+          Copy-Item native/tools/iloader-watch/* -Destination $out
+          Copy-Item native/build/iloader-watch-custom/iloader/LICENSE -Destination "$out/LICENSE-iloader.txt"
+          Copy-Item native/build/iloader-watch-custom/iloader/LICENSE-BRANDING -Destination "$out/LICENSE-BRANDING-iloader.txt"
+          Copy-Item native/build/iloader-watch-custom/isideload/LICENSE -Destination "$out/LICENSE-isideload.txt"
+          @(
+            "Gyma patches: $env:GITHUB_SHA"
+            "Build: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            "Rust: $(rustc --version)"
+            "Bun: $(bun --version)"
+          ) | Set-Content "$out/BUILD.txt"
+          Get-ChildItem $out -File | Sort-Object Name | ForEach-Object {
+            "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content "$out/SHA256SUMS.txt"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: iloader-2.3.6-watch-windows-x64-${{ github.run_number }}
+          path: native/build/iloader-watch-artifact/*
+          if-no-files-found: error
+          retention-days: 30
