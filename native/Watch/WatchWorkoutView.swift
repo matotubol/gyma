@@ -186,7 +186,7 @@ struct WatchWorkoutView: View {
                     Image(systemName: "figure.strengthtraining.traditional")
                         .font(.system(size: 36)).foregroundStyle(.mint)
                     Text("No workout ready").font(.headline)
-                    Text("Create, accept and schedule today’s workout in Gyma on iPhone.")
+                    Text("Save your program and training calendar in Gyma on iPhone, or accept a workout for today.")
                         .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }
             }
@@ -516,6 +516,10 @@ private struct WatchReadinessView: View {
                         Text(context.plan.title).font(.headline)
                         Text("Confirm how you feel today before starting.")
                             .font(.caption2).foregroundStyle(.secondary)
+                        if context.plan.programID != nil {
+                            Text("Saved program; today’s targets adapt to this check-in. These are default selections: change them to how you feel now.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                     }
                     Section("Energy") {
                         Picker("Energy", selection: $energy) {

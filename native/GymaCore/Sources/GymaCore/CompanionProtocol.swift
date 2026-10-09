@@ -44,8 +44,10 @@ public struct CompanionSnapshot: Codable, Sendable, Equatable {
     public init(state: GymaState, now: Date = Date(), calendar: Calendar = .current) {
         storeID = state.storeID; revision = state.revision; generatedAt = now; restTimer = state.restTimer; isTruncated = false
         totalExerciseCount = state.activeWorkout?.exercises.count
-        if state.activeWorkout == nil, let plan = state.coachConversation?.plan, plan.acceptedAt != nil,
+        if state.activeWorkout == nil, state.coachConversation?.startedWorkoutID == nil,
+           let plan = state.coachConversation?.plan, plan.acceptedAt != nil,
            plan.isScheduledForToday(at: now, calendar: calendar) { readyPlan = ReadyWorkoutPlan(plan: plan, calendar: calendar) }
+        if readyPlan == nil { readyPlan = state.readyProgramPlan(now: now, calendar: calendar) }
         var workout = state.activeWorkout
         if var current = workout {
             // Sync only the active session and a bounded recent set window. Phone keeps full history.
@@ -121,7 +123,11 @@ public enum GymaReducer {
                       command.createdAt.timeIntervalSince(readiness.recordedAt) <= 300 else {
                     throw GymaError.stale("The start request expired. Refresh today's plan and check your readiness again.")
                 }
-                try next.startAcceptedPlan(planID: planID, readiness: readiness, now: now, calendar: calendar)
+                if state.readyProgramPlan(now: now, calendar: calendar)?.id == planID {
+                    try next.startReadyProgramPlan(planID: planID, readiness: readiness, now: now, calendar: calendar)
+                } else {
+                    try next.startAcceptedPlan(planID: planID, readiness: readiness, now: now, calendar: calendar)
+                }
             case .logSet(let exerciseID, let set):
                 // Queued delivery must not restart a rest interval that already elapsed on watch.
                 try next.addSet(set, exerciseID: exerciseID, workoutID: command.workoutID, now: min(command.createdAt, now))

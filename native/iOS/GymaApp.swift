@@ -60,6 +60,7 @@ struct OverviewView: View {
     @State private var activePresented = false
     @State private var selectedWorkoutID: String?
     @State private var preparingPlan: WorkoutPlan?
+    @State private var startingProgram = false
 
     private var acceptedPlan: WorkoutPlan? {
         guard model.state.activeWorkout == nil, let plan = model.state.coachConversation?.plan,
@@ -99,7 +100,7 @@ struct OverviewView: View {
                 }
                 SectionHeading(title: "Keep showing up", subtitle: "Your training, one session at a time.")
                 if model.completedWorkouts.isEmpty {
-                    EmptyState(title: "Your first session", message: "Check in with your coach, review your workout, then accept it and start. Your Watch guides you through each exercise.", symbol: "figure.strengthtraining.traditional")
+                    EmptyState(title: "Your first session", message: "Build your recurring program with the coach. When you are ready to train, start a session and check how you feel that day. Your Watch guides you through each exercise.", symbol: "figure.strengthtraining.traditional")
                         .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 22))
                 } else {
                     VStack(spacing: 0) {
@@ -130,6 +131,13 @@ struct OverviewView: View {
                 activePresented = true
             }
         }
+        .sheet(isPresented: $startingProgram) {
+            ProgramWorkoutStartView { workoutID in
+                startingProgram = false
+                selectedWorkoutID = workoutID
+                activePresented = true
+            }
+        }
     }
 
     private func hero(at now: Date) -> some View {
@@ -140,7 +148,7 @@ struct OverviewView: View {
                 Spacer()
                 Image(systemName: "arrow.up.right").font(.title3)
             }
-            Text(model.state.activeWorkout != nil ? "Pick up where\nyou left off." : (acceptedPlan?.title ?? "A little stronger.\nEvery session."))
+            Text(model.state.activeWorkout != nil ? "Pick up where\nyou left off." : (acceptedPlan?.title ?? model.state.trainingProgram?.nextSession(history: model.state.workouts, now: now)?.title ?? "A little stronger.\nEvery session."))
                 .font(.system(.largeTitle, design: .rounded, weight: .bold))
                 .fixedSize(horizontal: false, vertical: true)
             if let workout = model.state.activeWorkout {
@@ -151,9 +159,12 @@ struct OverviewView: View {
                      ? "Ready for today · \(plan.exercises.count) exercises. Check your energy and soreness before starting here or on Watch."
                      : "Scheduled for \(plan.scheduledDate.formatted(date: .abbreviated, time: .omitted)). Make a new plan for today.")
                     .font(.subheadline)
+            } else if model.state.trainingProgram != nil {
+                Text("Your program is ready. Check today's energy, sleep and soreness when you start this session.")
+                    .font(.subheadline)
             } else {
                 Text(model.state.coachConversation?.plan == nil || model.state.coachConversation?.startedWorkoutID != nil
-                     ? "Build your next workout with your coach."
+                     ? "Build a recurring program with your coach for your training calendar."
                      : "Your coach has a workout ready to review.").font(.subheadline)
             }
             Button {
@@ -162,9 +173,13 @@ struct OverviewView: View {
                     activePresented = true
                 } else if let plan = acceptedPlan, plan.isScheduledForToday(at: now) {
                     preparingPlan = plan
-                } else { coachPresented = true }
+                } else if model.state.trainingProgram != nil {
+                    startingProgram = true
+                } else {
+                    if model.beginProgramPlanning() { coachPresented = true }
+                }
             } label: {
-                Label(model.state.activeWorkout != nil ? "Resume workout" : (acceptedPlan?.isScheduledForToday(at: now) == true ? "Start workout" : (acceptedPlan != nil ? "Plan for today" : "Plan with coach")), systemImage: model.state.activeWorkout != nil || acceptedPlan?.isScheduledForToday(at: now) == true ? "play.fill" : "bubble.left.and.bubble.right")
+                Label(model.state.activeWorkout != nil ? "Resume workout" : (acceptedPlan?.isScheduledForToday(at: now) == true || model.state.trainingProgram != nil ? "Start next workout" : (model.hasUnfinishedProgramPlanning ? "Continue planning" : "Plan program with coach")), systemImage: model.state.activeWorkout != nil || acceptedPlan?.isScheduledForToday(at: now) == true || model.state.trainingProgram != nil ? "play.fill" : "bubble.left.and.bubble.right")
                     .font(.headline).frame(maxWidth: .infinity).padding(.vertical, 8)
             }
             .buttonStyle(.borderedProminent).tint(.white).foregroundStyle(Color(red: 0.10, green: 0.30, blue: 0.19))
@@ -191,82 +206,5 @@ private struct PairingInlineView: View {
         }
         .padding(16)
         .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 20))
-    }
-}
-
-struct CheckInView: View {
-    @EnvironmentObject private var model: GymaAppModel
-    @Environment(\.dismiss) private var dismiss
-    var onPrepared: () -> Void
-    @State private var shift: Shift = .off
-    @State private var energy: Energy = .good
-    @State private var soreness = Dictionary(uniqueKeysWithValues: Muscle.allCases.map { ($0, Soreness.none) })
-    @State private var minutes = 45
-    @State private var title = ""
-    @State private var sleep = ""
-    @State private var notes = ""
-    @State private var recentTraining = ""
-    @State private var pain = ""
-    @State private var error: String?
-    @State private var loadedProfileDefaults = false
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    Text("How are you arriving today?").font(.title2.bold())
-                    Text("Your coach uses this to draft a workout. You can discuss changes and accept the plan before starting.").foregroundStyle(.secondary)
-                }
-                Section("Before you start") {
-                    Picker("Shift", selection: $shift) { ForEach(Shift.allCases) { Text($0.label).tag($0) } }
-                    Picker("Energy", selection: $energy) { ForEach(Energy.allCases) { Label($0.label, systemImage: $0.symbol).tag($0) } }
-                    Stepper("Time available: \(minutes) min", value: $minutes, in: 10...180, step: 5)
-                    TextField("Sleep in hours (optional)", text: $sleep).keyboardType(.decimalPad)
-                }
-                Section {
-                    SorenessFields(soreness: $soreness)
-                } header: {
-                    Text("Muscle soreness")
-                } footer: {
-                    Text("Every muscle group starts at None. You can review this again before starting the workout.")
-                }
-                Section("Session") {
-                    TextField("Workout name (optional)", text: $title)
-                    TextField("Notes (optional)", text: $notes, axis: .vertical).lineLimit(2...4)
-                    TextField("Recent training (optional)", text: $recentTraining, axis: .vertical).lineLimit(2...4)
-                    TextField("Pain or limitations (optional)", text: $pain, axis: .vertical).lineLimit(2...4)
-                }
-                if let error { Section { Text(error).foregroundStyle(.red) } }
-                Section {
-                    Button {
-                        let hours = sleep.trimmingCharacters(in: .whitespaces)
-                        let value = Double(hours.replacingOccurrences(of: ",", with: "."))
-                        guard hours.isEmpty || (value != nil && value! >= 0 && value! <= 24) else {
-                            error = "Sleep must be between 0 and 24 hours."
-                            return
-                        }
-                        let checkIn = SessionCheckIn(shift: shift, energy: energy, timeMinutes: minutes,
-                                                    sleepHours: value, notes: notes, recentTrainingNote: recentTraining, painNote: pain,
-                                                    soreness: soreness)
-                        if model.beginCoachConversation(checkIn: checkIn, title: title) { onPrepared() }
-                        else { error = model.coachError ?? model.errorMessage }
-                    } label: {
-                        Label(model.state.trainingProgram == nil ? "Plan with coach" : "Prepare next session", systemImage: "sparkles").font(.headline).frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent).padding(.vertical, 4)
-                    .disabled(model.storageBlocked || (!model.hasCoachAPIKey && model.state.trainingProgram == nil))
-                } footer: {
-                    Text("Your saved program can prepare a session offline. Asking the coach sends your profile, program, shift calendar, relevant training history and feedback to OpenAI. API usage is billed to your account.")
-                }
-            }
-            .navigationTitle("Check in").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
-            .onAppear {
-                guard !loadedProfileDefaults else { return }
-                loadedProfileDefaults = true
-                minutes = min(180, model.state.athleteProfile?.usualSessionMinutes ?? 45)
-                if let calendar = model.state.trainingCalendar { shift = calendar.shift(on: Date()) }
-            }
-        }
     }
 }

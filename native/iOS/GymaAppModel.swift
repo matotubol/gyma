@@ -130,29 +130,85 @@ final class GymaAppModel: ObservableObject {
         } catch { errorMessage = "Your OpenAI key could not be removed. \(error.localizedDescription)" }
     }
 
+    var hasUnfinishedProgramPlanning: Bool {
+        state.coachConversation?.isProgramPlanning == true && state.coachConversation?.acceptedProgramID == nil
+    }
+
     @discardableResult
-    func beginCoachConversation(checkIn: SessionCheckIn, title: String) -> Bool {
-        guard state.activeWorkout == nil else {
-            coachError = "Finish your current workout before planning the next one."
+    func beginProgramPlanning(replacingConversation: Bool = false) -> Bool {
+        guard !storageBlocked, state.activeWorkout == nil else {
+            coachError = "Finish your current workout before discussing your program."
             return false
         }
-        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let request = title.isEmpty ? "Use my saved profile and training history. If I have no saved program, propose a repeatable program fitted to my goals and schedule. Otherwise prepare the next session. Explain progression and uncertainty."
-            : "Create a workout named \"\(title)\" for today's check-in. Include sets, reps, weights and rest seconds for every exercise."
-        var conversation = CoachConversation(checkIn: checkIn, messages: [CoachMessage(role: .user, content: request)])
-        if state.trainingProgram != nil {
-            do {
-                conversation.plan = try state.nextProgramPlan(checkIn: checkIn)
-                conversation.messages.append(.init(role: .assistant, content: "Here is the next session from your saved program. Targets use your logged working sets and effort. Review the reasons below; ask me to adjust for today's time, energy or discomfort."))
-            } catch {
-                // A changed restriction or catalog needs discussion rather than an invalid local plan.
-                conversation.messages[0].content += " The saved session needs review: \(error.localizedDescription)"
-            }
-        }
+        // Returning to planning must preserve the discussion and any request already in flight.
+        // Only the confirmed "New program discussion" action replaces an unfinished program chat.
+        if !replacingConversation && hasUnfinishedProgramPlanning { return true }
         cancelCoachRequest()
+        let conversation = CoachConversation.programPlanning(profile: state.athleteProfile, existingProgram: state.trainingProgram)
         guard update({ try $0.saveCoachConversation(conversation) }) else { return false }
         coachError = nil
+        requestCoachReply()
         return true
+    }
+
+    func prepareProgramWorkout(checkIn: SessionCheckIn) -> WorkoutPlan? {
+        guard !storageBlocked, state.activeWorkout == nil else {
+            errorMessage = "Finish or resume your current workout before starting another."
+            return nil
+        }
+        cancelCoachRequest()
+        do { return try state.nextProgramPlan(checkIn: checkIn) }
+        catch { errorMessage = error.localizedDescription; return nil }
+    }
+
+    func startProgramWorkout(plan: WorkoutPlan, readiness: WorkoutReadiness, expectedStoreID: String, expectedRevision: Int) -> String? {
+        guard !storageBlocked, state.storeID == expectedStoreID, state.revision == expectedRevision else {
+            errorMessage = "Your program or training changed. Review today's workout again before starting."
+            return nil
+        }
+        var workoutID: String?
+        let saved = update { state in
+            guard plan.checkIn.energy == readiness.energy, plan.checkIn.allSoreness == readiness.soreness else {
+                throw GymaError.stale("The workout and readiness check changed. Review your current check-in before starting.")
+            }
+            if plan.acceptedAt != nil, state.coachConversation?.plan == plan {
+                workoutID = try state.startAcceptedPlan(planID: plan.id, readiness: readiness)
+            } else {
+                workoutID = try state.startPreparedProgramPlan(plan, readiness: readiness)
+            }
+        }
+        return saved ? workoutID : nil
+    }
+
+    @discardableResult
+    func discussProgramWorkout(plan: WorkoutPlan, expectedStoreID: String, expectedRevision: Int) -> Bool {
+        guard !storageBlocked, !coachRequestInFlight, state.activeWorkout == nil,
+              state.storeID == expectedStoreID, state.revision == expectedRevision, hasCoachAPIKey else {
+            errorMessage = "Review today's workout again and connect your coach before asking for adjustments."
+            return false
+        }
+        do {
+            let now = Date()
+            try plan.validate(catalog: state.catalog)
+            try state.validateProgramLink(plan, now: now)
+            try state.validatePlanningContext(plan)
+            guard let sessionID = plan.programSessionID, plan.isScheduledForToday(at: now) else {
+                throw GymaError.stale("Prepare today's session from your saved program before discussing adjustments.")
+            }
+            var draft = plan
+            draft.acceptedAt = nil
+            var conversation = CoachConversation(checkIn: plan.checkIn, messages: [
+                .init(role: .user, content: "Review and adjust this prepared workout using the check-in I just entered, especially any pain, soreness, energy or time limits. Explain comfortable changes and ask me if essential information is missing. Keep this a daily workout linked to programSessionID \(sessionID); leave my saved recurring program unchanged. Return a workout proposal when ready, not a replacement program.")
+            ], plan: draft)
+            conversation.purpose = .workout
+            guard update({ try $0.saveCoachConversation(conversation) }) else { return false }
+            coachError = nil
+            requestCoachReply()
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
     }
 
     @discardableResult
@@ -169,6 +225,8 @@ final class GymaAppModel: ObservableObject {
             conversation.messages.append(CoachMessage(role: .user, content: text))
         }
         conversation.plan?.acceptedAt = nil
+        conversation.acceptedProgramID = nil
+        conversation.proposedExercises = nil
         guard update({ try $0.saveCoachConversation(conversation) }) else { return false }
         requestCoachReply()
         return true
@@ -206,7 +264,7 @@ final class GymaAppModel: ObservableObject {
             }
             do {
                 let reply = try await OpenAICoachService.reply(conversation: conversation, state: requestState, apiKey: apiKey)
-                // A restore, replacement check-in, or edited conversation must never receive an old reply.
+                // A restore, replacement discussion, or edited conversation must never receive an old reply.
                 guard !Task.isCancelled, coachGeneration == generation,
                       state.coachConversation == conversation, state.activeWorkout == nil,
                       state.storeID == requestState.storeID, state.revision == requestState.revision else {
@@ -217,6 +275,8 @@ final class GymaAppModel: ObservableObject {
                 next.messages.append(CoachMessage(role: .assistant, content: reply.message))
                 next.plan = reply.plan
                 next.proposedProgram = reply.program
+                next.proposedExercises = reply.proposedExercises.isEmpty ? nil : reply.proposedExercises
+                next.acceptedProgramID = nil
                 next.plan?.acceptedAt = nil
                 if !update({ try $0.saveCoachConversation(next) }) {
                     coachError = "The reply could not be saved. Your conversation and previous draft are still available. Try again."
@@ -256,16 +316,19 @@ final class GymaAppModel: ObservableObject {
     }
 
     @discardableResult
-    func beginProgramReview() -> Bool {
-        guard state.activeWorkout == nil, let program = state.trainingProgram else { return false }
-        let checkIn = SessionCheckIn(shift: .off, energy: .good, timeMinutes: min(180, state.athleteProfile?.usualSessionMinutes ?? 45))
-        let prompt = "Review my saved program \"\(program.title)\" using my profile, completed training, feedback and progression. Explain what is working and any uncertainty. Ask what I want to change, or propose a complete revised program only if justified. Today's readiness has not been checked; do not assume it is good."
-        cancelCoachRequest()
-        let conversation = CoachConversation(checkIn: checkIn, messages: [.init(role: .user, content: prompt)])
-        guard update({ try $0.saveCoachConversation(conversation) }) else { return false }
+    func acceptCoachExercises(_ proposals: [CoachExerciseProposal]) -> Bool {
+        guard !storageBlocked, !coachRequestInFlight, state.activeWorkout == nil,
+              !proposals.isEmpty, state.coachConversation?.messages.last?.role == .assistant else { return false }
+        guard update({ try $0.acceptCoachExerciseProposals(proposals) }) else { return false }
         coachError = nil
         requestCoachReply()
         return true
+    }
+
+    @discardableResult
+    func beginProgramReview() -> Bool {
+        guard state.trainingProgram != nil else { return false }
+        return beginProgramPlanning()
     }
 
     func startCoachPlan(_ planID: String, readiness: WorkoutReadiness? = nil) -> String? {

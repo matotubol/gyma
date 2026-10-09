@@ -3,7 +3,9 @@ import GymaCore
 
 struct TrainingProgramView: View {
     @EnvironmentObject private var model: GymaAppModel
-    @State private var checkingIn = false
+    @State private var workoutStartPresented = false
+    @State private var activePresented = false
+    @State private var selectedWorkoutID: String?
     @State private var showingCoach = false
     @State private var archivePresented = false
 
@@ -32,8 +34,8 @@ struct TrainingProgramView: View {
                                 }
                             }.padding(.vertical, 3)
                         }
-                        Button("Prepare next session", systemImage: "list.clipboard") { checkingIn = true }
-                            .disabled(model.state.activeWorkout != nil || model.storageBlocked)
+                        Button("Start next workout", systemImage: "play.fill") { workoutStartPresented = true }
+                            .disabled(model.state.activeWorkout != nil || model.storageBlocked || model.coachRequestInFlight)
                     } header: { Text("Next session · \(next.title)") } footer: {
                         Text("Sessions repeat in order after you finish them. Missed days do not create extra work. Review today's readiness and targets before accepting.")
                     }
@@ -44,9 +46,10 @@ struct TrainingProgramView: View {
                         .font(.subheadline)
                     NavigationLink("Edit progression rules") { ProgressionRuleView(program: program) }
                         .disabled(model.state.activeWorkout != nil || model.storageBlocked)
-                    Button("Discuss program changes", systemImage: "bubble.left.and.bubble.right") {
+                    Button(model.hasUnfinishedProgramPlanning ? "Continue planning" : "Discuss program changes", systemImage: "bubble.left.and.bubble.right") {
                         if model.beginProgramReview() { showingCoach = true }
-                    }.disabled(model.state.activeWorkout != nil || model.storageBlocked)
+                    }.disabled(model.state.activeWorkout != nil || model.storageBlocked ||
+                               (!model.hasUnfinishedProgramPlanning && (model.coachRequestInFlight || !model.hasCoachAPIKey)))
                 } header: { Text("Progression") } footer: {
                     Text("Missing effort, changed prescriptions and long gaps require review. These rules are configurable starting points, not a measurement of your recovery.")
                 }
@@ -59,8 +62,11 @@ struct TrainingProgramView: View {
                     Text("A plan that remembers last time").font(.title2.bold())
                     Text("Save your goals, schedule and equipment in Profile, then discuss a recurring program with your coach.")
                     NavigationLink("Your profile") { AthleteProfileView() }
-                    Button("Plan with coach", systemImage: "sparkles") { checkingIn = true }
-                        .disabled(model.state.activeWorkout != nil || model.storageBlocked || !model.hasCoachAPIKey)
+                    Button(model.hasUnfinishedProgramPlanning ? "Continue planning" : "Plan with coach", systemImage: "sparkles") {
+                        if model.beginProgramPlanning() { showingCoach = true }
+                    }
+                        .disabled(model.state.activeWorkout != nil || model.storageBlocked ||
+                                  (!model.hasUnfinishedProgramPlanning && (model.coachRequestInFlight || !model.hasCoachAPIKey)))
                 }
             }
             if let history = model.state.programHistory, !history.isEmpty {
@@ -73,10 +79,17 @@ struct TrainingProgramView: View {
         }
         .navigationTitle("Your program")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $checkingIn) {
-            CheckInView { checkingIn = false; showingCoach = true; model.requestCoachReply() }
+        .sheet(isPresented: $workoutStartPresented) {
+            ProgramWorkoutStartView { workoutID in
+                workoutStartPresented = false
+                selectedWorkoutID = workoutID
+                activePresented = true
+            }
         }
         .navigationDestination(isPresented: $showingCoach) { CoachView(onAccepted: { showingCoach = false }) }
+        .navigationDestination(isPresented: $activePresented) {
+            if let selectedWorkoutID { ActiveWorkoutView(workoutID: selectedWorkoutID) }
+        }
         .confirmationDialog("Archive this program?", isPresented: $archivePresented, titleVisibility: .visible) {
             Button("Archive program", role: .destructive) { model.update { try $0.archiveTrainingProgram() } }
         } message: { Text("Your training and program versions are kept. You can restore a previous version or plan a new program.") }
@@ -104,7 +117,7 @@ struct ProgramProposalCard: View {
             ProgramSessionsContent(program: program)
             Text("Default increment: \(program.progressionRule.loadIncrementKg.gymaNumber) kg after \(program.progressionRule.successfulExposuresRequired) successful comparable sessions. Equipment-specific increments take precedence.")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("Accepting saves the recurring program and prepares a session for you to review. It does not start a workout.")
+            Text("Accepting saves your recurring sessions for the calendar. Check in about daily readiness when you start each workout from Overview.")
                 .font(.caption).foregroundStyle(.secondary)
             Button("Accept program", systemImage: "checkmark") { _ = model.acceptCoachProgram(program.id) }
                 .buttonStyle(.borderedProminent)

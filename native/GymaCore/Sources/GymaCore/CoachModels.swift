@@ -56,18 +56,47 @@ public struct WorkoutPlan: Codable, Sendable, Identifiable, Equatable {
     }
 }
 
+public enum CoachConversationPurpose: String, Codable, Sendable {
+    case program, workout
+}
+
 public struct CoachConversation: Codable, Sendable, Equatable {
+    /// Nil preserves the workout-planning behavior of saved conversations from older app versions.
+    public var purpose: CoachConversationPurpose?
+    /// Retained for backup compatibility; never reported as readiness in a program conversation.
     public var checkIn: SessionCheckIn
     public var messages: [CoachMessage]
     public var plan: WorkoutPlan?
     public var startedWorkoutID: String?
     public var proposedProgram: TrainingProgram?
+    public var proposedExercises: [CoachExerciseProposal]?
+    public var acceptedProgramID: String?
+    public var isProgramPlanning: Bool { purpose == .program }
     public init(checkIn: SessionCheckIn, messages: [CoachMessage] = [], plan: WorkoutPlan? = nil) {
         self.checkIn = checkIn; self.messages = messages; self.plan = plan
     }
+    public static func programPlanning(profile: AthleteProfile? = nil, existingProgram: TrainingProgram? = nil) -> CoachConversation {
+        // This compatibility placeholder is neither user-reported nor used to prepare a workout.
+        var conversation = CoachConversation(checkIn: .init(shift: .off, energy: .medium,
+                                                            timeMinutes: min(180, max(10, profile?.usualSessionMinutes ?? 45))))
+        conversation.purpose = .program
+        let request = existingProgram == nil ? "Create a recurring training program" : "Review and revise my recurring training program"
+        conversation.messages = [.init(role: .user, content: "\(request) for my eight-week calendar using my saved profile, schedule, preferences and training history. Keep the sessions repeatable and explain progression. Ask about missing long-term information if needed. I will check in about daily readiness when I start a workout; do not plan a workout for today.")]
+        return conversation
+    }
     public func validate(catalog: [ExerciseDefinition]) throws {
         try checkIn.validate()
+        guard !isProgramPlanning || (plan == nil && startedWorkoutID == nil) else {
+            throw GymaError.invalid("Program planning cannot prepare or start today's workout. Check in when you are ready to train.")
+        }
+        guard acceptedProgramID.map({ isProgramPlanning && !$0.isEmpty && $0.count <= 200 && proposedProgram == nil && (proposedExercises ?? []).isEmpty }) ?? true else {
+            throw GymaError.invalid("Invalid program-planning acceptance.")
+        }
         try proposedProgram?.validate(catalog: catalog)
+        try CoachExerciseProposal.validate(proposedExercises ?? [], catalog: catalog)
+        guard (proposedExercises ?? []).isEmpty || (plan == nil && proposedProgram == nil && startedWorkoutID == nil) else {
+            throw GymaError.invalid("Save proposed exercises to your library before reviewing a program or workout that uses them.")
+        }
         guard proposedProgram == nil || (plan == nil && startedWorkoutID == nil) else {
             throw GymaError.invalid("Review a program proposal before preparing its session.")
         }

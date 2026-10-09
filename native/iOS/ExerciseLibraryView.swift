@@ -20,7 +20,7 @@ struct ExerciseLibraryView: View {
                 Button("Create custom exercise", systemImage: "plus.circle") { createPresented = true }
                     .disabled(model.storageBlocked)
             } footer: {
-                Text("Add the cable, Smith or machine variants you actually use. Your coach can plan with these exercises on its next request.")
+                Text("Add the cable, Smith or machine variants you actually use. If you are unsure of the name or details, describe the movement to your coach. You can review and confirm its suggestion before saving it here.")
             }
             if !exercises.filter(\.custom).isEmpty {
                 Section("Your exercises") {
@@ -234,6 +234,7 @@ private struct LibraryExerciseEditor: View {
                 }
                 state.coachConversation?.plan?.acceptedAt = nil
                 state.coachConversation?.proposedProgram = nil
+                state.coachConversation?.proposedExercises = nil
             }) {
                 model.notice = "Exercise saved to your library."
                 dismiss()

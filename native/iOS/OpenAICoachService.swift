@@ -11,7 +11,7 @@ enum OpenAICoachService {
                                            reviews: state.workoutReviews ?? [], feedback: state.workoutFeedback ?? [], priorPrograms: state.programHistory ?? [], trainingCalendar: state.trainingCalendar)
         let data = try await request(body: body, apiKey: apiKey)
         do { return try CoachAPI.parseResponse(data, checkIn: conversation.checkIn, catalog: state.catalog,
-                                               profile: state.athleteProfile, existingProgram: state.trainingProgram) }
+                                               profile: state.athleteProfile, existingProgram: state.trainingProgram, isProgramPlanning: conversation.isProgramPlanning) }
         catch let error as GymaError { throw error }
         catch { throw unreadableReply }
     }

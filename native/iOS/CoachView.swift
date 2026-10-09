@@ -5,7 +5,9 @@ struct CoachView: View {
     @EnvironmentObject private var model: GymaAppModel
     @Environment(\.dismiss) private var dismiss
     var onAccepted: (() -> Void)? = nil
-    @State private var checkInPresented = false
+    @State private var workoutStartPresented = false
+    @State private var activePresented = false
+    @State private var selectedWorkoutID: String?
     @State private var replacePresented = false
     @State private var message = ""
     @FocusState private var composerFocused: Bool
@@ -27,12 +29,17 @@ struct CoachView: View {
                     }.font(.subheadline)
                     if model.state.activeWorkout != nil {
                         workoutInProgress
-                    } else if let plan = conversation?.plan, plan.acceptedAt != nil {
+                    } else if let program = model.state.trainingProgram,
+                              conversation?.isProgramPlanning == true,
+                              conversation?.acceptedProgramID == program.id {
+                        acceptedProgram(program)
+                    } else if conversation?.startedWorkoutID == nil, let plan = conversation?.plan, plan.acceptedAt != nil {
                         acceptedPlan(plan)
                     } else {
                         if !model.hasCoachAPIKey { keySetup }
                         if let conversation, conversation.startedWorkoutID == nil {
-                            checkInSummary(conversation.checkIn)
+                            if conversation.isProgramPlanning { programPlanningSummary }
+                            else { checkInSummary(conversation.checkIn) }
                             ForEach(conversation.messages) { chatMessage($0) }
                             if model.coachRequestInFlight {
                                 ProgressView("Your coach is thinking…")
@@ -51,13 +58,17 @@ struct CoachView: View {
                             }
                             if let plan = conversation.plan { planCard(plan) }
                             if let program = conversation.proposedProgram { ProgramProposalCard(program: program) }
+                            if let proposals = conversation.proposedExercises, !proposals.isEmpty {
+                                exerciseProposalsCard(proposals)
+                            }
                             composer
                         } else {
                             introduction
                             if let previous = conversation {
                                 DisclosureGroup("Previous conversation") {
                                     VStack(alignment: .leading, spacing: 18) {
-                                        checkInSummary(previous.checkIn, heading: "PREVIOUS CHECK-IN")
+                                        if previous.isProgramPlanning { programPlanningSummary }
+                                        else { checkInSummary(previous.checkIn, heading: "PREVIOUS CHECK-IN") }
                                         ForEach(previous.messages) { chatMessage($0) }
                                     }
                                     .padding(.top, 14)
@@ -79,23 +90,26 @@ struct CoachView: View {
         .toolbar {
             if conversation != nil && conversation?.startedWorkoutID == nil && model.state.activeWorkout == nil {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("New check-in", systemImage: "plus") { replacePresented = true }
-                        .disabled(model.storageBlocked)
+                    Button("New program discussion", systemImage: "plus") { replacePresented = true }
+                        .disabled(model.storageBlocked || model.coachRequestInFlight || !model.hasCoachAPIKey)
                 }
             }
         }
-        .sheet(isPresented: $checkInPresented) {
-            CheckInView {
-                message = ""
-                checkInPresented = false
-                model.requestCoachReply()
+        .sheet(isPresented: $workoutStartPresented) {
+            ProgramWorkoutStartView { workoutID in
+                workoutStartPresented = false
+                selectedWorkoutID = workoutID
+                activePresented = true
             }
         }
+        .navigationDestination(isPresented: $activePresented) {
+            if let selectedWorkoutID { ActiveWorkoutView(workoutID: selectedWorkoutID) }
+        }
         .confirmationDialog("Replace this coach conversation?", isPresented: $replacePresented, titleVisibility: .visible) {
-            Button("New check-in", role: .destructive) { checkInPresented = true }
+            Button("Start program discussion", role: .destructive) { beginProgramPlanning(replacingConversation: true) }
             Button("Keep conversation", role: .cancel) { }
         } message: {
-            Text("Creating a new plan replaces this conversation and its workout draft. Your completed workouts are kept.")
+            Text("This starts a new program discussion using your profile, calendar and training history. It replaces this conversation and any unaccepted proposal.")
         }
         .onAppear { model.refreshCoachCredentials() }
     }
@@ -108,13 +122,23 @@ struct CoachView: View {
                 .font(.system(.largeTitle, design: .rounded, weight: .bold))
             Text(model.state.trainingProgram == nil
                  ? "Set up your profile, then build a recurring program with your coach. Your goals, equipment and training history carry into every conversation."
-                 : "Check in to prepare the next session from your saved program. Review its progression, then accept or discuss adjustments with your coach.")
+                 : "Your saved program keeps your sessions consistent. Discuss longer-term changes with your coach, or start your next workout when you are ready to train.")
                 .foregroundStyle(.secondary)
-            Text("After accepting, start from Overview or your Watch. Your Watch guides each exercise and logs what you actually lift.")
+            Text("Plan the program now. Check in about energy, sleep and soreness once, when you start each workout.")
                 .font(.subheadline).foregroundStyle(.secondary)
-            Button("Check in", systemImage: "sparkles") { checkInPresented = true }
+            Text("Unsure what an exercise or machine is called? Describe how you use it. Your coach can suggest an exercise to review and save to your library.")
+                .font(.subheadline).foregroundStyle(.secondary)
+            Button(model.state.trainingProgram == nil ? "Plan program with coach" : "Discuss program changes", systemImage: "sparkles") {
+                if conversation != nil { replacePresented = true }
+                else { beginProgramPlanning() }
+            }
                 .font(.headline).buttonStyle(.borderedProminent)
-                .disabled((!model.hasCoachAPIKey && model.state.trainingProgram == nil) || model.storageBlocked)
+                .disabled(!model.hasCoachAPIKey || model.storageBlocked || model.coachRequestInFlight)
+            if model.state.trainingProgram != nil {
+                Button("Start next workout", systemImage: "play.fill") { workoutStartPresented = true }
+                    .buttonStyle(.bordered).disabled(model.storageBlocked || model.coachRequestInFlight)
+            }
+            if let error = model.coachError { Text(error).font(.subheadline).foregroundStyle(.orange) }
         }
         .padding(22).frame(maxWidth: .infinity, alignment: .leading)
         .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 24))
@@ -156,6 +180,50 @@ struct CoachView: View {
         }
         .padding(22).frame(maxWidth: .infinity, alignment: .leading)
         .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private func acceptedProgram(_ program: TrainingProgram) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Program saved", systemImage: "checkmark.seal.fill")
+                .font(.headline).foregroundStyle(GymaStyle.accent)
+            Text(program.title).font(.title2.bold())
+            Text("Your recurring sessions are ready in your calendar. When you are ready to train, start your next workout from Overview and check in once for that day.")
+                .foregroundStyle(.secondary)
+            Button("Done", action: closePlanning).buttonStyle(.borderedProminent)
+            Button("Discuss program changes", systemImage: "bubble.left.and.bubble.right") { replacePresented = true }
+                .buttonStyle(.bordered)
+                .disabled(!model.hasCoachAPIKey || model.storageBlocked || model.coachRequestInFlight)
+        }
+        .padding(22).frame(maxWidth: .infinity, alignment: .leading)
+        .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private var programPlanningSummary: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label("PROGRAM PLANNING", systemImage: "calendar")
+                .font(.caption.weight(.bold)).foregroundStyle(GymaStyle.accent)
+            if let calendar = model.state.trainingCalendar {
+                Text("Eight weeks · \(calendar.startDate.formatted(date: .abbreviated, time: .omitted))–\(calendar.lastDate.formatted(date: .abbreviated, time: .omitted))")
+                    .font(.subheadline)
+                Text("\(calendar.trainingCycleDays.count) sessions per 10-day shift cycle")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let profile = model.state.athleteProfile {
+                Text("\(profile.primaryGoal.label) · \(profile.experience.label)")
+                    .font(.subheadline)
+            }
+            Text("Your coach uses your profile, schedule and training history to plan repeatable sessions. Daily readiness is checked when you start a workout.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(18).frame(maxWidth: .infinity, alignment: .leading)
+        .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 20))
+    }
+
+    private func beginProgramPlanning(replacingConversation: Bool = false) {
+        if model.beginProgramPlanning(replacingConversation: replacingConversation) {
+            message = ""
+            composerFocused = false
+        }
     }
 
     private func closePlanning() {
@@ -251,10 +319,54 @@ struct CoachView: View {
         target.repsMin == target.repsMax ? "\(target.repsMin)" : "\(target.repsMin)–\(target.repsMax)"
     }
 
+    private func exerciseProposalsCard(_ proposals: [CoachExerciseProposal]) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label("EXERCISES TO REVIEW", systemImage: "dumbbell")
+                .font(.caption.weight(.bold)).foregroundStyle(GymaStyle.accent)
+            Text("Check these match your equipment and movement. Describe any corrections in the chat below before saving.")
+                .font(.subheadline).foregroundStyle(.secondary)
+            ForEach(proposals) { proposal in
+                VStack(alignment: .leading, spacing: 8) {
+                    Divider()
+                    Text(proposal.exercise.name).font(.headline)
+                    LabeledContent("Soreness region", value: proposal.exercise.muscle.label)
+                    if let metadata = proposal.exercise.trainingMetadata {
+                        LabeledContent("Main muscles", value: metadata.primaryMuscles.map(\.label).joined(separator: ", "))
+                        LabeledContent("Secondary muscles", value: metadata.secondaryMuscles.isEmpty ? "None specified" : metadata.secondaryMuscles.map(\.label).joined(separator: ", "))
+                        LabeledContent("Equipment", value: metadata.equipment?.label ?? "Not specified")
+                        LabeledContent("How to log weight", value: metadata.loadConvention.label)
+                        LabeledContent("Measurement", value: metadata.measurement == .seconds ? "Seconds" : "Repetitions")
+                    } else {
+                        Text("Muscle, equipment and weight details are not specified. Ask your coach to clarify these before saving.")
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(proposal.explanation).foregroundStyle(.secondary)
+                }.font(.subheadline)
+            }
+            Text("Saving adds these exercises to your library so the coach can use them in your program. You will review the program separately.")
+                .font(.caption).foregroundStyle(.secondary)
+            Button {
+                if model.acceptCoachExercises(proposals) { composerFocused = false }
+            } label: {
+                Label("Save exercises & continue", systemImage: "checkmark")
+                    .font(.headline).frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(model.storageBlocked || model.coachRequestInFlight || model.state.activeWorkout != nil ||
+                      conversation?.proposedExercises != proposals || conversation?.messages.last?.role != .assistant)
+        }
+        .padding(20).frame(maxWidth: .infinity, alignment: .leading)
+        .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 24))
+    }
+
     private var composer: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Talk it through").font(.headline)
-            Text("Ask for a different exercise, load, number of sets or rest time.")
+            Text(conversation?.isProgramPlanning == true
+                 ? "Discuss your goals, recurring sessions, exercise choices and progression."
+                 : "Ask for a different exercise, load, number of sets or rest time.")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("You can describe unfamiliar machines in your own words. Your coach will ask for details when needed and show any new exercises for you to confirm.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack(alignment: .bottom, spacing: 10) {
                 TextField("What would you like to change?", text: $message, axis: .vertical)

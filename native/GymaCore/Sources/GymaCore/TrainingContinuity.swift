@@ -42,8 +42,10 @@ public extension GymaState {
               var program = conversation.proposedProgram, program.id == programID else {
             throw GymaError.stale("That program proposal has changed. Review the current proposal.")
         }
+        try conversation.validate(catalog: catalog)
         try program.validate(catalog: catalog)
         for session in program.sessions { try CoachingConstraints.validate(exercises: session.exercises, profile: athleteProfile, catalog: catalog) }
+        try validateAvailableIncrements(program)
         var next = self
         if let previous = trainingProgram {
             next.programHistory = Array(((programHistory ?? []) + [previous]).suffix(100))
@@ -52,8 +54,13 @@ public extension GymaState {
         try program.validate(catalog: catalog)
         next.trainingProgram = program
         conversation.proposedProgram = nil
-        conversation.messages.append(.init(role: .assistant, content: "Program saved. Its sessions repeat in order; missed days do not add extra work. Review today's session below."))
-        conversation.plan = try next.nextProgramPlan(checkIn: conversation.checkIn, now: now)
+        if conversation.isProgramPlanning {
+            conversation.acceptedProgramID = program.id
+            conversation.messages.append(.init(role: .assistant, content: "Program saved. Its sessions repeat across your calendar; missed days do not add extra work. Check in when you start a workout so daily adjustments leave the saved program unchanged."))
+        } else {
+            conversation.messages.append(.init(role: .assistant, content: "Program saved. Its sessions repeat in order; missed days do not add extra work. Review today's session below."))
+            conversation.plan = try next.nextProgramPlan(checkIn: conversation.checkIn, now: now)
+        }
         try conversation.validate(catalog: catalog)
         next.coachConversation = conversation
         next.revision += 1

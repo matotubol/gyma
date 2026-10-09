@@ -296,6 +296,9 @@ private struct TrainingCalendarDayView: View {
     @Environment(\.dismiss) private var dismiss
     let dayOffset: Int
     @State private var movePresented = false
+    @State private var startingProgram = false
+    @State private var activePresented = false
+    @State private var activeWorkoutID: String?
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -312,6 +315,16 @@ private struct TrainingCalendarDayView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         .sheet(isPresented: $movePresented) { TrainingCalendarMoveView(sourceOffset: dayOffset) }
+        .sheet(isPresented: $startingProgram) {
+            ProgramWorkoutStartView { workoutID in
+                startingProgram = false
+                activeWorkoutID = workoutID
+                activePresented = true
+            }
+        }
+        .navigationDestination(isPresented: $activePresented) {
+            if let activeWorkoutID { ActiveWorkoutView(workoutID: activeWorkoutID) }
+        }
     }
 
     @ViewBuilder
@@ -359,10 +372,14 @@ private struct TrainingCalendarDayView: View {
         }
         if plan.calendar.isDate(day.date, inSameDayAs: now), day.workouts.isEmpty {
             Section {
-                NavigationLink { CoachView() } label: { Label("Check in with coach", systemImage: "bubble.left.and.bubble.right") }
-                    .disabled(model.storageBlocked || model.state.activeWorkout != nil)
+                if model.state.trainingProgram != nil {
+                    Button("Start next workout", systemImage: "play.fill") { startingProgram = true }
+                        .disabled(model.storageBlocked || model.state.activeWorkout != nil)
+                } else {
+                    NavigationLink("Plan your program with coach") { TrainingProgramView() }
+                }
             } footer: {
-                Text("Review today's sleep, energy and soreness, then accept a workout before starting.")
+                Text("Program planning uses your goals and schedule. Today's sleep, energy and soreness are collected only when starting a workout.")
             }
         }
         Section {
