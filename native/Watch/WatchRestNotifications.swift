@@ -15,6 +15,7 @@ final class WatchRestNotifications: NSObject, ObservableObject {
     // (which also became false if notification permission was denied).
     @Published private(set) var enabled = UserDefaults.standard.object(forKey: "watchRestHapticsEnabled") as? Bool ?? true
     @Published private(set) var message: String?
+    @Published private(set) var isTestingHaptic = false
     private let center = UNUserNotificationCenter.current()
     private let identifier = "gyma.confirmed-rest"
     private var snapshot: CompanionSnapshot?
@@ -39,8 +40,25 @@ final class WatchRestNotifications: NSObject, ObservableObject {
         center.delegate = self
     }
 
-    func update(_ snapshot: CompanionSnapshot?) { self.snapshot = snapshot; reconcile() }
-    func updatePendingCommand(_ command: WatchCommand?) { pending = command; reconcile() }
+    func update(_ snapshot: CompanionSnapshot?) {
+        if self.snapshot?.storeID != snapshot?.storeID ||
+            self.snapshot?.activeWorkout?.id != snapshot?.activeWorkout?.id ||
+            self.snapshot?.restTimer?.id != snapshot?.restTimer?.id ||
+            self.snapshot?.restTimer?.endsAt != snapshot?.restTimer?.endsAt {
+            stopHapticPreview()
+        }
+        self.snapshot = snapshot; reconcile()
+    }
+    func updatePendingCommand(_ command: WatchCommand?) {
+        pending = command
+        if let command {
+            switch command.action {
+            case .skipRest, .finishWorkout: stopHapticPreview()
+            default: break
+            }
+        }
+        reconcile()
+    }
     func setAppActive(_ active: Bool) {
         isAppActive = active
         foregroundCheckGeneration += 1
@@ -85,11 +103,21 @@ final class WatchRestNotifications: NSObject, ObservableObject {
         enabled = value
         UserDefaults.standard.set(value, forKey: "watchRestHapticsEnabled")
         if value { await prepareForWorkout() }
-        else { message = nil }
+        else { message = nil; stopHapticPreview() }
         reconcile()
     }
 
-    func testHaptic() { playGentleCue(restKey: nil) }
+    func testHaptic() {
+        // A settings preview must never replace an actual rest alert that has
+        // already been marked delivered for deduplication.
+        guard cueRestKey == nil else { return }
+        if isTestingHaptic { stopHapticPreview() }
+        else { playRestCue(restKey: nil) }
+    }
+
+    func stopHapticPreview() {
+        if isTestingHaptic { cancelRestCue() }
+    }
 
     func finishPendingScheduling() async {
         var generation: Int
@@ -106,7 +134,7 @@ final class WatchRestNotifications: NSObject, ObservableObject {
     }
 
     private func reconcileHaptic() {
-        if cueTask != nil && !canContinueCue(restKey: cueRestKey) { cancelGentleCue() }
+        if cueTask != nil && !canContinueCue(restKey: cueRestKey) { cancelRestCue() }
         guard !checkingDeliveredAlert, let schedule = desiredHaptic() else {
             hapticTask?.cancel(); hapticTask = nil; hapticKey = nil
             return
@@ -128,32 +156,50 @@ final class WatchRestNotifications: NSObject, ObservableObject {
         guard let desired = desiredHaptic(), desired.key == key, desired.delay <= 0.1 else { return }
         lastHapticKey = key
         UserDefaults.standard.set(key, forKey: "watchLastRestHapticV2")
-        playGentleCue(restKey: key)
+        playRestCue(restKey: key)
         center.removeDeliveredNotifications(withIdentifiers: [identifier])
     }
 
-    /// Two brief generic taps mark the rest boundary, without the notification
-    /// pattern. Space them apart so the engine finishes each pulse. WatchKit
-    /// doesn't expose per-call audio muting or the Mindfulness app's waveform.
-    private func playGentleCue(restKey: String?) {
-        cancelGentleCue()
+    /// Use the attention-getting notification pattern for ten seconds rather
+    /// than a brief click. WatchKit controls each pulse's intensity and duration;
+    /// spacing prevents rapid calls from interrupting an in-flight pattern.
+    /// System Silent Mode controls its tones independently of notification audio.
+    private func playRestCue(restKey: String?) {
+        cancelRestCue()
         guard canContinueCue(restKey: restKey) else { return }
         cueRestKey = restKey
+        isTestingHaptic = restKey == nil
         let generation = cueGeneration
-        WKInterfaceDevice.current().play(.click)
+        WKInterfaceDevice.current().play(.notification)
         cueTask = Task { @MainActor [weak self] in
-            do { try await Task.sleep(nanoseconds: 800_000_000) }
-            catch { return }
-            guard let self, !Task.isCancelled, self.cueGeneration == generation else { return }
-            if self.canContinueCue(restKey: restKey) { WKInterfaceDevice.current().play(.click) }
-            self.cueTask = nil
-            self.cueRestKey = nil
+            // Six full patterns at 0, 2, 4, 6, 8 and 10 seconds. Recheck the
+            // current rest before every pulse so Dismiss stops all later pulses.
+            for _ in 0..<5 {
+                do { try await Task.sleep(nanoseconds: 2_000_000_000) }
+                catch { return }
+                guard let self, !Task.isCancelled, self.cueGeneration == generation else { return }
+                guard self.canContinueCue(restKey: restKey) else {
+                    self.cancelRestCue()
+                    return
+                }
+                WKInterfaceDevice.current().play(.notification)
+            }
+            guard let self, self.cueGeneration == generation else { return }
+            self.cueTask = nil; self.cueRestKey = nil; self.isTestingHaptic = false
         }
     }
 
     private func canContinueCue(restKey: String?) -> Bool {
         guard isAppActive || workoutRunning else { return false }
-        guard let restKey else { return isAppActive } // Explicit settings preview.
+        guard let restKey else {
+            if let pending {
+                switch pending.action {
+                case .skipRest, .finishWorkout: return false
+                default: break
+                }
+            }
+            return isAppActive // Explicit settings preview.
+        }
         guard enabled, let snapshot, let timer = snapshot.restTimer,
               timer.workoutID == snapshot.activeWorkout?.id,
               restKey == RestAlertPolicy.key(timer: timer, storeID: snapshot.storeID),
@@ -162,8 +208,9 @@ final class WatchRestNotifications: NSObject, ObservableObject {
         return true
     }
 
-    private func cancelGentleCue() {
+    private func cancelRestCue() {
         cueTask?.cancel(); cueTask = nil; cueRestKey = nil; cueGeneration += 1
+        isTestingHaptic = false
     }
 
     private func reconcile() {

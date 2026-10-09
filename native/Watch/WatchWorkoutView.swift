@@ -604,7 +604,7 @@ private struct WatchWorkoutSettings: View {
                         get: { notifications.enabled },
                         set: { value in Task { await notifications.setEnabled(value) } }
                     ))
-                    Button("Test vibration") { notifications.testHaptic() }
+                    Button(notifications.isTestingHaptic ? "Stop vibration" : "Test vibration") { notifications.testHaptic() }
                     if let message = notifications.message {
                         Text(message).font(.caption2).foregroundStyle(.orange)
                     }
@@ -618,6 +618,7 @@ private struct WatchWorkoutSettings: View {
                 }
             }
             .navigationTitle("Settings")
+            .onDisappear { notifications.stopHapticPreview() }
         }
     }
 }
