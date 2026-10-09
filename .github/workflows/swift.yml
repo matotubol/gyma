@@ -5,10 +5,12 @@ on:
     branches: [swift, main]
     paths:
       - 'native/**'
+      - '!native/tools/iloader-watch/**'
       - '.github/workflows/swift.yml'
   pull_request:
     paths:
       - 'native/**'
+      - '!native/tools/iloader-watch/**'
       - '.github/workflows/swift.yml'
   workflow_dispatch:
 
