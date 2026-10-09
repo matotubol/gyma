@@ -438,7 +438,7 @@ private struct WatchReadinessView: View {
         self.context = context
         _energy = State(initialValue: context.plan.energy)
         _soreness = State(initialValue: Dictionary(uniqueKeysWithValues: Muscle.allCases.map {
-            ($0, context.plan.soreness[$0] ?? .none)
+            ($0, context.plan.soreness[$0] ?? Soreness.none)
         }))
     }
 
@@ -458,8 +458,8 @@ private struct WatchReadinessView: View {
                     }
                     Section("Muscle soreness") {
                         ForEach(Muscle.allCases) { muscle in
-                            Picker(muscle.label, selection: Binding(
-                                get: { soreness[muscle] ?? .none },
+                            Picker(muscle.label, selection: Binding<Soreness>(
+                                get: { soreness[muscle] ?? Soreness.none },
                                 set: { soreness[muscle] = $0 }
                             )) {
                                 ForEach(Soreness.allCases) { value in Text(value.label).tag(value) }

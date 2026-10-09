@@ -209,8 +209,10 @@ struct CheckInView: View {
                     Stepper("Time available: \(minutes) min", value: $minutes, in: 10...180, step: 5)
                     TextField("Sleep in hours (optional)", text: $sleep).keyboardType(.decimalPad)
                 }
-                Section("Muscle soreness") {
+                Section {
                     SorenessFields(soreness: $soreness)
+                } header: {
+                    Text("Muscle soreness")
                 } footer: {
                     Text("Every muscle group starts at None. You can review this again before starting the workout.")
                 }
