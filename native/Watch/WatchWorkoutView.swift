@@ -52,8 +52,17 @@ struct WatchWorkoutView: View {
                 .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
             }
             .background(Color.black)
-            .navigationTitle("Gyma")
+            .navigationTitle(draft?.phase == .review ? (draft?.currentReviewStep == .weight ? "Weight" : "Reps") : "Gyma")
             .toolbar {
+                if draft?.phase == .review && draft?.currentReviewStep == .weight {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            change { try $0.backToReps() }
+                        } label: { Image(systemName: "chevron.left") }
+                        .accessibilityLabel("Back to reps")
+                        .disabled(!canAct || !currentDraft)
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showSettings = true } label: {
                         Image(systemName: "gearshape")
@@ -136,7 +145,7 @@ struct WatchWorkoutView: View {
     private func setScreen(_ draft: WatchSetDraft, workout: Workout, compact: Bool, availableHeight: CGFloat) -> some View {
         let exercise = workout.exercises.first { $0.exerciseID == draft.exerciseID }
         let setTitle = exercise?.target.map { "SET \(draft.workingSetCount + 1) OF \($0.sets)" } ?? "SET \(draft.workingSetCount + 1)"
-        if draft.phase != .review { eyebrow(setTitle) }
+        if draft.phase != .review || draft.currentReviewStep == .weight { eyebrow(setTitle) }
         Text(exerciseName(draft.exerciseID))
             .font(.system(size: draft.phase == .review ? 16 : (compact ? 19 : 22), weight: .bold, design: .rounded))
             .lineLimit(draft.phase == .review || compact ? 1 : 2).minimumScaleFactor(0.8)
@@ -161,24 +170,23 @@ struct WatchWorkoutView: View {
             }
             .disabled(!canAct || !currentDraft)
         case .review:
-            WatchActualRepsPicker(title: "REPS · \(setTitle)",
-                                 height: max(44, min(compact ? 56 : 66, availableHeight - 104)), reps: Binding(
-                get: { local.flow.draft?.actualReps ?? draft.actualReps },
-                set: { reps in change { try $0.setActual(kg: $0.draft?.actualKg ?? draft.actualKg, reps: reps) } }
-            ))
-            Button { editor = .actualKg } label: {
-                HStack {
-                    Text("Actual load")
-                    Spacer()
-                    Text("\(draft.actualKg.formatted()) kg").bold()
-                    Image(systemName: "pencil").font(.caption2)
-                }
-                .font(.caption)
-            }
-            .buttonStyle(.plain)
-            .disabled(!canAct || !currentDraft)
-            primaryButton("Confirm Set", symbol: "checkmark.circle.fill") { submitSet() }
+            if draft.currentReviewStep == .reps {
+                WatchActualRepsPicker(title: "REPS · \(setTitle)",
+                                     height: max(50, min(100, availableHeight - 86)), reps: Binding(
+                    get: { local.flow.draft?.actualReps ?? draft.actualReps },
+                    set: { reps in change { try $0.setActual(kg: $0.draft?.actualKg ?? draft.actualKg, reps: reps) } }
+                ))
                 .disabled(!canAct || !currentDraft)
+                primaryButton("Confirm Reps", symbol: "arrow.right") {
+                    change { try $0.confirmReps() }
+                }
+                .disabled(!canAct || !currentDraft)
+            } else {
+                WatchWeightReview(kg: draft.actualKg, isEnabled: canAct && currentDraft,
+                                  changed: { kg in
+                    change { try $0.setActual(kg: kg, reps: $0.draft?.actualReps ?? draft.actualReps) }
+                }, confirm: confirmWeight)
+            }
         case .submitting:
             Text("\(draft.actualKg.formatted()) kg × \(draft.actualReps)")
                 .font(.title2.bold()).foregroundStyle(.mint)
@@ -278,12 +286,12 @@ struct WatchWorkoutView: View {
     @ViewBuilder
     private func valueEditor(_ field: WatchValueField) -> some View {
         if let draft {
-            WatchValueEditor(field: field, kg: field == .actualKg ? draft.actualKg : draft.kg,
+            WatchValueEditor(field: field, kg: draft.kg,
                              reps: draft.expectedReps) { kg, reps in
-                change {
-                    if field == .actualKg { try $0.setActual(kg: kg, reps: $0.draft?.actualReps ?? draft.actualReps) }
-                    else { try $0.setPreparation(kg: kg, reps: reps) }
+                guard canAct, let snapshot = connectivity.snapshot, draft.matches(snapshot) else {
+                    throw GymaError.stale("The workout changed. Reopen the current set to edit it.")
                 }
+                try local.update { try $0.setPreparation(kg: kg, reps: reps) }
             }
         }
     }
@@ -315,6 +323,17 @@ struct WatchWorkoutView: View {
                 throw error
             }
             if let command = connectivity.pendingCommand { try local.update { $0.markSubmitted(command) } }
+        } catch { localError = error.localizedDescription }
+    }
+
+    private func confirmWeight(_ kg: Double) {
+        guard canAct, currentDraft else { return }
+        do {
+            try local.update { flow in
+                guard let draft = flow.draft else { return }
+                try flow.setActual(kg: kg, reps: draft.actualReps)
+            }
+            submitSet()
         } catch { localError = error.localizedDescription }
     }
 
@@ -375,7 +394,9 @@ private struct WatchActualRepsPicker: View {
         VStack(spacing: 0) {
             Text(title).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
             Picker("Reps completed", selection: $reps) {
-                ForEach(1...100, id: \.self) { value in Text("\(value)").font(.title.bold()).tag(value) }
+                ForEach(1...100, id: \.self) { value in
+                    Text("\(value)").font(.system(size: 34, weight: .bold, design: .rounded)).tag(value)
+                }
             }
             .pickerStyle(.wheel).labelsHidden().frame(height: height).focused($focused)
         }
@@ -384,9 +405,9 @@ private struct WatchActualRepsPicker: View {
 }
 
 private enum WatchValueField: String, Identifiable {
-    case preparedKg, expectedReps, actualKg
+    case preparedKg, expectedReps
     var id: String { rawValue }
-    var title: String { self == .expectedReps ? "Expected reps" : (self == .actualKg ? "Actual kg" : "Set weight") }
+    var title: String { self == .expectedReps ? "Expected reps" : "Set weight" }
 }
 
 private enum WatchSettingsAction { case finish, discard }
@@ -404,41 +425,120 @@ private struct WatchPrimaryButtonStyle: ButtonStyle {
 }
 
 @MainActor
+private struct WatchWeightReview: View {
+    @State private var text: String
+    let isEnabled: Bool
+    let changed: (Double) -> Void
+    let confirm: (Double) -> Void
+
+    init(kg: Double, isEnabled: Bool, changed: @escaping (Double) -> Void,
+         confirm: @escaping (Double) -> Void) {
+        _text = State(initialValue: WatchWeightInput.text(for: kg))
+        self.isEnabled = isEnabled; self.changed = changed; self.confirm = confirm
+    }
+
+    var body: some View {
+        VStack(spacing: 5) {
+            WatchWeightControl(text: $text).disabled(!isEnabled)
+            Button {
+                if let kg = WatchWeightInput.parse(text) { confirm(kg) }
+            } label: {
+                Label("Confirm Weight", systemImage: "checkmark").font(.headline)
+            }
+            .buttonStyle(WatchPrimaryButtonStyle())
+            .disabled(!isEnabled || WatchWeightInput.parse(text) == nil)
+        }
+        .onChange(of: text) { _, value in
+            if isEnabled, let kg = WatchWeightInput.parse(value) { changed(kg) }
+        }
+    }
+}
+
+/// A standard text field invokes watchOS's native entry interface. watchOS does
+/// not expose keyboardType(.decimalPad); keep validation separate from its text.
+@MainActor
+private struct WatchWeightControl: View {
+    @Binding var text: String
+    private var kg: Double? { WatchWeightInput.parse(text) }
+
+    var body: some View {
+        VStack(spacing: 3) {
+            HStack(spacing: 4) {
+                adjustmentButton(-0.5, symbol: "minus")
+                TextField("Kilograms", text: $text)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 29, weight: .bold, design: .rounded))
+                    .multilineTextAlignment(.center)
+                    .autocorrectionDisabled()
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .background(Color.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 12))
+                    .accessibilityLabel("Weight in kilograms, tap to enter")
+                adjustmentButton(0.5, symbol: "plus")
+            }
+            Text(kg == nil ? "Enter 0–1000 kg" : "KG · tap to type")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(kg == nil ? Color.orange : Color.secondary)
+        }
+    }
+
+    private func adjustmentButton(_ delta: Double, symbol: String) -> some View {
+        Button {
+            guard let kg else { return }
+            text = WatchWeightInput.text(for: min(1000, max(0, kg + delta)))
+        } label: {
+            Image(systemName: symbol).font(.headline)
+                .frame(width: 30, height: 44)
+                .background(Color.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain).foregroundStyle(.mint)
+        .disabled(kg == nil || (delta < 0 ? kg == 0 : kg == 1000))
+        .accessibilityLabel(delta < 0 ? "Decrease weight by half a kilogram" : "Increase weight by half a kilogram")
+    }
+}
+
+@MainActor
 private struct WatchValueEditor: View {
     @Environment(\.dismiss) private var dismiss
     let field: WatchValueField
-    @State private var kg: Double
+    @State private var weightText: String
     @State private var reps: Int
+    @State private var error: String?
     @FocusState private var focused: Bool
-    let save: (Double, Int) -> Void
+    let save: (Double, Int) throws -> Void
 
-    init(field: WatchValueField, kg: Double, reps: Int, save: @escaping (Double, Int) -> Void) {
-        self.field = field; _kg = State(initialValue: kg); _reps = State(initialValue: reps); self.save = save
+    init(field: WatchValueField, kg: Double, reps: Int, save: @escaping (Double, Int) throws -> Void) {
+        self.field = field; _weightText = State(initialValue: WatchWeightInput.text(for: kg))
+        _reps = State(initialValue: reps); self.save = save
     }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 6) {
+            VStack(spacing: 8) {
                 if field == .expectedReps {
                     Picker("Expected reps", selection: $reps) {
                         ForEach(1...100, id: \.self) { value in Text("\(value) reps").tag(value) }
                     }
                     .pickerStyle(.wheel).focused($focused)
                 } else {
-                    Picker("Kilograms", selection: $kg) {
-                        if kg.truncatingRemainder(dividingBy: 0.5) != 0 { Text("\(kg.formatted()) kg").tag(kg) }
-                        ForEach(0...2000, id: \.self) { value in
-                            Text("\((Double(value) / 2).formatted()) kg").tag(Double(value) / 2)
-                        }
-                    }
-                    .pickerStyle(.wheel).focused($focused)
+                    WatchWeightControl(text: $weightText)
                 }
-                Button("Use value") { save(kg, reps); dismiss() }
-                    .buttonStyle(.borderedProminent).tint(.mint)
+                Button(field == .expectedReps ? "Confirm Reps" : "Confirm Weight") {
+                    guard let kg = WatchWeightInput.parse(weightText) else { return }
+                    do { try save(kg, reps); dismiss() }
+                    catch { self.error = error.localizedDescription }
+                }
+                .font(.headline).buttonStyle(WatchPrimaryButtonStyle())
+                .disabled(WatchWeightInput.parse(weightText) == nil)
             }
+            .padding(.horizontal, 6)
             .navigationTitle(field.title)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
-            .onAppear { focused = true }
+            .onAppear { focused = field == .expectedReps }
+            .alert("Could not save the change", isPresented: Binding(
+                get: { error != nil }, set: { if !$0 { error = nil } }
+            )) {
+                Button("OK", role: .cancel) { error = nil }
+            } message: { Text(error ?? "") }
         }
     }
 }

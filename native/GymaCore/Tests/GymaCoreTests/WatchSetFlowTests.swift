@@ -28,6 +28,7 @@ final class WatchSetFlowTests: XCTestCase {
         try flow.start(snapshot: snapshot(state))
         try flow.done(snapshot: snapshot(state))
         try flow.setActual(kg: 40, reps: 9)
+        try flow.confirmReps()
         return flow
     }
 
@@ -51,8 +52,12 @@ final class WatchSetFlowTests: XCTestCase {
         XCTAssertEqual(flow.draft?.phase, .performing)
         XCTAssertThrowsError(try flow.prepareSubmission(snapshot: snapshot(state)))
         try flow.done(snapshot: snapshot(state))
+        XCTAssertEqual(flow.draft?.currentReviewStep, .reps)
         XCTAssertEqual(flow.draft?.actualReps, 10)
         try flow.setActual(kg: 40, reps: 9)
+        XCTAssertThrowsError(try flow.prepareSubmission(snapshot: snapshot(state)))
+        try flow.confirmReps()
+        XCTAssertEqual(flow.draft?.currentReviewStep, .weight)
         let set = try flow.prepareSubmission(snapshot: snapshot(state))
         XCTAssertEqual(set.kg, 40)
         XCTAssertEqual(set.reps, 9)
@@ -67,6 +72,7 @@ final class WatchSetFlowTests: XCTestCase {
         XCTAssertEqual(restored, flow)
         XCTAssertEqual(restored.draft?.actualReps, 9)
         XCTAssertEqual(restored.draft?.expectedReps, 10)
+        XCTAssertEqual(restored.draft?.currentReviewStep, .weight)
     }
 
     func testUnrelatedRevisionChangesDuringSetUseCurrentRevisionAtConfirmation() throws {
@@ -127,6 +133,7 @@ final class WatchSetFlowTests: XCTestCase {
         XCTAssertEqual(flow.draft?.phase, .review)
         XCTAssertEqual(flow.draft?.actualKg, 40)
         XCTAssertEqual(flow.draft?.actualReps, 9)
+        XCTAssertEqual(flow.draft?.currentReviewStep, .weight)
         let originalID = flow.draft?.setID
         let retry = try flow.prepareSubmission(snapshot: snapshot(state))
         XCTAssertEqual(retry.id, originalID)
@@ -152,6 +159,7 @@ final class WatchSetFlowTests: XCTestCase {
         flow.reconcile(snapshot: snapshot(state), pending: nil, acknowledgement: receipt)
         XCTAssertEqual(flow.draft?.workingSetCount, 1)
         XCTAssertEqual(flow.draft?.phase, .prepared)
+        XCTAssertEqual(flow.draft?.currentReviewStep, .reps)
         XCTAssertEqual(flow.draft?.kg, 40)
         XCTAssertEqual(flow.draft?.expectedReps, 10, "Fewer actual reps do not lower the next expected rep target.")
     }
@@ -164,8 +172,122 @@ final class WatchSetFlowTests: XCTestCase {
         flow.reconcile(snapshot: snapshot(state), pending: nil, acknowledgement: nil)
         XCTAssertEqual(flow.draft?.phase, .review)
         XCTAssertEqual(flow.draft?.actualReps, 9)
+        XCTAssertEqual(flow.draft?.currentReviewStep, .weight)
         let retry = try flow.prepareSubmission(snapshot: snapshot(state))
         XCTAssertEqual(retry.id, prepared.id)
+    }
+
+    func testBackToRepsPreservesEditedWeightAndRequiresReconfirmation() throws {
+        let state = state()
+        var flow = try completedFlow(state)
+        try flow.setActual(kg: 37.5, reps: 9)
+        XCTAssertEqual(flow.draft?.currentReviewStep, .weight)
+        try flow.backToReps()
+        XCTAssertEqual(flow.draft?.actualKg, 37.5)
+        XCTAssertEqual(flow.draft?.actualReps, 9)
+        XCTAssertThrowsError(try flow.prepareSubmission(snapshot: snapshot(state)))
+        try flow.setActual(kg: 37.5, reps: 8)
+        try flow.confirmReps()
+        let set = try flow.prepareSubmission(snapshot: snapshot(state))
+        XCTAssertEqual(set.kg, 37.5)
+        XCTAssertEqual(set.reps, 8)
+    }
+
+    func testChangingConfirmedRepsReturnsToRepsReview() throws {
+        let state = state()
+        var flow = try completedFlow(state)
+        try flow.setActual(kg: 40, reps: 8)
+        XCTAssertEqual(flow.draft?.currentReviewStep, .reps)
+        XCTAssertThrowsError(try flow.prepareSubmission(snapshot: snapshot(state)))
+        try flow.confirmReps()
+        XCTAssertEqual(try flow.prepareSubmission(snapshot: snapshot(state)).reps, 8)
+    }
+
+    func testRepsReviewSurvivesRelaunchBeforeConfirmation() throws {
+        let state = state()
+        var flow = readyFlow(state)
+        try flow.start(snapshot: snapshot(state))
+        try flow.done(snapshot: snapshot(state))
+        try flow.setActual(kg: 42.5, reps: 7)
+        var restored = try JSONDecoder().decode(WatchSetFlow.self, from: JSONEncoder().encode(flow))
+        restored.reconcile(snapshot: snapshot(state), pending: nil, acknowledgement: nil)
+        XCTAssertEqual(restored.draft?.currentReviewStep, .reps)
+        XCTAssertEqual(restored.draft?.actualReps, 7)
+        XCTAssertEqual(restored.draft?.actualKg, 42.5)
+        XCTAssertThrowsError(try restored.prepareSubmission(snapshot: snapshot(state)))
+        try restored.confirmReps()
+        XCTAssertEqual(try restored.prepareSubmission(snapshot: snapshot(state)).kg, 42.5)
+    }
+
+    func testLegacyCombinedReviewDefaultsToRepsAndKeepsActualValues() throws {
+        let state = state()
+        let flow = try completedFlow(state)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(flow)) as? [String: Any])
+        var draft = try XCTUnwrap(object["draft"] as? [String: Any])
+        draft.removeValue(forKey: "reviewStep")
+        object["draft"] = draft
+        var restored = try JSONDecoder().decode(WatchSetFlow.self, from: JSONSerialization.data(withJSONObject: object))
+        try restored.validate()
+        restored.reconcile(snapshot: snapshot(state), pending: nil, acknowledgement: nil)
+        XCTAssertEqual(restored.draft?.phase, .review)
+        XCTAssertEqual(restored.draft?.currentReviewStep, .reps)
+        XCTAssertEqual(restored.draft?.actualKg, 40)
+        XCTAssertEqual(restored.draft?.actualReps, 9)
+        XCTAssertThrowsError(try restored.prepareSubmission(snapshot: snapshot(state)))
+        try restored.confirmReps()
+        XCTAssertEqual(try restored.prepareSubmission(snapshot: snapshot(state)).reps, 9)
+    }
+
+    func testFailedSubmissionReturnsToWeightWithSameCompletedSetIdentity() throws {
+        let state = state()
+        var flow = try completedFlow(state)
+        let first = try flow.prepareSubmission(snapshot: snapshot(state))
+        flow.submissionFailed()
+        XCTAssertEqual(flow.draft?.phase, .review)
+        XCTAssertEqual(flow.draft?.currentReviewStep, .weight)
+        XCTAssertEqual(flow.draft?.actualReps, first.reps)
+        XCTAssertEqual(flow.draft?.actualKg, first.kg)
+        XCTAssertEqual(try flow.prepareSubmission(snapshot: snapshot(state)).id, first.id)
+    }
+
+    func testLegacyPendingCommandRecoversWeightReviewAfterRejection() throws {
+        var state = state()
+        var flow = try completedFlow(state)
+        let command = try submit(&flow, state: state)
+        let originalSetID = flow.draft?.setID
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(flow)) as? [String: Any])
+        var draft = try XCTUnwrap(object["draft"] as? [String: Any])
+        draft.removeValue(forKey: "reviewStep")
+        object["draft"] = draft
+        flow = try JSONDecoder().decode(WatchSetFlow.self, from: JSONSerialization.data(withJSONObject: object))
+        flow.reconcile(snapshot: snapshot(state), pending: command, acknowledgement: nil)
+        XCTAssertEqual(flow.draft?.phase, .submitting)
+        XCTAssertEqual(flow.draft?.currentReviewStep, .weight)
+        state.revision += 1
+        let rejected = GymaReducer.apply(command, to: &state, now: now)
+        flow.reconcile(snapshot: snapshot(state), pending: nil, acknowledgement: rejected)
+        XCTAssertEqual(flow.draft?.phase, .review)
+        XCTAssertEqual(flow.draft?.currentReviewStep, .weight)
+        XCTAssertEqual(flow.draft?.actualReps, 9)
+        XCTAssertEqual(flow.draft?.actualKg, 40)
+        let retried = try flow.prepareSubmission(snapshot: snapshot(state))
+        XCTAssertEqual(retried.id, originalSetID)
+    }
+
+    func testReviewTransitionsRejectWrongSetPhases() throws {
+        let state = state()
+        var flow = readyFlow(state)
+        XCTAssertThrowsError(try flow.confirmReps())
+        XCTAssertThrowsError(try flow.backToReps())
+        try flow.start(snapshot: snapshot(state))
+        XCTAssertThrowsError(try flow.confirmReps())
+        try flow.done(snapshot: snapshot(state))
+        XCTAssertThrowsError(try flow.backToReps())
+        try flow.confirmReps()
+        XCTAssertThrowsError(try flow.confirmReps())
+        _ = try flow.prepareSubmission(snapshot: snapshot(state))
+        XCTAssertThrowsError(try flow.confirmReps())
+        XCTAssertThrowsError(try flow.backToReps())
     }
 
     func testDismissRestWaitsForAcceptedReceiptThenStartsPreparedNextSet() throws {

@@ -5,7 +5,8 @@ import UserNotifications
 import WatchKit
 
 /// Direct workout haptics work with the wrist down while HKWorkoutSession is
-/// running. System notifications are a fallback when workout runtime is unavailable.
+/// running. Silent visual notifications back up an unavailable workout runtime.
+/// WatchKit's built-in tones still follow the Watch's system Silent Mode.
 @MainActor
 final class WatchRestNotifications: NSObject, ObservableObject {
     static let shared = WatchRestNotifications()
@@ -25,6 +26,9 @@ final class WatchRestNotifications: NSObject, ObservableObject {
     private var checkingDeliveredAlert = false
     private var hapticTask: Task<Void, Never>?
     private var hapticKey: String?
+    private var cueTask: Task<Void, Never>?
+    private var cueRestKey: String?
+    private var cueGeneration = 0
     private var lastHapticKey = UserDefaults.standard.string(forKey: "watchLastRestHapticV2")
     private var latestGeneration = 0
     private var taskTail: Task<Void, Never>?
@@ -44,7 +48,7 @@ final class WatchRestNotifications: NSObject, ObservableObject {
         checkingDeliveredAlert = active && !workoutRunning
         if !checkingDeliveredAlert { reconcileHaptic(); return }
         // A background fallback is delivered without willPresent. Check it before
-        // a catch-up haptic so raising the wrist does not buzz for the same rest twice.
+        // a catch-up haptic so a delivered reminder isn't followed by another tap.
         Task { @MainActor in
             let delivered = await center.deliveredNotifications()
             guard generation == foregroundCheckGeneration else { return }
@@ -68,7 +72,7 @@ final class WatchRestNotifications: NSObject, ObservableObject {
         let settings = await center.notificationSettings()
         if settings.authorizationStatus == .notDetermined {
             do {
-                let granted = try await center.requestAuthorization(options: [.alert, .sound])
+                let granted = try await center.requestAuthorization(options: [.alert])
                 message = granted ? nil : "Notification backup is off. Workout vibration is still on."
             } catch { message = "Notification backup is unavailable. Workout vibration is still on." }
         } else {
@@ -85,7 +89,7 @@ final class WatchRestNotifications: NSObject, ObservableObject {
         reconcile()
     }
 
-    func testHaptic() { WKInterfaceDevice.current().play(.notification) }
+    func testHaptic() { playGentleCue(restKey: nil) }
 
     func finishPendingScheduling() async {
         var generation: Int
@@ -102,6 +106,7 @@ final class WatchRestNotifications: NSObject, ObservableObject {
     }
 
     private func reconcileHaptic() {
+        if cueTask != nil && !canContinueCue(restKey: cueRestKey) { cancelGentleCue() }
         guard !checkingDeliveredAlert, let schedule = desiredHaptic() else {
             hapticTask?.cancel(); hapticTask = nil; hapticKey = nil
             return
@@ -123,8 +128,42 @@ final class WatchRestNotifications: NSObject, ObservableObject {
         guard let desired = desiredHaptic(), desired.key == key, desired.delay <= 0.1 else { return }
         lastHapticKey = key
         UserDefaults.standard.set(key, forKey: "watchLastRestHapticV2")
-        WKInterfaceDevice.current().play(.notification)
+        playGentleCue(restKey: key)
         center.removeDeliveredNotifications(withIdentifiers: [identifier])
+    }
+
+    /// Two brief generic taps mark the rest boundary, without the notification
+    /// pattern. Space them apart so the engine finishes each pulse. WatchKit
+    /// doesn't expose per-call audio muting or the Mindfulness app's waveform.
+    private func playGentleCue(restKey: String?) {
+        cancelGentleCue()
+        guard canContinueCue(restKey: restKey) else { return }
+        cueRestKey = restKey
+        let generation = cueGeneration
+        WKInterfaceDevice.current().play(.click)
+        cueTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(nanoseconds: 800_000_000) }
+            catch { return }
+            guard let self, !Task.isCancelled, self.cueGeneration == generation else { return }
+            if self.canContinueCue(restKey: restKey) { WKInterfaceDevice.current().play(.click) }
+            self.cueTask = nil
+            self.cueRestKey = nil
+        }
+    }
+
+    private func canContinueCue(restKey: String?) -> Bool {
+        guard isAppActive || workoutRunning else { return false }
+        guard let restKey else { return isAppActive } // Explicit settings preview.
+        guard enabled, let snapshot, let timer = snapshot.restTimer,
+              timer.workoutID == snapshot.activeWorkout?.id,
+              restKey == RestAlertPolicy.key(timer: timer, storeID: snapshot.storeID),
+              !RestAlertPolicy.isEndingRest(timer, pending: pending, storeID: snapshot.storeID),
+              timer.endsAt.timeIntervalSinceNow <= 0.1 else { return false }
+        return true
+    }
+
+    private func cancelGentleCue() {
+        cueTask?.cancel(); cueTask = nil; cueRestKey = nil; cueGeneration += 1
     }
 
     private func reconcile() {
@@ -140,7 +179,7 @@ final class WatchRestNotifications: NSObject, ObservableObject {
     }
 
     private func scheduleLatest(generation: Int) async {
-        // Avoid a duplicate system buzz while the live workout timer owns the alert.
+        // The live workout timer owns the cue; its fallback is a silent banner.
         guard enabled, !workoutRunning, let snapshot, let timer = snapshot.restTimer,
               timer.workoutID == snapshot.activeWorkout?.id,
               !RestAlertPolicy.isEndingRest(timer, pending: pending, storeID: snapshot.storeID), timer.endsAt > Date() else {
@@ -159,7 +198,7 @@ final class WatchRestNotifications: NSObject, ObservableObject {
         let content = UNMutableNotificationContent()
         content.title = "Rest complete"
         content.body = "\(name) · Open Gyma and dismiss rest to begin your next set."
-        content.sound = .default
+        content.sound = nil
         content.userInfo = ["restKey": key]
         let request = UNNotificationRequest(identifier: identifier, content: content,
                                             trigger: UNTimeIntervalNotificationTrigger(timeInterval: max(1, seconds), repeats: false))
@@ -186,7 +225,7 @@ extension WatchRestNotifications: UNUserNotificationCenterDelegate {
         let notificationID = notification.request.identifier
         let key = notification.request.content.userInfo["restKey"] as? String
         return await MainActor.run {
-            guard notificationID == self.identifier else { return [.sound] }
+            guard notificationID == self.identifier else { return [.banner] }
             guard self.enabled, let key, let snapshot = self.snapshot, let timer = snapshot.restTimer,
                   key == RestAlertPolicy.key(timer: timer, storeID: snapshot.storeID),
                   !RestAlertPolicy.isEndingRest(timer, pending: self.pending, storeID: snapshot.storeID) else { return [] }
@@ -195,11 +234,11 @@ extension WatchRestNotifications: UNUserNotificationCenterDelegate {
                 self.playDueHaptic(key: key)
                 return []
             }
-            // Inactive without a workout session: the OS notification can alert,
-            // whereas WKInterfaceDevice.play would have no effect.
+            // Inactive without a workout session: show a silent visual reminder.
+            // A custom tap cannot be guaranteed without foreground/workout runtime.
             self.lastHapticKey = key
             UserDefaults.standard.set(key, forKey: "watchLastRestHapticV2")
-            return [.sound]
+            return [.banner]
         }
     }
 }

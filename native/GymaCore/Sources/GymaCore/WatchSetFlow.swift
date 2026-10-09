@@ -4,6 +4,10 @@ public enum WatchSetPhase: String, Codable, Sendable {
     case prepared, performing, review, submitting
 }
 
+public enum WatchSetReviewStep: String, Codable, Sendable {
+    case reps, weight
+}
+
 /// A local set is tied to a position in the confirmed workout, not a revision.
 /// Unrelated phone edits may change the revision while a person is lifting.
 public struct WatchSetDraft: Codable, Sendable, Equatable {
@@ -16,6 +20,9 @@ public struct WatchSetDraft: Codable, Sendable, Equatable {
     public var expectedReps: Int
     public var actualKg: Double
     public var actualReps: Int
+    /// Optional for drafts saved before review was split into two screens.
+    public var reviewStep: WatchSetReviewStep?
+    public var currentReviewStep: WatchSetReviewStep { reviewStep ?? .reps }
     public var setID: String?
     public var commandID: String?
     public var completionRevision: Int?
@@ -27,7 +34,7 @@ public struct WatchSetDraft: Codable, Sendable, Equatable {
         let recent = exercise.sets.last { $0.isWarmup == false }
         self.kg = min(1000, max(0, kg ?? recent?.kg ?? exercise.target?.loadKg ?? 0))
         self.expectedReps = min(100, max(1, expectedReps ?? exercise.target?.repsMin ?? recent?.reps ?? 8))
-        actualKg = self.kg; actualReps = self.expectedReps
+        actualKg = self.kg; actualReps = self.expectedReps; reviewStep = .reps
     }
 
     public func matches(_ snapshot: CompanionSnapshot) -> Bool {
@@ -73,6 +80,7 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
             case .logSet(let exerciseID, let set):
                 if draft?.workoutID == pending.workoutID && draft?.exerciseID == exerciseID {
                     draft?.phase = .submitting; draft?.setID = set.id; draft?.commandID = pending.id
+                    draft?.reviewStep = .weight
                     draft?.actualKg = set.kg; draft?.actualReps = set.reps
                 } else if draft == nil, let workout = snapshot.activeWorkout,
                           workout.id == pending.workoutID,
@@ -81,6 +89,7 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
                     let alreadyCounted = set.isWarmup == false && exercise.sets.contains(where: { $0.id == set.id })
                     draft?.workingSetCount = max(0, exercise.workingSetCount - (alreadyCounted ? 1 : 0))
                     draft?.phase = .submitting; draft?.setID = set.id; draft?.commandID = pending.id
+                    draft?.reviewStep = .weight
                     draft?.actualKg = set.kg; draft?.actualReps = set.reps
                 }
             case .skipRest(let timerID):
@@ -95,6 +104,7 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
                     if acknowledgement.wasApplied { advance(snapshot) }
                     else {
                         draft?.phase = .review; draft?.commandID = nil; draft?.completionRevision = nil
+                        draft?.reviewStep = .weight
                     }
                 } else if containsSubmittedSet(snapshot, draft: current) {
                     advance(snapshot)
@@ -102,6 +112,7 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
                     // The draft was persisted before submit, but submit never
                     // reached the durable outbox. Keep the completed values.
                     draft?.phase = .review; draft?.commandID = nil; draft?.completionRevision = nil
+                    draft?.reviewStep = .weight
                 }
             }
         } else if let current = draft, containsSubmittedSet(snapshot, draft: current) {
@@ -141,13 +152,29 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
         guard draft?.phase == .performing, draft?.matches(snapshot) == true, snapshot.restTimer == nil else {
             throw GymaError.stale("The workout changed. Your set details are still saved on this Watch.")
         }
-        draft?.phase = .review
+        draft?.phase = .review; draft?.reviewStep = .reps
     }
 
     public mutating func setActual(kg: Double, reps: Int) throws {
         guard draft?.phase == .review else { throw GymaError.stale("Complete the set before confirming your reps.") }
         try validateValues(kg: kg, reps: reps)
+        if draft?.currentReviewStep == .weight, reps != draft?.actualReps { draft?.reviewStep = .reps }
         draft?.actualKg = kg; draft?.actualReps = reps
+    }
+
+    public mutating func confirmReps() throws {
+        guard let current = draft, current.phase == .review, current.currentReviewStep == .reps else {
+            throw GymaError.stale("Review your completed reps before confirming them.")
+        }
+        try validateValues(kg: current.actualKg, reps: current.actualReps)
+        draft?.reviewStep = .weight
+    }
+
+    public mutating func backToReps() throws {
+        guard draft?.phase == .review, draft?.currentReviewStep == .weight else {
+            throw GymaError.stale("Finish the current review step first.")
+        }
+        draft?.reviewStep = .reps
     }
 
     /// Capture the CURRENT revision only after checking the original set position.
@@ -156,6 +183,7 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
         guard let current = draft, current.phase == .review, current.matches(snapshot), snapshot.restTimer == nil else {
             throw GymaError.stale("The workout advanced. Review your saved set before continuing.")
         }
+        guard current.currentReviewStep == .weight else { throw GymaError.invalid("Confirm your reps before confirming the weight.") }
         try validateValues(kg: current.actualKg, reps: current.actualReps)
         let set = WorkSet(id: current.setID ?? UUID().uuidString, kg: current.actualKg,
                           reps: current.actualReps, isWarmup: false)
@@ -169,6 +197,7 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
     }
 
     public mutating func submissionFailed() {
+        if draft?.phase == .submitting { draft?.reviewStep = .weight }
         draft?.phase = .review; draft?.commandID = nil; draft?.completionRevision = nil
     }
 
