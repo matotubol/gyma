@@ -6,9 +6,9 @@ A native, local-first strength training app built from scratch with Swift and Sw
 
 On iPhone, add your OpenAI API key in Settings, then check in with the GPT Luna coach. Discuss and revise a workout with ordered exercises, sets, reps, weights and rest seconds. Review and accept the plan before starting it on iPhone. Log actual weights and reps, review workout history and rest durations, restore deleted workouts, and export or restore native JSON backups in Settings.
 
-The Watch dashboard focuses on the current workout and exercise, with no connection, last-update or refresh rows. Start each exercise, log actual sets, and tap **Start next set** to record how long you rested, including extra time after the countdown. Enable rest alerts for a foreground tap and system-managed background reminders. Only iPhone starts an accepted workout; the Watch follows it. Pending or rejected changes remain visible when action is needed.
+The Watch opens the current exercise with weight and expected-rep controls. **Start set → Done → confirm actual reps → rest → Dismiss** guides each set, with a scrolling reps picker and actual rest tracking. Vibration defaults on. Allow workout access for a native Watch workout session that keeps running with your wrist down and provides the system return-to-app icon. Only iPhone starts an accepted workout; the Watch follows it. Pending or rejected changes remain visible when action is needed.
 
-The coach uses OpenAI's Responses API with `gpt-6-luna`. The personal API key stays in the iPhone Keychain; workout backups and Watch snapshots never contain it. See [coach setup and device checks](native/COACH.md). A body-photo journal, HealthKit workout recording and heart-rate tracking are not included.
+The coach uses OpenAI's Responses API with `gpt-6-luna`. The personal API key stays in the iPhone Keychain; workout backups and Watch snapshots never contain it. See [coach setup and device checks](native/COACH.md). The Watch uses HealthKit for active workout runtime but does not save a duplicate Health workout. A body-photo journal and heart-rate tracking are not included.
 
 ## Build through GitHub Actions
 

@@ -1,3 +1,4 @@
+import Combine
 import GymaCore
 import SwiftUI
 
@@ -5,95 +6,60 @@ import SwiftUI
 struct WatchWorkoutView: View {
     @EnvironmentObject private var connectivity: WorkoutConnectivity
     @EnvironmentObject private var notifications: WatchRestNotifications
-    @AppStorage("watchStartedExercise") private var startedExerciseKey = ""
-    @State private var showLogger = false
+    @EnvironmentObject private var runtime: WatchWorkoutRuntime
+    @StateObject private var local = WatchSetFlowStore()
+    @State private var editor: WatchValueField?
+    @State private var showSettings = false
     @State private var confirmFinish = false
+    @State private var confirmDiscard = false
     @State private var finishWorkoutID: String?
     @State private var finishRevision: Int?
     @State private var localError: String?
-    @State private var pendingExerciseStart: (commandID: String, exerciseKey: String)?
-    @State private var pendingRestTimer: RestTimer?
 
-    private var displayedRestTimer: RestTimer? {
-        if let timer = connectivity.snapshot?.restTimer { return timer }
-        if let pending = connectivity.pendingCommand, case let .skipRest(timerID) = pending.action,
-           pendingRestTimer?.id == timerID { return pendingRestTimer }
-        return nil
+    private var draft: WatchSetDraft? { local.flow.draft }
+    private var canAct: Bool { connectivity.canSubmit && local.storageError == nil }
+    private var currentDraft: Bool {
+        connectivity.snapshot.map { draft?.matches($0) == true } ?? false
+    }
+    private var restTimer: RestTimer? {
+        connectivity.snapshot?.restTimer ?? local.flow.resumeRestTimer
     }
 
     var body: some View {
         NavigationStack {
-            List {
-                actionStatus
-                if let workout = connectivity.snapshot?.activeWorkout {
-                    workoutHeader(workout)
-                    if let timer = displayedRestTimer, timer.workoutID == workout.id {
-                        restSection(timer, workout: workout)
-                    } else if let exercise = workout.nextExercise {
-                        exerciseSection(exercise, workout: workout)
-                    } else if hasHiddenExercises(workout) {
-                        Text("Continue on iPhone to see the rest of this workout.")
-                            .font(.caption)
-                    } else {
-                        Section {
-                            Label("Workout complete", systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(.mint)
-                            Text("All planned sets are logged.")
-                                .font(.caption).foregroundStyle(.secondary)
-                            Button("Finish workout") { prepareFinish(workout) }
-                                .disabled(!connectivity.canSubmit)
-                        }
-                    }
-                } else {
-                    Section {
-                        VStack(spacing: 10) {
-                            Image(systemName: "figure.strengthtraining.traditional")
-                                .font(.largeTitle).foregroundStyle(.mint)
-                            Text("Your next workout")
-                                .font(.headline)
-                            Text("Create and accept a workout in Gyma on iPhone to begin.")
-                                .font(.caption).foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
+            ScrollView {
+                VStack(spacing: 8) {
+                    focusedWorkout
+                    actionStatus
+                    if let message = runtime.message {
+                        Text(message).font(.caption2).foregroundStyle(.orange)
                     }
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 12)
             }
+            .background(Color.black)
             .navigationTitle("Gyma")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    NavigationLink {
-                        WatchWorkoutSettings {
-                            if let workout = connectivity.snapshot?.activeWorkout { prepareFinish(workout) }
-                        }
-                    } label: {
-                        Image(systemName: "gearshape")
-                    }
-                    .accessibilityLabel("Workout settings")
+                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                        .accessibilityLabel("Workout settings")
                 }
             }
-            .sheet(isPresented: $showLogger) {
-                if let workout = connectivity.snapshot?.activeWorkout, let exercise = workout.nextExercise {
-                    WatchSetLogger(workoutID: workout.id, revision: connectivity.snapshot?.revision ?? 0,
-                                   exercise: exercise, name: exerciseName(exercise.exerciseID))
+            .sheet(item: $editor) { field in valueEditor(field) }
+            .sheet(isPresented: $showSettings) {
+                WatchWorkoutSettings {
+                    showSettings = false
+                    if let workout = connectivity.snapshot?.activeWorkout { prepareFinish(workout) }
                 }
             }
-            .onChange(of: connectivity.pendingCommand?.id) { _, commandID in
-                if commandID == nil { pendingRestTimer = nil }
-                guard commandID == nil, let pendingExerciseStart,
-                      let receipt = connectivity.lastAcknowledgement,
-                      receipt.commandID == pendingExerciseStart.commandID else { return }
-                if receipt.status == .applied || (receipt.status == .duplicate && receipt.originalStatus == .applied) {
-                    startedExerciseKey = pendingExerciseStart.exerciseKey
-                }
-                self.pendingExerciseStart = nil
-            }
-            .onChange(of: connectivity.snapshot?.activeWorkout?.id) { _, _ in showLogger = false }
-            .onChange(of: connectivity.snapshot?.activeWorkout?.nextExercise?.exerciseID) { _, _ in showLogger = false }
-            .onChange(of: connectivity.snapshot?.restTimer?.id) { _, timerID in
-                if timerID != nil { showLogger = false }
-            }
+            .task { reconcile() }
+            .onChange(of: connectivity.snapshot) { _, _ in reconcile() }
+            .onChange(of: connectivity.pendingCommand) { _, _ in reconcile() }
+            .onChange(of: connectivity.lastAcknowledgement) { _, _ in reconcile() }
+            .onChange(of: draft?.workingSetCount) { _, _ in editor = nil }
+            .onChange(of: draft?.exerciseID) { _, _ in editor = nil }
             .confirmationDialog("Finish this workout?", isPresented: $confirmFinish, titleVisibility: .visible) {
                 Button("Finish workout", role: .destructive) {
                     do {
@@ -102,9 +68,14 @@ struct WatchWorkoutView: View {
                     } catch { localError = error.localizedDescription }
                 }
                 Button("Keep training", role: .cancel) {}
-            } message: {
-                Text("Your completed sets will be saved on your iPhone.")
-            }
+            } message: { Text("Your confirmed sets will be saved on iPhone.") }
+            .confirmationDialog("Discard this saved draft?", isPresented: $confirmDiscard, titleVisibility: .visible) {
+                Button("Discard draft", role: .destructive) {
+                    guard let snapshot = connectivity.snapshot else { return }
+                    change { $0.useCurrentWorkout(snapshot) }
+                }
+                Button("Keep draft", role: .cancel) {}
+            } message: { Text("Only this unsent Watch draft will be removed. Your confirmed sets stay saved.") }
             .alert("Could not save the change", isPresented: Binding(
                 get: { localError != nil }, set: { if !$0 { localError = nil } }
             )) {
@@ -113,144 +84,284 @@ struct WatchWorkoutView: View {
         }
     }
 
-    private func workoutHeader(_ workout: Workout) -> some View {
-        Section {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(workout.planTitle ?? "Your workout").font(.headline)
+    @ViewBuilder
+    private var focusedWorkout: some View {
+        if let workout = connectivity.snapshot?.activeWorkout {
+            if let timer = restTimer, timer.workoutID == workout.id {
+                restScreen(timer, workout: workout)
+                if draft != nil && !currentDraft && draft?.phase != .submitting { draftRecovery }
+            } else if let draft, !currentDraft && draft.phase != .submitting {
+                draftRecovery
+            } else if let draft {
+                setScreen(draft, workout: workout)
+            } else if hasHiddenExercises(workout) {
+                Text("Continue on iPhone to see the remaining exercises.").font(.headline)
+            } else if workout.nextExercise == nil {
+                Image(systemName: "checkmark.circle.fill").font(.system(size: 44)).foregroundStyle(.mint)
+                Text("Workout complete").font(.title3.bold())
+                Text("All planned sets saved.").font(.caption).foregroundStyle(.secondary)
+                primaryButton("Finish workout", symbol: "checkmark") { prepareFinish(workout) }
+                    .disabled(!canAct)
+            } else {
+                ProgressView().tint(.mint)
+            }
+        } else if draft != nil {
+            draftRecovery
+        } else {
+            Image(systemName: "figure.strengthtraining.traditional")
+                .font(.system(size: 40)).foregroundStyle(.mint)
+            Text("Your next workout").font(.title3.bold())
+            Text("Create and accept a workout in Gyma on iPhone to begin.")
+                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }
+    }
+
+    @ViewBuilder
+    private func setScreen(_ draft: WatchSetDraft, workout: Workout) -> some View {
+        let exercise = workout.exercises.first { $0.exerciseID == draft.exerciseID }
+        eyebrow(exercise?.target.map { "SET \(draft.workingSetCount + 1) OF \($0.sets)" } ?? "SET \(draft.workingSetCount + 1)")
+        Text(exerciseName(draft.exerciseID))
+            .font(.system(size: draft.phase == .review ? 16 : 22, weight: .bold, design: .rounded))
+            .lineLimit(draft.phase == .review ? 1 : 2).minimumScaleFactor(0.7)
+            .multilineTextAlignment(.center)
+        switch draft.phase {
+        case .prepared:
+            preparationValues(draft)
+            primaryButton("Start set", symbol: "play.fill") {
+                guard let snapshot = connectivity.snapshot else { return }
+                change { try $0.start(snapshot: snapshot) }
+            }
+            .disabled(!canAct || !currentDraft)
+            if let target = exercise?.target {
+                Text("\(target.restSeconds)s rest after your set")
+                    .font(.caption2).foregroundStyle(.secondary)
+            } else {
+                Text("Add targets on iPhone to follow the whole workout.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        case .performing:
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(draft.kg.formatted()).font(.system(size: 35, weight: .bold, design: .rounded))
+                Text("kg").foregroundStyle(.secondary)
+                Text("× \(draft.expectedReps)").font(.title2.bold()).foregroundStyle(.mint)
+            }
+            Text("Set in progress").font(.caption).foregroundStyle(.secondary)
+            primaryButton("Done", symbol: "checkmark") {
+                guard let snapshot = connectivity.snapshot else { return }
+                change { try $0.done(snapshot: snapshot) }
+            }
+            .disabled(!canAct || !currentDraft)
+        case .review:
+            WatchActualRepsPicker(reps: Binding(
+                get: { local.flow.draft?.actualReps ?? draft.actualReps },
+                set: { reps in change { try $0.setActual(kg: $0.draft?.actualKg ?? draft.actualKg, reps: reps) } }
+            ))
+            Button { editor = .actualKg } label: {
                 HStack {
-                    Text(workout.start, style: .timer)
+                    Text("Actual load")
                     Spacer()
-                    Text("\(workout.exercises.filter(\.isTargetComplete).count)/\(connectivity.snapshot?.totalExerciseCount ?? workout.exercises.count) exercises")
+                    Text("\(draft.actualKg.formatted()) kg").bold()
+                    Image(systemName: "pencil").font(.caption2)
                 }
-                .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                .font(.caption)
             }
+            .buttonStyle(.plain).padding(.vertical, 4)
+            .disabled(!canAct || !currentDraft)
+            primaryButton("Confirm set", symbol: "checkmark.circle.fill") { submitSet() }
+                .disabled(!canAct || !currentDraft)
+        case .submitting:
+            Text("\(draft.actualKg.formatted()) kg × \(draft.actualReps)")
+                .font(.title2.bold()).foregroundStyle(.mint)
+            ProgressView("Saving set…").font(.caption)
+            Text("Your completed set is saved on this Watch.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        if let next = workout.exercises.drop(while: { $0.exerciseID != draft.exerciseID }).dropFirst().first {
+            Text("Next: \(exerciseName(next.exerciseID))")
+                .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
     }
 
-    private func exerciseSection(_ exercise: WorkoutExercise, workout: Workout) -> some View {
-        let hasStarted = startedExerciseKey == exerciseKey(exercise, workout: workout)
-        return Section(hasStarted ? "Current exercise" : (workout.totalSets == 0 ? "First exercise" : "Next exercise")) {
-            Text(exerciseName(exercise.exerciseID)).font(.title3.bold())
-            if let target = exercise.target {
-                Text(target.watchSummary).font(.headline)
-                Text("\(target.restSeconds) sec rest · \(exercise.workingSetCount)/\(target.sets) sets done")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else {
-                Text("Set targets on iPhone to follow this workout.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if hasStarted {
-                Text("Set \(exercise.workingSetCount + 1)").font(.headline).foregroundStyle(.mint)
-                Button("Log completed set", systemImage: "checkmark.circle.fill") { showLogger = true }
-                    .disabled(!connectivity.canSubmit)
-                if let set = exercise.sets.last(where: { $0.isWarmup == false }) {
-                    Text("Last set: \(set.kg.formatted()) kg × \(set.reps)")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-                if let rest = workout.restHistory?.last {
-                    Text("Last rest: \(watchDuration(Int(min(86400, max(0, rest.elapsedSeconds)))))")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-            } else {
-                Button(workout.totalSets == 0 ? "Start exercise" : "Start next exercise", systemImage: "play.fill") {
-                    startedExerciseKey = exerciseKey(exercise, workout: workout)
-                }
-                .disabled(!connectivity.canSubmit)
-            }
+    private func preparationValues(_ draft: WatchSetDraft) -> some View {
+        HStack(spacing: 8) {
+            valueButton(draft.kg.formatted(), unit: "KG", field: .preparedKg)
+            valueButton("\(draft.expectedReps)", unit: "REPS", field: .expectedReps)
         }
+        .disabled(!canAct || !currentDraft)
     }
 
-    private func restSection(_ timer: RestTimer, workout: Workout) -> some View {
-        let next = workout.nextExercise
-        let sameExercise = next?.exerciseID == timer.exerciseID
-        return Section("Rest") {
+    private func valueButton(_ value: String, unit: String, field: WatchValueField) -> some View {
+        Button { editor = field } label: {
+            VStack(spacing: 2) {
+                Text(value).font(.system(size: 27, weight: .bold, design: .rounded)).minimumScaleFactor(0.6)
+                HStack(spacing: 3) {
+                    Text(unit).font(.system(size: 10, weight: .semibold))
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 8))
+                }
+                .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 9)
+            .background(Color.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 15))
+        }
+        .buttonStyle(.plain).accessibilityLabel("Change \(unit): \(value)")
+    }
+
+    private func restScreen(_ timer: RestTimer, workout: Workout) -> some View {
+        VStack(spacing: 8) {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 let date = restDisplayDate(timerID: timer.id, now: context.date)
                 let remaining = Int(ceil(timer.remaining(at: date)))
-                let elapsed = Int(max(0, min(86400, date.timeIntervalSince(timer.startedAt))))
-                let overtime = Int(max(0, min(86400, date.timeIntervalSince(timer.endsAt))))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(remaining > 0 ? watchDuration(remaining) : "Ready")
-                        .font(.largeTitle.monospacedDigit().bold()).foregroundStyle(.mint)
-                    Text("Rested \(watchDuration(elapsed))")
-                        .font(.caption.monospacedDigit())
-                    if remaining == 0 {
-                        Text("\(watchDuration(overtime)) past target")
-                            .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                    }
+                VStack(spacing: 3) {
+                    eyebrow(remaining > 0 ? "REST" : "REST COMPLETE")
+                    Text(remaining > 0 ? watchDuration(Double(remaining)) : "Ready")
+                        .font(.system(size: 44, weight: .bold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.mint).minimumScaleFactor(0.65).lineLimit(1)
+                    Text("Rested \(watchDuration(date.timeIntervalSince(timer.startedAt)))")
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .combine)
             }
-            if let next {
-                Text(exerciseName(next.exerciseID)).font(.headline)
-                if let target = next.target {
-                    Text("Set \(next.workingSetCount + 1) of \(target.sets) · \(target.watchReps) reps")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+            if let draft, currentDraft {
+                Text(exerciseName(draft.exerciseID)).font(.caption.bold()).lineLimit(1).minimumScaleFactor(0.7)
+                Text("Next set · \(draft.kg.formatted()) kg × \(draft.expectedReps)")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            Button(next == nil ? "End rest" : (sameExercise ? "Start next set" : "Start next exercise"), systemImage: "play.fill") {
-                do {
-                    try connectivity.submit(.skipRest(timerID: timer.id))
-                    pendingRestTimer = timer
-                    if let next, let commandID = connectivity.pendingCommand?.id {
-                        pendingExerciseStart = (commandID, exerciseKey(next, workout: workout))
-                    }
-                } catch { localError = error.localizedDescription }
-            }
-            .disabled(!connectivity.canSubmit)
-            Text("Tap when you start to record your actual rest.")
-                .font(.caption2).foregroundStyle(.secondary)
-            if !notifications.hasChosenAlerts {
-                Button("Enable rest alerts", systemImage: "bell.badge") {
-                    Task { await notifications.setEnabled(true) }
+            primaryButton("Dismiss", symbol: "play.fill", subtitle: "Start next set") { dismissRest() }
+                .disabled(!canAct || !currentDraft || draft?.phase != .prepared)
+            if let draft, currentDraft, draft.phase == .prepared {
+                HStack {
+                    Button("Change kg") { editor = .preparedKg }
+                    Button("Change reps") { editor = .expectedReps }
                 }
-                Text("Get a tap when your rest is over.")
-                    .font(.caption2).foregroundStyle(.secondary)
-            } else if let message = notifications.message {
+                .font(.caption2).buttonStyle(.plain).foregroundStyle(.secondary)
+                .disabled(!canAct)
+            }
+            if let message = notifications.message {
                 Text(message).font(.caption2).foregroundStyle(.orange)
             }
         }
     }
 
+    private var draftRecovery: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "exclamationmark.circle").font(.title2).foregroundStyle(.orange)
+            Text("Workout changed").font(.headline)
+            if let draft {
+                Text("Saved draft: \(exerciseName(draft.exerciseID))")
+                    .font(.caption).multilineTextAlignment(.center)
+                Text("\(draft.actualKg.formatted()) kg × \(draft.actualReps)")
+                    .font(.title3.bold())
+            }
+            Text("Review the workout on iPhone before discarding this draft.")
+                .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Button("Use current workout") { confirmDiscard = true }
+                .disabled(connectivity.pendingCommand != nil || connectivity.snapshot == nil || local.storageError != nil)
+        }
+    }
+
     @ViewBuilder
     private var actionStatus: some View {
-        if connectivity.pendingCommand != nil || connectivity.lastAcknowledgement?.status == .rejected ||
-            connectivity.quarantinedCommand != nil || connectivity.lastError != nil {
-            Section {
-                if let pending = connectivity.pendingCommand {
-                    Label("\(pending.action.watchDescription)…", systemImage: "arrow.triangle.2.circlepath")
-                        .font(.caption)
-                    Text("Saved on this Watch. Open Gyma on iPhone to confirm if this takes a while.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-                if let receipt = connectivity.lastAcknowledgement, receipt.status == .rejected {
-                    Label("Change wasn’t saved", systemImage: "exclamationmark.circle")
-                        .font(.caption).foregroundStyle(.orange)
-                    Text(receipt.message ?? "Review the workout and try again.").font(.caption2)
-                    if let command = connectivity.rejectedCommand, case let .logSet(_, set) = command.action {
-                        Text("Not saved: \(set.kg.formatted()) kg × \(set.reps)").font(.caption2)
-                    }
-                }
-                if let command = connectivity.quarantinedCommand {
-                    Label("Earlier change needs review", systemImage: "exclamationmark.circle")
-                        .font(.caption).foregroundStyle(.orange)
-                    Text("iPhone data was replaced. Review the previous workout in Gyma before logging this change again.")
-                        .font(.caption2)
-                    if case let .logSet(_, set) = command.action {
-                        Text("Not saved: \(set.kg.formatted()) kg × \(set.reps)").font(.caption2)
-                    }
-                }
-                if let error = connectivity.lastError {
-                    Text(error).font(.caption2).foregroundStyle(.orange)
+        if let pending = connectivity.pendingCommand {
+            Text(pending.action.watchDescription).font(.caption).foregroundStyle(.mint)
+            Text("Waiting for iPhone confirmation. Open Gyma on iPhone if this takes a while.")
+                .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }
+        if let receipt = connectivity.lastAcknowledgement, receipt.status == .rejected {
+            Text(receipt.message ?? "Change wasn’t saved. Your set details are kept here.")
+                .font(.caption2).foregroundStyle(.orange)
+            if let command = connectivity.rejectedCommand, case let .logSet(_, set) = command.action {
+                Text("Not saved: \(set.kg.formatted()) kg × \(set.reps)")
+                    .font(.caption2).foregroundStyle(.orange)
+            }
+        }
+        if let command = connectivity.quarantinedCommand {
+            Text("Earlier change needs review on iPhone. It was not applied after your phone data changed.")
+                .font(.caption2).foregroundStyle(.orange)
+            if case let .logSet(_, set) = command.action {
+                Text("Not saved: \(set.kg.formatted()) kg × \(set.reps)").font(.caption2)
+            }
+        }
+        if let error = local.storageError ?? connectivity.lastError {
+            Text(error).font(.caption2).foregroundStyle(.orange)
+        }
+    }
+
+    private func primaryButton(_ title: String, symbol: String, subtitle: String? = nil,
+                               action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 1) {
+                Label(title, systemImage: symbol).font(.headline)
+                if let subtitle { Text(subtitle).font(.caption2) }
+            }
+        }
+        .buttonStyle(WatchPrimaryButtonStyle())
+    }
+
+    private func eyebrow(_ text: String) -> some View {
+        Text(text).font(.system(size: 11, weight: .bold, design: .rounded))
+            .tracking(1.2).foregroundStyle(.mint)
+    }
+
+    @ViewBuilder
+    private func valueEditor(_ field: WatchValueField) -> some View {
+        if let draft {
+            WatchValueEditor(field: field, kg: field == .actualKg ? draft.actualKg : draft.kg,
+                             reps: draft.expectedReps) { kg, reps in
+                change {
+                    if field == .actualKg { try $0.setActual(kg: kg, reps: $0.draft?.actualReps ?? draft.actualReps) }
+                    else { try $0.setPreparation(kg: kg, reps: reps) }
                 }
             }
         }
     }
 
+    private func reconcile() {
+        do {
+            try local.update {
+                $0.reconcile(snapshot: connectivity.snapshot, pending: connectivity.pendingCommand,
+                             acknowledgement: connectivity.lastAcknowledgement)
+            }
+        } catch { localError = error.localizedDescription }
+    }
+
+    private func change(_ operation: (inout WatchSetFlow) throws -> Void) {
+        do { try local.update(operation) }
+        catch { localError = error.localizedDescription }
+    }
+
+    private func submitSet() {
+        guard canAct, let snapshot = connectivity.snapshot else { return }
+        do {
+            let set = try local.update { try $0.prepareSubmission(snapshot: snapshot) }
+            guard let draft = local.flow.draft else { return }
+            do {
+                try connectivity.submit(.logSet(exerciseID: draft.exerciseID, set: set),
+                                        expectedWorkoutID: draft.workoutID, basedOnRevision: draft.completionRevision)
+            } catch {
+                try local.update { $0.submissionFailed() }
+                throw error
+            }
+            if let command = connectivity.pendingCommand { try local.update { $0.markSubmitted(command) } }
+        } catch { localError = error.localizedDescription }
+    }
+
+    private func dismissRest() {
+        guard canAct, let snapshot = connectivity.snapshot, let timer = snapshot.restTimer else { return }
+        do {
+            try local.update { try $0.prepareRestResume(snapshot: snapshot) }
+            do {
+                try connectivity.submit(.skipRest(timerID: timer.id), expectedWorkoutID: timer.workoutID,
+                                        basedOnRevision: snapshot.revision)
+            } catch {
+                try local.update { $0.restSubmissionFailed() }
+                throw error
+            }
+            if let command = connectivity.pendingCommand { try local.update { $0.markRestSubmitted(command) } }
+        } catch { localError = error.localizedDescription }
+    }
+
     private func prepareFinish(_ workout: Workout) {
-        finishWorkoutID = workout.id
-        finishRevision = connectivity.snapshot?.revision
-        confirmFinish = true
+        finishWorkoutID = workout.id; finishRevision = connectivity.snapshot?.revision; confirmFinish = true
     }
 
     private func hasHiddenExercises(_ workout: Workout) -> Bool {
@@ -259,15 +370,10 @@ struct WatchWorkoutView: View {
     }
 
     private func restDisplayDate(timerID: String, now: Date) -> Date {
-        if let pending = connectivity.pendingCommand, case let .skipRest(pendingTimerID) = pending.action,
-           pendingTimerID == timerID {
+        if let pending = connectivity.pendingCommand, case let .skipRest(id) = pending.action, id == timerID {
             return pending.createdAt
         }
         return now
-    }
-
-    private func exerciseKey(_ exercise: WorkoutExercise, workout: Workout) -> String {
-        "\(connectivity.snapshot?.storeID ?? "")/\(workout.id)/\(exercise.exerciseID)"
     }
 
     private func exerciseName(_ id: String) -> String {
@@ -276,129 +382,165 @@ struct WatchWorkoutView: View {
 }
 
 @MainActor
-private struct WatchWorkoutSettings: View {
-    @EnvironmentObject private var connectivity: WorkoutConnectivity
-    @EnvironmentObject private var notifications: WatchRestNotifications
-    @Environment(\.dismiss) private var dismiss
-    let finishWorkout: () -> Void
+private struct WatchActualRepsPicker: View {
+    @Binding var reps: Int
+    @FocusState private var focused: Bool
 
     var body: some View {
-        Form {
-            Section("Rest alerts") {
-                Toggle("Rest alerts", isOn: Binding(
-                    get: { notifications.enabled },
-                    set: { value in Task { await notifications.setEnabled(value) } }
-                ))
-                Text(notifications.message ?? "A tap when rest ends while Gyma is open. Background reminders follow your Watch notification and Focus settings.")
-                    .font(.caption2).foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            Text("Reps completed").font(.caption).foregroundStyle(.secondary)
+            Picker("Reps completed", selection: $reps) {
+                ForEach(1...100, id: \.self) { value in Text("\(value)").font(.title.bold()).tag(value) }
             }
-            if connectivity.snapshot?.activeWorkout != nil {
-                Section {
-                    Button("Finish workout early", role: .destructive) {
-                        dismiss()
-                        finishWorkout()
-                    }
-                    .disabled(!connectivity.canSubmit)
-                }
-            }
+            .pickerStyle(.wheel).labelsHidden().frame(height: 74).focused($focused)
         }
-        .navigationTitle("Settings")
+        .onAppear { focused = true }
+    }
+}
+
+private enum WatchValueField: String, Identifiable {
+    case preparedKg, expectedReps, actualKg
+    var id: String { rawValue }
+    var title: String { self == .expectedReps ? "Expected reps" : (self == .actualKg ? "Actual kg" : "Set weight") }
+}
+
+private struct WatchPrimaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .background(isEnabled ? Color.mint : Color.white.opacity(0.12), in: Capsule())
+            .foregroundStyle(isEnabled ? Color.black : Color.gray)
+            .opacity(configuration.isPressed ? 0.75 : 1)
     }
 }
 
 @MainActor
-private struct WatchSetLogger: View {
-    @EnvironmentObject private var connectivity: WorkoutConnectivity
+private struct WatchValueEditor: View {
     @Environment(\.dismiss) private var dismiss
-    let workoutID: String
-    @State private var revision: Int
-    let exercise: WorkoutExercise
-    let name: String
+    let field: WatchValueField
     @State private var kg: Double
     @State private var reps: Int
-    @State private var error: String?
+    @FocusState private var focused: Bool
+    let save: (Double, Int) -> Void
 
-    init(workoutID: String, revision: Int, exercise: WorkoutExercise, name: String) {
-        self.workoutID = workoutID
-        _revision = State(initialValue: revision)
-        self.exercise = exercise
-        self.name = name
-        let recent = exercise.sets.last { $0.isWarmup == false }
-        _kg = State(initialValue: min(1000, max(0, recent?.kg ?? exercise.target?.loadKg ?? 0)))
-        _reps = State(initialValue: min(100, max(1, exercise.target?.repsMin ?? recent?.reps ?? 8)))
-    }
-
-    private var canLog: Bool {
-        connectivity.canSubmit && connectivity.snapshot?.restTimer == nil &&
-        connectivity.snapshot?.activeWorkout?.id == workoutID &&
-        connectivity.snapshot?.activeWorkout?.nextExercise?.exerciseID == exercise.exerciseID
+    init(field: WatchValueField, kg: Double, reps: Int, save: @escaping (Double, Int) -> Void) {
+        self.field = field; _kg = State(initialValue: kg); _reps = State(initialValue: reps); self.save = save
     }
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Set \(exercise.workingSetCount + 1)") {
-                    Text(name).font(.headline)
-                    if let target = exercise.target {
-                        Text("Planned: \(target.watchReps) reps" + (target.loadKg.map { " · \($0.formatted()) kg" } ?? ""))
-                            .font(.caption2).foregroundStyle(.secondary)
+            VStack(spacing: 6) {
+                if field == .expectedReps {
+                    Picker("Expected reps", selection: $reps) {
+                        ForEach(1...100, id: \.self) { value in Text("\(value) reps").tag(value) }
                     }
-                    Picker("Actual kg", selection: $kg) {
-                        if kg.truncatingRemainder(dividingBy: 0.5) != 0 {
-                            Text(kg.formatted()).tag(kg)
-                        }
-                        ForEach(0...2000, id: \.self) { halfKg in
-                            Text((Double(halfKg) / 2).formatted()).tag(Double(halfKg) / 2)
+                    .pickerStyle(.wheel).focused($focused)
+                } else {
+                    Picker("Kilograms", selection: $kg) {
+                        if kg.truncatingRemainder(dividingBy: 0.5) != 0 { Text("\(kg.formatted()) kg").tag(kg) }
+                        ForEach(0...2000, id: \.self) { value in
+                            Text("\((Double(value) / 2).formatted()) kg").tag(Double(value) / 2)
                         }
                     }
-                    if exercise.target?.loadKg == nil && !exercise.sets.contains(where: { $0.isWarmup == false }) {
-                        Text("Choose your load. Use 0 kg for bodyweight.")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Picker("Actual reps", selection: $reps) {
-                        ForEach(1...100, id: \.self) { count in Text("\(count)").tag(count) }
-                    }
+                    .pickerStyle(.wheel).focused($focused)
                 }
-                if let error { Text(error).font(.caption).foregroundStyle(.orange) }
-                Button("Save set") {
-                    guard canLog else {
-                        error = "This workout changed. Close this screen and review your current exercise."
-                        return
-                    }
-                    do {
-                        try connectivity.submit(.logSet(exerciseID: exercise.exerciseID,
-                                                       set: WorkSet(kg: kg, reps: reps, isWarmup: false)),
-                                                expectedWorkoutID: workoutID, basedOnRevision: revision)
-                        dismiss()
-                    } catch { self.error = error.localizedDescription }
-                }
-                .disabled(!canLog)
+                Button("Use value") { save(kg, reps); dismiss() }
+                    .buttonStyle(.borderedProminent).tint(.mint)
             }
-            .navigationTitle("Completed set")
+            .navigationTitle(field.title)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .onAppear { focused = true }
         }
     }
 }
 
-private func watchDuration(_ seconds: Int) -> String {
-    String(format: "%d:%02d", seconds / 60, seconds % 60)
+@MainActor
+private struct WatchWorkoutSettings: View {
+    @EnvironmentObject private var connectivity: WorkoutConnectivity
+    @EnvironmentObject private var notifications: WatchRestNotifications
+    let finishWorkout: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Rest alerts") {
+                    Toggle("Rest vibration", isOn: Binding(
+                        get: { notifications.enabled },
+                        set: { value in Task { await notifications.setEnabled(value) } }
+                    ))
+                    Button("Test vibration") { notifications.testHaptic() }
+                    if let message = notifications.message {
+                        Text(message).font(.caption2).foregroundStyle(.orange)
+                    }
+                }
+                if connectivity.snapshot?.activeWorkout != nil {
+                    Button("Finish workout early", role: .destructive, action: finishWorkout)
+                        .disabled(!connectivity.canSubmit)
+                }
+            }
+            .navigationTitle("Settings")
+        }
+    }
 }
 
-private extension ExerciseTarget {
-    var watchReps: String { repsMin == repsMax ? "\(repsMin)" : "\(repsMin)–\(repsMax)" }
-    var watchSummary: String {
-        let load = loadKg.map { " · \($0.formatted()) kg" } ?? ""
-        return "\(sets) × \(watchReps) reps\(load)"
+@MainActor
+private final class WatchSetFlowStore: ObservableObject {
+    @Published private(set) var flow = WatchSetFlow()
+    @Published private(set) var storageError: String?
+    private let url: URL
+    private var unreadable = false
+
+    init() {
+        url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GymaConnectivity", isDirectory: true)
+            .appendingPathComponent("watch-set-flow.json")
+        do {
+            if FileManager.default.fileExists(atPath: url.path) {
+                let data = try Data(contentsOf: url)
+                guard data.count < 64 * 1024 else { throw GymaError.invalid("Saved Watch set is too large.") }
+                flow = try JSONDecoder().decode(WatchSetFlow.self, from: data)
+                try flow.validate()
+            }
+        } catch {
+            unreadable = true
+            storageError = "Your saved set could not be read. Reopen Gyma to retry; the draft is preserved."
+        }
     }
+
+    @discardableResult
+    func update<T>(_ operation: (inout WatchSetFlow) throws -> T) throws -> T {
+        guard !unreadable else { throw GymaError.invalid(storageError ?? "Watch storage is unavailable.") }
+        var next = flow
+        let result = try operation(&next)
+        try next.validate()
+        guard next != flow else { return result }
+        do {
+            let data = try JSONEncoder().encode(next)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+            flow = next; storageError = nil
+            return result
+        } catch {
+            storageError = "Your set could not be saved on this Watch. Free some storage and reopen Gyma."
+            throw error
+        }
+    }
+}
+
+private func watchDuration(_ seconds: TimeInterval) -> String {
+    let value = Int(max(0, min(86400, seconds)))
+    return String(format: "%d:%02d", value / 60, value % 60)
 }
 
 private extension WatchAction {
     var watchDescription: String {
         switch self {
-        case .logSet: return "Saving set"
-        case .skipRest: return "Saving rest"
-        case .extendRest: return "Updating rest"
-        case .finishWorkout: return "Finishing workout"
+        case .logSet: return "Saving set…"
+        case .skipRest: return "Starting next set…"
+        case .extendRest: return "Updating rest…"
+        case .finishWorkout: return "Finishing workout…"
         }
     }
 }

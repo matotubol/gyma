@@ -57,6 +57,50 @@ class VerifyIPATests(unittest.TestCase):
         self.make_ipa()
         self.check(expected_build_version="42")
 
+    def test_workout_runtime_configuration_passes(self):
+        self.make_ipa(watch_changes={
+            "GymaRequiresWorkoutRuntime": True,
+            "NSHealthUpdateUsageDescription": "Keep your workout available and signal rest completion.",
+            "WKBackgroundModes": ["workout-processing", "audio"],
+        })
+        self.check()
+
+    def test_workout_runtime_requires_health_usage_description(self):
+        for usage in (None, "", "  \n", False):
+            with self.subTest(usage=usage):
+                properties = {
+                    "GymaRequiresWorkoutRuntime": True,
+                    "WKBackgroundModes": ["workout-processing", "audio"],
+                }
+                if usage is not None:
+                    properties["NSHealthUpdateUsageDescription"] = usage
+                self.make_ipa(watch_changes=properties)
+                with self.assertRaisesRegex(AssertionError, "NSHealthUpdateUsageDescription"):
+                    self.check()
+
+    def test_workout_runtime_requires_each_background_mode(self):
+        for modes, missing in ((["audio"], "workout-processing"), (["workout-processing"], "audio"),
+                               (None, "workout-processing")):
+            with self.subTest(modes=modes):
+                properties = {
+                    "GymaRequiresWorkoutRuntime": True,
+                    "NSHealthUpdateUsageDescription": "Keep your workout available.",
+                }
+                if modes is not None:
+                    properties["WKBackgroundModes"] = modes
+                self.make_ipa(watch_changes=properties)
+                with self.assertRaisesRegex(AssertionError, "WKBackgroundModes " + missing):
+                    self.check()
+
+    def test_workout_runtime_rejects_background_modes_as_string(self):
+        self.make_ipa(watch_changes={
+            "GymaRequiresWorkoutRuntime": True,
+            "NSHealthUpdateUsageDescription": "Keep your workout available.",
+            "WKBackgroundModes": "workout-processing,audio",
+        })
+        with self.assertRaisesRegex(AssertionError, "WKBackgroundModes must be an array"):
+            self.check()
+
     def test_old_plugins_placement_is_rejected(self):
         self.make_ipa(watch_roots=[self.phone_root + "PlugIns/GymaWatch.app/"])
         with self.assertRaisesRegex(AssertionError, "Expected exactly one Watch app"):

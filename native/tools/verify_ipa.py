@@ -31,6 +31,15 @@ def verify(path, expected_build_version=None):
         assert watch["WKCompanionAppBundleIdentifier"] == phone["CFBundleIdentifier"]
         assert watch["WKApplication"] is True
         assert watch["WKRunsIndependentlyOfCompanionApp"] is False
+        if watch.get("GymaRequiresWorkoutRuntime") is True:
+            usage = watch.get("NSHealthUpdateUsageDescription")
+            assert isinstance(usage, str) and usage.strip(), (
+                "Watch workout runtime requires a nonempty NSHealthUpdateUsageDescription"
+            )
+            modes = watch.get("WKBackgroundModes", [])
+            assert isinstance(modes, list), "Watch WKBackgroundModes must be an array"
+            for mode in ("workout-processing", "audio"):
+                assert mode in modes, f"Watch workout runtime requires WKBackgroundModes {mode}"
         assert phone["CFBundleVersion"] == watch["CFBundleVersion"]
         if expected_build_version is not None:
             assert phone["CFBundleVersion"] == str(expected_build_version), (

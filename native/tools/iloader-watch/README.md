@@ -24,7 +24,7 @@ Watch support is adapted from the [iLoader Watch companion project](https://gith
 - Install directly through the paired iPhone, preserving the selected USB connection and checking the forwarded Watch identity.
 - Update an installed Watch app in place; remove only an explicitly identified installation placeholder.
 
-Exactly one paired Watch is supported. Gyma does not request HealthKit entitlements. Tests cover bundle discovery, identifier relationships, persisted plists, and provisioning/platform selection. Physical installation and app launch must still be checked on the actual paired devices; passing a Windows build cannot establish that Apple accepted a particular account's profiles.
+Exactly one paired Watch is supported. Gyma 0.5.1 uses HealthKit workout runtime for wrist-down rest vibration and the system workout indicator. The installer enables HealthKit for Watch bundles that declare Health usage or Gyma's runtime marker, then verifies that the downloaded Watch profile grants the entitlement before signing. Tests cover bundle discovery, identifier relationships, persisted plists, HealthKit capability checks, and provisioning/platform selection. Physical installation and app launch must still be checked on the actual paired devices; passing a Windows build cannot establish that Apple accepted a particular account's profiles.
 
 ## Build and install
 
