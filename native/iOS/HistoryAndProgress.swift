@@ -69,6 +69,10 @@ struct WorkoutDetailView: View {
                     }
                     ForEach(workout.exercises) { exercise in
                         Section(model.name(for: exercise.exerciseID)) {
+                            if let target = exercise.target {
+                                Text("Planned: \(target.sets) × \(target.repsMin)–\(target.repsMax) reps · \(target.restSeconds)s rest")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                             if exercise.sets.isEmpty { Text("No sets logged").foregroundStyle(.secondary) }
                             ForEach(Array(exercise.sets.enumerated()), id: \.element.id) { index, set in
                                 HStack {
@@ -80,6 +84,11 @@ struct WorkoutDetailView: View {
                                     Spacer()
                                     if set.isWarmup == true { Text("Warm-up").font(.caption).foregroundStyle(.secondary) }
                                 }
+                            }
+                            ForEach((workout.restHistory ?? []).filter { $0.exerciseID == exercise.exerciseID }) { rest in
+                                LabeledContent("Rest after set \((exercise.sets.firstIndex { $0.id == rest.sourceSetID } ?? 0) + 1)",
+                                               value: "\(Int(rest.elapsedSeconds))s / \(rest.plannedSeconds)s planned")
+                                    .font(.caption).foregroundStyle(.secondary)
                             }
                         }
                     }

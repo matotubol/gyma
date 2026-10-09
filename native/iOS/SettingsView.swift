@@ -10,9 +10,39 @@ struct SettingsView: View {
     @State private var restorePresented = false
     @State private var document: BackupDocument?
     @State private var importedState: GymaState?
+    @State private var apiKey = ""
+    @State private var keyNotice: String?
 
     var body: some View {
         Form {
+            Section {
+                LabeledContent("Model", value: "GPT Luna")
+                if model.hasCoachAPIKey {
+                    Label("API key saved on this iPhone", systemImage: "checkmark.shield")
+                        .foregroundStyle(GymaStyle.accent)
+                }
+                SecureField(model.hasCoachAPIKey ? "Replace OpenAI API key" : "OpenAI API key", text: $apiKey)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .privacySensitive()
+                Button(model.hasCoachAPIKey ? "Replace API key" : "Save API key", systemImage: "key") {
+                    if model.saveCoachAPIKey(apiKey) {
+                        apiKey = ""
+                        keyNotice = "API key saved securely. Your coach is ready."
+                    }
+                }
+                .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.coachRequestInFlight)
+                if model.hasCoachAPIKey {
+                    Button("Remove API key", role: .destructive) {
+                        model.removeCoachAPIKey()
+                        apiKey = ""
+                        keyNotice = model.hasCoachAPIKey ? nil : "API key removed from this iPhone."
+                    }
+                }
+                if let keyNotice { Text(keyNotice).font(.caption).foregroundStyle(.secondary) }
+            } header: { Text("AI coach") } footer: {
+                Text("Your key is stored in the iPhone Keychain and is excluded from backups and Watch sync. Messages, check-in and recent workout summaries are sent to OpenAI when you use the coach. API usage is billed to your OpenAI account.")
+            }
+
             Section {
                 HStack(spacing: 14) {
                     Image(systemName: "applewatch").font(.largeTitle).foregroundStyle(GymaStyle.accent)
@@ -58,7 +88,7 @@ struct SettingsView: View {
                     LabeledContent("Custom exercises", value: "\(model.state.customExercises.count)")
                 }
             } header: { Text("Your data") } footer: {
-                Text("JSON backups include workout history, custom exercises, and deleted workouts. Restoring replaces the current data and keeps a copy of the previous file in Gyma’s Documents folder, available through Files or Finder.")
+                Text("JSON backups include workout history, custom exercises, deleted workouts, and your coach conversation and draft. API keys are excluded. Restoring replaces the current data and keeps a copy of the previous file in Gyma’s Documents folder, available through Files or Finder.")
             }
 
             if let notice = model.notice {
@@ -76,6 +106,8 @@ struct SettingsView: View {
             } header: { Text("Gyma") }
         }
         .navigationTitle("Settings")
+        .onAppear { model.refreshCoachCredentials() }
+        .onDisappear { apiKey = "" }
         .fileExporter(isPresented: $exportPresented, document: document, contentType: .json,
                       defaultFilename: model.storageBlocked ? "gyma-original" : "gyma-backup") { result in
             switch result {

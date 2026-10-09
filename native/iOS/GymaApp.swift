@@ -25,6 +25,8 @@ private struct RootView: View {
         TabView {
             NavigationStack { OverviewView() }
                 .tabItem { Label("Overview", systemImage: "square.grid.2x2") }
+            NavigationStack { CoachView() }
+                .tabItem { Label("Coach", systemImage: "bubble.left.and.bubble.right") }
             NavigationStack { HistoryView() }
                 .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
             NavigationStack { ProgressViewScreen() }
@@ -48,7 +50,7 @@ private struct RootView: View {
 
 struct OverviewView: View {
     @EnvironmentObject private var model: GymaAppModel
-    @State private var checkInPresented = false
+    @State private var coachPresented = false
     @State private var activePresented = false
     @State private var selectedWorkoutID: String?
 
@@ -71,7 +73,7 @@ struct OverviewView: View {
                 }
                 SectionHeading(title: "Keep showing up", subtitle: "Your training, one session at a time.")
                 if model.completedWorkouts.isEmpty {
-                    EmptyState(title: "Make a start", message: "Check in, choose an exercise, and log your first set. Your workout saves as you go.", symbol: "figure.strengthtraining.traditional")
+                    EmptyState(title: "Your first session", message: "Check in with your coach, review your workout, then accept it and start. Your Watch guides you through each exercise.", symbol: "figure.strengthtraining.traditional")
                         .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 22))
                 } else {
                     VStack(spacing: 0) {
@@ -91,13 +93,7 @@ struct OverviewView: View {
         }
         .background(GymaStyle.background)
         .navigationTitle("Gyma")
-        .sheet(isPresented: $checkInPresented) {
-            CheckInView { id in
-                selectedWorkoutID = id
-                checkInPresented = false
-                activePresented = true
-            }
-        }
+        .navigationDestination(isPresented: $coachPresented) { CoachView() }
         .navigationDestination(isPresented: $activePresented) {
             if let selectedWorkoutID { ActiveWorkoutView(workoutID: selectedWorkoutID) }
         }
@@ -118,15 +114,17 @@ struct OverviewView: View {
                 Text("\(workout.loggedSets) sets logged · Started \(workout.start.formatted(date: .omitted, time: .shortened))")
                     .font(.subheadline)
             } else {
-                Text("Take a moment to check in. Then make it count.").font(.subheadline)
+                Text(model.state.coachConversation?.plan == nil || model.state.coachConversation?.startedWorkoutID != nil
+                     ? "Build your next workout with your coach."
+                     : "Your coach has a workout ready to review.").font(.subheadline)
             }
             Button {
                 if let active = model.state.activeWorkout {
                     selectedWorkoutID = active.id
                     activePresented = true
-                } else { checkInPresented = true }
+                } else { coachPresented = true }
             } label: {
-                Label(model.state.activeWorkout == nil ? "Start workout" : "Resume workout", systemImage: "play.fill")
+                Label(model.state.activeWorkout == nil ? (model.state.coachConversation == nil || model.state.coachConversation?.startedWorkoutID != nil ? "Plan with coach" : "Continue with coach") : "Resume workout", systemImage: model.state.activeWorkout == nil ? "bubble.left.and.bubble.right" : "play.fill")
                     .font(.headline).frame(maxWidth: .infinity).padding(.vertical, 8)
             }
             .buttonStyle(.borderedProminent).tint(.white).foregroundStyle(Color(red: 0.10, green: 0.30, blue: 0.19))
@@ -159,13 +157,14 @@ private struct PairingInlineView: View {
 struct CheckInView: View {
     @EnvironmentObject private var model: GymaAppModel
     @Environment(\.dismiss) private var dismiss
-    var onStarted: (String) -> Void
+    var onPrepared: () -> Void
     @State private var shift: Shift = .off
     @State private var energy: Energy = .good
     @State private var minutes = 45
     @State private var title = ""
     @State private var sleep = ""
     @State private var notes = ""
+    @State private var recentTraining = ""
     @State private var pain = ""
     @State private var error: String?
 
@@ -174,7 +173,7 @@ struct CheckInView: View {
             Form {
                 Section {
                     Text("How are you arriving today?").font(.title2.bold())
-                    Text("A quick check-in helps put every workout in context.").foregroundStyle(.secondary)
+                    Text("Your coach uses this to draft a workout. You can discuss changes and accept the plan before starting.").foregroundStyle(.secondary)
                 }
                 Section("Before you start") {
                     Picker("Shift", selection: $shift) { ForEach(Shift.allCases) { Text($0.label).tag($0) } }
@@ -185,6 +184,7 @@ struct CheckInView: View {
                 Section("Session") {
                     TextField("Workout name (optional)", text: $title)
                     TextField("Notes (optional)", text: $notes, axis: .vertical).lineLimit(2...4)
+                    TextField("Recent training (optional)", text: $recentTraining, axis: .vertical).lineLimit(2...4)
                     TextField("Pain or limitations (optional)", text: $pain, axis: .vertical).lineLimit(2...4)
                 }
                 if let error { Section { Text(error).foregroundStyle(.red) } }
@@ -197,13 +197,16 @@ struct CheckInView: View {
                             return
                         }
                         let checkIn = SessionCheckIn(shift: shift, energy: energy, timeMinutes: minutes,
-                                                    sleepHours: value, notes: notes, painNote: pain)
-                        if let id = model.start(checkIn: checkIn, title: title) { onStarted(id) }
-                        else { error = model.errorMessage }
+                                                    sleepHours: value, notes: notes, recentTrainingNote: recentTraining, painNote: pain)
+                        if model.beginCoachConversation(checkIn: checkIn, title: title) { onPrepared() }
+                        else { error = model.coachError ?? model.errorMessage }
                     } label: {
-                        Label("Start workout", systemImage: "play.fill").font(.headline).frame(maxWidth: .infinity)
+                        Label("Create workout plan", systemImage: "sparkles").font(.headline).frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent).padding(.vertical, 4)
+                    .disabled(model.storageBlocked || !model.hasCoachAPIKey)
+                } footer: {
+                    Text("Messages, check-in and recent workout summaries are sent to OpenAI. API usage is billed to your OpenAI account.")
                 }
             }
             .navigationTitle("Check in").navigationBarTitleDisplayMode(.inline)

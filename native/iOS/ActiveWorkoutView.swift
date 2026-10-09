@@ -119,9 +119,11 @@ struct RestTimerCard: View {
                         Label("30 seconds", systemImage: "plus")
                     }.buttonStyle(.bordered)
                     Spacer()
-                    Button(seconds > 0 ? "Skip rest" : "Dismiss") { model.update { try $0.skipRest(timerID: timer.id) } }
+                    Button("Start next set") { model.update { try $0.skipRest(timerID: timer.id) } }
                         .buttonStyle(.borderedProminent)
                 }
+                Text("Rested \(Int(max(0, min(86400, context.date.timeIntervalSince(timer.startedAt))))) sec · Tap when you actually start your next set.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             .padding(18)
             .background(GymaStyle.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 20))
@@ -279,6 +281,7 @@ struct ExerciseLogView: View {
                     Button { logPresented = true } label: {
                         Label("Log set", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5)
                     }.buttonStyle(.borderedProminent)
+                        .disabled(model.state.restTimer != nil)
                 } header: { Text("Logged sets · \(exercise.sets.count)") }
                 Section {
                     Toggle("Automatic rest timer", isOn: Binding(get: { model.state.restEnabled }, set: { value in model.update { $0.setRestEnabled(value) } }))
@@ -345,6 +348,10 @@ private struct LogSetView: View {
                 Section {
                     Button {
                         guard !saved else { return }
+                        guard model.state.restTimer == nil else {
+                            error = "Tap Start next set on the rest timer before logging your completed set."
+                            return
+                        }
                         guard let load = Double(kg.replacingOccurrences(of: ",", with: ".")), load.isFinite, (0...1000).contains(load),
                               let count = Int(reps), (1...1000).contains(count) else { error = AppError.invalidSet.localizedDescription; return }
                         let set = WorkSet(id: setID, kg: load, reps: count, effort: effort, isWarmup: warmup)

@@ -9,6 +9,7 @@ public struct GymaState: Codable, Sendable, Equatable {
     public var customExercises: [ExerciseDefinition] = []
     public var restEnabled = true
     public var restTimer: RestTimer?
+    public var coachConversation: CoachConversation?
     public var commandReceipts: [String: CommandAcknowledgement] = [:]
     public var commandPayloads: [String: Data] = [:]
 
@@ -38,24 +39,64 @@ public struct GymaState: Codable, Sendable, Equatable {
                   exerciseIDs.insert(exercise.id).inserted else { throw GymaError.invalid("Invalid custom exercise identity or name.") }
         }
         guard (workouts + deletedWorkouts).allSatisfy({ workout in
-            workout.exercises.allSatisfy { exerciseIDs.contains($0.exerciseID) }
+            workout.exercises.allSatisfy { exerciseIDs.contains($0.exerciseID) && $0.snapshotWorkingSetCount == nil }
         }) else { throw GymaError.invalid("A workout refers to an exercise missing from the catalog.") }
+        try coachConversation?.validate(catalog: catalog)
         if let timer = restTimer {
             let supportedDates = -2_208_988_800.0...4_102_444_800.0
             guard restEnabled, !timer.id.isEmpty, timer.id.count <= 200,
                   supportedDates.contains(timer.startedAt.timeIntervalSince1970), supportedDates.contains(timer.endsAt.timeIntervalSince1970), timer.endsAt >= timer.startedAt,
                   timer.endsAt.timeIntervalSince(timer.startedAt) <= 86400,
+                  timer.plannedSeconds.map({ (15...600).contains($0) }) ?? true,
                   let workout = activeWorkout, workout.id == timer.workoutID,
+                  timer.startedAt >= workout.start,
                   let exercise = workout.exercises.first(where: { $0.exerciseID == timer.exerciseID }),
                   exercise.sets.last?.id == timer.sourceSetID,
                   exercise.sets.last?.isWarmup == false, canRest(workout: workout, entry: exercise) else { throw GymaError.invalid("Rest timer no longer matches the active workout.") }
         }
+    }
+    public mutating func saveCoachConversation(_ conversation: CoachConversation) throws {
+        var next = conversation
+        if var plan = next.plan {
+            var previous = coachConversation?.plan
+            let acceptedAt = previous?.acceptedAt
+            previous?.acceptedAt = nil
+            let requestedAcceptance = plan.acceptedAt
+            plan.acceptedAt = nil
+            // Only the explicit accept operation can establish acceptance. Editing invalidates it.
+            if plan == previous, requestedAcceptance == acceptedAt { plan.acceptedAt = acceptedAt }
+            next.plan = plan
+        }
+        try next.validate(catalog: catalog)
+        coachConversation = next; revision += 1
+    }
+    public mutating func acceptCoachPlan(planID: String, now: Date = Date()) throws {
+        guard var conversation = coachConversation, var plan = conversation.plan, plan.id == planID else {
+            throw GymaError.stale("That coach plan has changed. Review the current proposal first.")
+        }
+        plan.acceptedAt = now; conversation.plan = plan
+        try conversation.validate(catalog: catalog)
+        coachConversation = conversation; revision += 1
+    }
+    @discardableResult
+    public mutating func startAcceptedPlan(planID: String, now: Date = Date()) throws -> String {
+        guard let conversation = coachConversation, let plan = conversation.plan, plan.id == planID, let acceptedAt = plan.acceptedAt else {
+            throw GymaError.invalid("Review and accept the coach plan before starting a workout.")
+        }
+        try conversation.validate(catalog: catalog)
+        let workout = Workout(start: now, shift: plan.checkIn.shift, energy: plan.checkIn.energy, checkIn: plan.checkIn,
+                              planTitle: plan.title, acceptedPlanID: plan.id, planAcceptedAt: acceptedAt, exercises: plan.exercises)
+        try startWorkout(workout)
+        coachConversation?.plan = nil
+        coachConversation?.startedWorkoutID = workout.id
+        return workout.id
     }
     public mutating func startWorkout(_ workout: Workout) throws {
         guard activeWorkout == nil else { throw GymaError.invalid("Finish or resume your current workout first.") }
         try workout.validate()
         guard workout.isActive, !workouts.contains(where: { $0.id == workout.id }), !deletedWorkouts.contains(where: { $0.id == workout.id }),
               workout.exercises.allSatisfy({ $0.sets.isEmpty }),
+              workout.exercises.allSatisfy({ $0.snapshotWorkingSetCount == nil }), workout.restHistory?.isEmpty ?? true,
               Set(workout.exercises.map(\.exerciseID)).count == workout.exercises.count else { throw GymaError.invalid("A new workout needs unique exercises and no completed sets.") }
         for entry in workout.exercises where !catalog.contains(where: { $0.id == entry.exerciseID }) { throw GymaError.invalid("Unknown exercise in workout.") }
         workouts.insert(workout, at: 0); restTimer = nil; revision += 1
@@ -76,13 +117,14 @@ public struct GymaState: Codable, Sendable, Equatable {
         guard set.kg <= 1000, set.reps <= 10000 else { throw GymaError.invalid("Set exceeds supported logging limits.") }
         let wi = try activeIndex(workoutID)
         let ei = try exerciseIndex(exerciseID, in: wi)
+        try validateEventDate(now, workoutIndex: wi)
         guard !workouts[wi].exercises.flatMap(\.sets).contains(where: { $0.id == set.id }) else { throw GymaError.invalid("This set was already logged.") }
+        try completeRest(at: now)
         workouts[wi].exercises[ei].sets.append(set)
-        restTimer = nil
         let entry = workouts[wi].exercises[ei]
         if canRest(workout: workouts[wi], entry: entry) {
             let seconds = entry.target?.restSeconds ?? 120
-            restTimer = RestTimer(workoutID: workoutID, exerciseID: exerciseID, startedAt: now, endsAt: now.addingTimeInterval(Double(seconds)), sourceSetID: set.id)
+            restTimer = RestTimer(workoutID: workoutID, exerciseID: exerciseID, startedAt: now, endsAt: now.addingTimeInterval(Double(seconds)), sourceSetID: set.id, plannedSeconds: seconds)
         }
         revision += 1
     }
@@ -90,12 +132,14 @@ public struct GymaState: Codable, Sendable, Equatable {
         let wi = try activeIndex(workoutID); let ei = try exerciseIndex(exerciseID, in: wi)
         guard let si = workouts[wi].exercises[ei].sets.firstIndex(where: { $0.id == setID }) else { throw GymaError.stale("That set is no longer in this workout.") }
         workouts[wi].exercises[ei].sets.remove(at: si)
+        workouts[wi].restHistory?.removeAll { $0.sourceSetID == setID }
         if restTimer?.exerciseID == exerciseID { restTimer = nil }
         revision += 1
     }
     public mutating func removeExercise(_ exerciseID: String, workoutID: String) throws {
         let wi = try activeIndex(workoutID); let ei = try exerciseIndex(exerciseID, in: wi)
         workouts[wi].exercises.remove(at: ei)
+        workouts[wi].restHistory?.removeAll { $0.exerciseID == exerciseID }
         if restTimer?.exerciseID == exerciseID { restTimer = nil }
         revision += 1
     }
@@ -110,12 +154,14 @@ public struct GymaState: Codable, Sendable, Equatable {
         try checkIn.validate()
         guard let wi = workouts.firstIndex(where: { $0.id == workoutID }) else { throw GymaError.stale("Workout no longer exists.") }
         workouts[wi].checkIn = checkIn; workouts[wi].shift = checkIn.shift; workouts[wi].energy = checkIn.energy
-        if !checkIn.painNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, restTimer?.workoutID == workoutID { restTimer = nil }
+        if workouts[wi].acceptedPlanID == nil, !checkIn.painNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, restTimer?.workoutID == workoutID { restTimer = nil }
         revision += 1
     }
     public mutating func finishWorkout(_ workoutID: String, at now: Date = Date()) throws {
         let wi = try activeIndex(workoutID)
-        guard now >= workouts[wi].start else { throw GymaError.invalid("Workout cannot finish before it started.") }
+        try validateEventDate(now, workoutIndex: wi)
+        guard workouts[wi].restHistory?.allSatisfy({ $0.endedAt <= now }) ?? true else { throw GymaError.invalid("Workout cannot finish before a recorded rest ended.") }
+        try completeRest(at: now)
         workouts[wi].end = now; restTimer = nil; revision += 1
     }
     public mutating func deleteWorkout(_ workoutID: String) throws {
@@ -136,9 +182,29 @@ public struct GymaState: Codable, Sendable, Equatable {
         guard deadline.timeIntervalSince(timer.startedAt) <= 86400 else { throw GymaError.invalid("Rest timer exceeds 24 hours.") }
         timer.endsAt = deadline; restTimer = timer; revision += 1
     }
-    public mutating func skipRest(timerID: String) throws {
+    public mutating func skipRest(timerID: String, now: Date = Date()) throws {
         guard restTimer?.id == timerID else { throw GymaError.stale("That rest timer has been replaced or stopped.") }
-        restTimer = nil; revision += 1
+        try completeRest(at: now); revision += 1
+    }
+    private func validateEventDate(_ date: Date, workoutIndex: Int) throws {
+        guard (-2_208_988_800.0...4_102_444_800.0).contains(date.timeIntervalSince1970), date >= workouts[workoutIndex].start,
+              workouts[workoutIndex].restHistory?.allSatisfy({ $0.endedAt <= date }) ?? true else {
+            throw GymaError.invalid("Workout events must occur after the session started.")
+        }
+    }
+    private mutating func completeRest(at now: Date) throws {
+        guard let timer = restTimer else { return }
+        let wi = try activeIndex(timer.workoutID)
+        try validateEventDate(now, workoutIndex: wi)
+        guard now >= timer.startedAt else { throw GymaError.invalid("Rest cannot end before it started.") }
+        let plannedSeconds = timer.plannedSeconds.map(Double.init) ?? timer.endsAt.timeIntervalSince(timer.startedAt)
+        guard plannedSeconds.isFinite, (0...86400).contains(plannedSeconds) else { throw GymaError.invalid("Invalid rest timer duration.") }
+        let rest = CompletedRest(id: timer.id, exerciseID: timer.exerciseID, sourceSetID: timer.sourceSetID,
+                                 plannedSeconds: Int(plannedSeconds), startedAt: timer.startedAt, endedAt: now)
+        try rest.validate()
+        if workouts[wi].restHistory == nil { workouts[wi].restHistory = [] }
+        if workouts[wi].restHistory?.contains(where: { $0.id == rest.id }) != true { workouts[wi].restHistory?.append(rest) }
+        restTimer = nil
     }
     private func activeIndex(_ id: String) throws -> Int {
         guard let index = workouts.firstIndex(where: { $0.id == id && $0.isActive }) else { throw GymaError.stale("This workout is no longer active. Refresh from iPhone.") }
@@ -150,7 +216,7 @@ public struct GymaState: Codable, Sendable, Equatable {
     }
     private func canRest(workout: Workout, entry: WorkoutExercise) -> Bool {
         restEnabled && workout.isActive && entry.sets.last?.isWarmup == false &&
-        (workout.checkIn?.painNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) &&
-        (entry.target.map { entry.sets.filter { $0.isWarmup == false }.count < $0.sets } ?? true)
+        (workout.acceptedPlanID != nil || (workout.checkIn?.painNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)) &&
+        (entry.target.map { entry.workingSetCount < $0.sets } ?? true)
     }
 }

@@ -4,11 +4,11 @@ A native, local-first strength training app built from scratch with Swift and Sw
 
 ## Train on iPhone and Apple Watch
 
-On iPhone, check in before a workout, choose or create exercises, set targets, and log weight, reps, warm-up status and optional effort. Rest countdowns use persisted deadlines. Review workout history and training totals, restore deleted workouts, and export or restore native JSON backups in Settings.
+On iPhone, add your OpenAI API key in Settings, then check in with the GPT Luna coach. Discuss and revise a workout with ordered exercises, sets, reps, weights and rest seconds. Review and accept the plan before starting it on iPhone. Log actual weights and reps, review workout history and rest durations, restore deleted workouts, and export or restore native JSON backups in Settings.
 
-The Watch app shows the active workout, targets and rest countdown. Log sets, extend/skip rest, or finish the workout from your wrist. Connection and pending-action indicators distinguish saved phone data from changes waiting to sync. Notification permission is requested only when enabling rest alerts on each device.
+The Watch dashboard focuses on the current workout and exercise, with no connection, last-update or refresh rows. Start each exercise, log actual sets, and tap **Start next set** to record how long you rested, including extra time after the countdown. Enable rest alerts for a foreground tap and system-managed background reminders. Only iPhone starts an accepted workout; the Watch follows it. Pending or rejected changes remain visible when action is needed.
 
-This first version focuses on logging and reliable phone–Watch communication. It does not yet include AI coaching, a body-photo journal, HealthKit workout recording or heart-rate tracking.
+The coach uses OpenAI's Responses API with `gpt-6-luna`. The personal API key stays in the iPhone Keychain; workout backups and Watch snapshots never contain it. See [coach setup and device checks](native/COACH.md). A body-photo journal, HealthKit workout recording and heart-rate tracking are not included.
 
 ## Build through GitHub Actions
 

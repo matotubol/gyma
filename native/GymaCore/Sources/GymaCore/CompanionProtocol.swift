@@ -37,20 +37,28 @@ public struct CompanionSnapshot: Codable, Sendable, Equatable {
     public var catalog: [ExerciseDefinition]
     public var restTimer: RestTimer?
     public var isTruncated: Bool
+    /// Distinguishes a bounded set window from omitted exercises when deciding whether the session is complete.
+    public var totalExerciseCount: Int?
     public init(state: GymaState, now: Date = Date()) {
         storeID = state.storeID; revision = state.revision; generatedAt = now; restTimer = state.restTimer; isTruncated = false
+        totalExerciseCount = state.activeWorkout?.exercises.count
         var workout = state.activeWorkout
         if var current = workout {
             // Sync only the active session and a bounded recent set window. Phone keeps full history.
             isTruncated = current.exercises.count > 12 || current.exercises.contains { $0.sets.count > 20 }
             current.exercises = Array(current.exercises.prefix(12)).map { item in
-                var item = item; item.sets = Array(item.sets.suffix(20))
+                var item = item; item.snapshotWorkingSetCount = item.workingSetCount; item.sets = Array(item.sets.suffix(20))
                 if var target = item.target { target.reason = String(target.reason.prefix(200)); item.target = target }
                 return item
             }
             current.planTitle = current.planTitle.map { String($0.prefix(160)) }
             // Notes and other sensitive history are not needed for watch controls.
-            current.checkIn = nil; workout = current
+            current.checkIn = nil
+            if let rest = current.restHistory?.last,
+               current.exercises.contains(where: { $0.exerciseID == rest.exerciseID && $0.sets.contains(where: { $0.id == rest.sourceSetID }) }) {
+                current.restHistory = [rest]
+            } else { current.restHistory = nil }
+            workout = current
         }
         activeWorkout = workout
         catalog = (workout?.exercises ?? []).map { entry in
@@ -66,6 +74,8 @@ public struct CompanionSnapshot: Codable, Sendable, Equatable {
             } else {
                 current.exercises.removeLast(); catalog.removeLast()
             }
+            if let rest = current.restHistory?.last,
+               !current.exercises.contains(where: { $0.exerciseID == rest.exerciseID && $0.sets.contains(where: { $0.id == rest.sourceSetID }) }) { current.restHistory = nil }
             activeWorkout = current
         }
     }
@@ -97,9 +107,9 @@ public enum GymaReducer {
             case .logSet(let exerciseID, let set):
                 // Queued delivery must not restart a rest interval that already elapsed on watch.
                 try next.addSet(set, exerciseID: exerciseID, workoutID: command.workoutID, now: min(command.createdAt, now))
-            case .skipRest(let timerID): try next.skipRest(timerID: timerID)
+            case .skipRest(let timerID): try next.skipRest(timerID: timerID, now: min(command.createdAt, now))
             case .extendRest(let timerID, let seconds): try next.extendRest(timerID: timerID, seconds: seconds, now: now)
-            case .finishWorkout: try next.finishWorkout(command.workoutID, at: now)
+            case .finishWorkout: try next.finishWorkout(command.workoutID, at: min(command.createdAt, now))
             }
             try next.validate()
             receipt = .init(commandID: command.id, status: .applied, revision: next.revision)

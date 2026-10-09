@@ -13,6 +13,9 @@ final class GymaAppModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var notice: String?
     @Published var isRequestingNotifications = false
+    @Published private(set) var hasCoachAPIKey = false
+    @Published private(set) var coachRequestInFlight = false
+    @Published private(set) var coachError: String?
 
     let connectivity = WorkoutConnectivity.shared
     private let store: JSONFileStore
@@ -20,11 +23,14 @@ final class GymaAppModel: ObservableObject {
     private let notifications = RestNotifications()
     private var notificationTask: Task<Void, Never>?
     private var isConnectivityConfigured = false
+    private var coachTask: Task<Void, Never>?
+    private var coachGeneration = UUID()
 
     init() {
         dataURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("gyma-native.json")
         store = JSONFileStore(url: dataURL)
+        refreshCoachCredentials()
         do {
             state = try store.load()
             try state.validate()
@@ -87,10 +93,147 @@ final class GymaAppModel: ObservableObject {
         }
     }
 
-    func start(checkIn: SessionCheckIn, title: String) -> String? {
-        let workout = Workout(shift: checkIn.shift, energy: checkIn.energy, checkIn: checkIn,
-                              planTitle: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : title)
-        return update { try $0.startWorkout(workout) } ? workout.id : nil
+    func refreshCoachCredentials() {
+        do { hasCoachAPIKey = try CoachCredentials.load()?.isEmpty == false }
+        catch {
+            hasCoachAPIKey = false
+            coachError = "Your OpenAI key could not be read. \(error.localizedDescription)"
+        }
+    }
+
+    @discardableResult
+    func saveCoachAPIKey(_ key: String) -> Bool {
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return false }
+        do {
+            try CoachCredentials.save(key)
+            hasCoachAPIKey = true
+            coachError = nil
+            return true
+        } catch {
+            errorMessage = "Your OpenAI key could not be saved. \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func removeCoachAPIKey() {
+        do {
+            try CoachCredentials.delete()
+            cancelCoachRequest()
+            hasCoachAPIKey = false
+            coachError = nil
+        } catch { errorMessage = "Your OpenAI key could not be removed. \(error.localizedDescription)" }
+    }
+
+    @discardableResult
+    func beginCoachConversation(checkIn: SessionCheckIn, title: String) -> Bool {
+        guard state.activeWorkout == nil else {
+            coachError = "Finish your current workout before planning the next one."
+            return false
+        }
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let request = title.isEmpty ? "Create a workout for today's check-in. Include sets, reps, weights and rest seconds for every exercise."
+            : "Create a workout named \"\(title)\" for today's check-in. Include sets, reps, weights and rest seconds for every exercise."
+        let conversation = CoachConversation(checkIn: checkIn, messages: [CoachMessage(role: .user, content: request)])
+        cancelCoachRequest()
+        guard update({ try $0.saveCoachConversation(conversation) }) else { return false }
+        coachError = nil
+        return true
+    }
+
+    @discardableResult
+    func sendCoachMessage(_ text: String) -> Bool {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !coachRequestInFlight, state.activeWorkout == nil,
+              var conversation = state.coachConversation, conversation.startedWorkoutID == nil else { return false }
+        guard text.count <= 16_000 else {
+            coachError = "Keep your message under 16,000 characters."
+            return false
+        }
+        // A failed request leaves its user message saved. Sending the same text retries it.
+        if conversation.messages.last?.role != .user || conversation.messages.last?.content != text {
+            conversation.messages.append(CoachMessage(role: .user, content: text))
+        }
+        conversation.plan?.acceptedAt = nil
+        guard update({ try $0.saveCoachConversation(conversation) }) else { return false }
+        requestCoachReply()
+        return true
+    }
+
+    func requestCoachReply() {
+        guard !coachRequestInFlight, !storageBlocked, state.activeWorkout == nil,
+              let conversation = state.coachConversation, conversation.startedWorkoutID == nil,
+              conversation.messages.last?.role == .user else { return }
+        let apiKey: String
+        do {
+            guard let saved = try CoachCredentials.load(), !saved.isEmpty else {
+                hasCoachAPIKey = false
+                coachError = "Add your OpenAI API key in Settings to talk with your coach."
+                return
+            }
+            apiKey = saved
+            hasCoachAPIKey = true
+        } catch {
+            coachError = "Your OpenAI key could not be read. \(error.localizedDescription)"
+            return
+        }
+        coachError = nil
+        coachRequestInFlight = true
+        let generation = UUID()
+        coachGeneration = generation
+        let catalog = state.catalog
+        let history = completedWorkouts
+        coachTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if coachGeneration == generation {
+                    coachRequestInFlight = false
+                    coachTask = nil
+                }
+            }
+            do {
+                let reply = try await OpenAICoachService.reply(conversation: conversation, catalog: catalog, history: history, apiKey: apiKey)
+                // A restore, replacement check-in, or edited conversation must never receive an old reply.
+                guard !Task.isCancelled, coachGeneration == generation,
+                      state.coachConversation == conversation, state.activeWorkout == nil else { return }
+                var next = conversation
+                next.messages.append(CoachMessage(role: .assistant, content: reply.message))
+                next.plan = reply.plan
+                next.plan?.acceptedAt = nil
+                if !update({ try $0.saveCoachConversation(next) }) {
+                    coachError = "The reply could not be saved. Your conversation and previous draft are still available. Try again."
+                }
+            } catch {
+                guard !Task.isCancelled, coachGeneration == generation else { return }
+                coachError = error.localizedDescription
+            }
+        }
+    }
+
+    private func cancelCoachRequest() {
+        coachGeneration = UUID()
+        coachTask?.cancel()
+        coachTask = nil
+        coachRequestInFlight = false
+    }
+
+    var canAcceptCoachPlan: Bool {
+        !storageBlocked && !coachRequestInFlight && state.activeWorkout == nil
+            && state.coachConversation?.startedWorkoutID == nil
+            && state.coachConversation?.messages.last?.role == .assistant
+            && state.coachConversation?.plan != nil
+    }
+
+    func acceptCoachPlan(_ planID: String) {
+        guard canAcceptCoachPlan else { return }
+        _ = update { try $0.acceptCoachPlan(planID: planID) }
+    }
+
+    func startCoachPlan(_ planID: String) -> String? {
+        guard canAcceptCoachPlan else { return nil }
+        var workoutID: String?
+        let saved = update { workoutID = try $0.startAcceptedPlan(planID: planID) }
+        return saved ? workoutID : nil
     }
 
     func exportData() throws -> Data {
@@ -112,6 +255,7 @@ final class GymaAppModel: ObservableObject {
 
     @discardableResult
     func restore(_ imported: GymaState) -> Bool {
+        cancelCoachRequest()
         do {
             try imported.validate()
             // Preserve the exact previous bytes, including an unreadable file.
@@ -129,6 +273,7 @@ final class GymaAppModel: ObservableObject {
             next.commandPayloads = [:]
             try persist(next)
             storageBlocked = false
+            coachError = nil
             configureConnectivity()
             connectivity.publishSnapshot()
             synchronizeNotifications()

@@ -14,7 +14,9 @@ struct GymaWatchApp: App {
         _restNotifications = StateObject(wrappedValue: reminders)
         // App initialization also runs for background connectivity launches;
         // view tasks are not guaranteed to run before incoming messages arrive.
-        connectivity.configureWatch { [weak reminders] snapshot in
+        reminders.updatePendingCommand(connectivity.pendingCommand)
+        connectivity.configureWatch { [weak reminders, weak connectivity] snapshot in
+            reminders?.updatePendingCommand(connectivity?.pendingCommand)
             reminders?.update(snapshot)
         }
     }
@@ -25,8 +27,12 @@ struct GymaWatchApp: App {
                 .environmentObject(connectivity)
                 .environmentObject(restNotifications)
                 .tint(.mint)
+                .onChange(of: connectivity.pendingCommand, initial: true) { _, command in
+                    restNotifications.updatePendingCommand(command)
+                }
         }
-        .onChange(of: scenePhase) { _, phase in
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            restNotifications.setAppActive(phase == .active)
             if phase == .active { connectivity.refresh() }
         }
         .backgroundTask(.watchConnectivity) {
