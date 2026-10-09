@@ -1,24 +1,30 @@
 """Fail CI if an unsigned native IPA loses its paired Watch app or identity."""
 
+import argparse
 import plistlib
-import sys
 import zipfile
 
 
-def verify(path):
+def verify(path, expected_build_version=None):
     with zipfile.ZipFile(path) as archive:
-        names = set(archive.namelist())
+        entries = archive.namelist()
+        names = set(entries)
+        assert len(entries) == len(names), "Duplicate ZIP entry names"
         phone_root = "Payload/Gyma.app/"
+        watch_root = phone_root + "Watch/GymaWatch.app/"
         phone = plistlib.loads(archive.read(phone_root + "Info.plist"))
-        watch_roots = [
-            name.removesuffix("Info.plist")
-            for name in names
-            if name.startswith(phone_root)
-            and name.endswith(".app/Info.plist")
-            and name != phone_root + "Info.plist"
-        ]
-        assert len(watch_roots) == 1, "Expected exactly one embedded Watch app"
-        watch_root = watch_roots[0]
+        embedded_app_roots = set()
+        for name in names:
+            if not name.startswith(phone_root):
+                continue
+            parts = name.removeprefix(phone_root).split("/")
+            for index, part in enumerate(parts[:-1]):
+                if part.endswith(".app"):
+                    embedded_app_roots.add(phone_root + "/".join(parts[: index + 1]) + "/")
+        assert embedded_app_roots == {watch_root}, (
+            "Expected exactly one Watch app at " + watch_root
+            + "; found " + repr(sorted(embedded_app_roots))
+        )
         watch = plistlib.loads(archive.read(watch_root + "Info.plist"))
         assert phone["CFBundleIdentifier"] == "com.mato.gyma"
         assert watch["CFBundleIdentifier"] == "com.mato.gyma.watchkitapp"
@@ -26,6 +32,10 @@ def verify(path):
         assert watch["WKApplication"] is True
         assert watch["WKRunsIndependentlyOfCompanionApp"] is False
         assert phone["CFBundleVersion"] == watch["CFBundleVersion"]
+        if expected_build_version is not None:
+            assert phone["CFBundleVersion"] == str(expected_build_version), (
+                f"Expected build version {expected_build_version}, found {phone['CFBundleVersion']}"
+            )
         assert phone["CFBundleShortVersionString"] == watch["CFBundleShortVersionString"]
         assert "iPhoneOS" in phone["CFBundleSupportedPlatforms"]
         assert "WatchOS" in watch["CFBundleSupportedPlatforms"]
@@ -37,6 +47,8 @@ def verify(path):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        raise SystemExit("Usage: verify_ipa.py <unsigned.ipa>")
-    verify(sys.argv[1])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("ipa", help="Path to the unsigned native IPA")
+    parser.add_argument("--expected-build-version", help="Required CFBundleVersion (for example, the CI run number)")
+    args = parser.parse_args()
+    verify(args.ipa, expected_build_version=args.expected_build_version)

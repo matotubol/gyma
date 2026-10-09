@@ -53,7 +53,11 @@ Snapshots use `updateApplicationContext`, with `sendMessage` for prompt updates 
 
 Data lives in `gyma-native.json`. Unreadable files block mutations instead of being overwritten; Settings can export their original bytes. Restoring a backup first preserves existing native workout data in the app's Documents directory. This protects user workout data, not source-code backups.
 
-The single-target Watch app uses `WKApplication` and `WKCompanionAppBundleIdentifier`. Its explicit embedding destination accounts for the [XcodeGen Xcode 26 issue](https://github.com/yonaskolb/XcodeGen/issues/1613). Physical-device installation still needs verification.
+The single-target Watch app uses `WKApplication` and `WKCompanionAppBundleIdentifier`. It is embedded at `Gyma.app/Watch/GymaWatch.app`, following [Apple's bundle layout](https://developer.apple.com/documentation/bundleresources/placing-content-in-a-bundle). CI rejects misplaced or missing Watch bundles and verifies the companion identity and build number. Physical-device installation still needs verification.
+
+For Sideloadly, use version 0.70.1 or newer: its [changelog](https://sideloadly.io/changelog) documents preserving and re-signing bundled WatchKit apps, while older releases stripped them. Install the combined IPA on the paired iPhone, then check the iPhone's Watch app under My Watch > Available Apps. Both devices must meet the deployment targets above. A correct unsigned IPA alone does not validate the re-signing tool's Watch provisioning or guarantee installation.
+
+Development-signed apps also require Developer Mode on the physical Watch. [Apple's documented setup](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device) exposes the setting through developer pairing with Xcode; GitHub Actions cannot toggle it remotely. TestFlight avoids that requirement but requires Apple Developer Program membership and a separately configured signed distribution workflow.
 
 ## Device checks
 

@@ -35,6 +35,8 @@ targets:
       path: Generated/iOS-Info.plist
       properties:
         CFBundleDisplayName: Gyma
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
         UILaunchScreen: {}
         UIApplicationSceneManifest:
@@ -48,8 +50,6 @@ targets:
       - target: GymaWatch
         embed: true
         link: false
-        copy:
-          destination: plugins
   GymaWatch:
     type: application
     platform: watchOS
@@ -66,6 +66,8 @@ targets:
       path: Generated/watchOS-Info.plist
       properties:
         CFBundleDisplayName: Gyma
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
         WKApplication: true
         WKCompanionAppBundleIdentifier: com.mato.gyma

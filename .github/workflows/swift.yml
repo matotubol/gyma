@@ -40,6 +40,9 @@ jobs:
           xcodebuild -showsdks
           swift --version
 
+      - name: Test IPA packaging validation
+        run: python3 -m unittest discover -s tools -p 'test_*.py'
+
       - name: Test shared models, persistence and Watch commands
         run: |
           set -o pipefail
@@ -72,7 +75,7 @@ jobs:
           mkdir -p build/Payload
           ditto build/Gyma.xcarchive/Products/Applications/Gyma.app build/Payload/Gyma.app
           ditto -c -k --keepParent build/Payload build/gyma-swift-unsigned.ipa
-          python3 tools/verify_ipa.py build/gyma-swift-unsigned.ipa
+          python3 tools/verify_ipa.py build/gyma-swift-unsigned.ipa --expected-build-version "${GITHUB_RUN_NUMBER}"
 
       - uses: actions/upload-artifact@v6
         with:
