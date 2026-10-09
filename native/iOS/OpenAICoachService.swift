@@ -5,20 +5,25 @@ import GymaCore
 enum OpenAICoachService {
     static let model = CoachAPI.model
 
-    static func reply(conversation: CoachConversation, catalog: [ExerciseDefinition], history: [Workout], apiKey: String) async throws -> CoachReply {
-        let body = try CoachAPI.requestBody(conversation: conversation, catalog: catalog, history: history)
+    static func reply(conversation: CoachConversation, state: GymaState, apiKey: String) async throws -> CoachReply {
+        let body = try CoachAPI.requestBody(conversation: conversation, catalog: state.catalog, history: state.workouts,
+                                           profile: state.athleteProfile, program: state.trainingProgram,
+                                           reviews: state.workoutReviews ?? [], feedback: state.workoutFeedback ?? [], priorPrograms: state.programHistory ?? [])
         let data = try await request(body: body, apiKey: apiKey)
-        do { return try CoachAPI.parseResponse(data, checkIn: conversation.checkIn, catalog: catalog) }
+        do { return try CoachAPI.parseResponse(data, checkIn: conversation.checkIn, catalog: state.catalog,
+                                               profile: state.athleteProfile, existingProgram: state.trainingProgram) }
         catch let error as GymaError { throw error }
         catch { throw unreadableReply }
     }
 
     static func workoutReply(workout: Workout, storeID: String, revision: Int, restTimer: RestTimer?,
-                             catalog: [ExerciseDefinition], history: [Workout], apiKey: String) async throws -> WorkoutCoachReply {
+                             state: GymaState, apiKey: String) async throws -> WorkoutCoachReply {
         let body = try WorkoutCoachAPI.requestBody(workout: workout, storeID: storeID, revision: revision,
-                                                  restTimer: restTimer, catalog: catalog, history: history)
+                                                  restTimer: restTimer, catalog: state.catalog, history: state.workouts,
+                                                  profile: state.athleteProfile, program: state.trainingProgram,
+                                                  reviews: state.workoutReviews ?? [], feedback: state.workoutFeedback ?? [], priorPrograms: state.programHistory ?? [])
         let data = try await request(body: body, apiKey: apiKey)
-        do { return try WorkoutCoachAPI.parseResponse(data, workout: workout, storeID: storeID, revision: revision, catalog: catalog) }
+        do { return try WorkoutCoachAPI.parseResponse(data, workout: workout, storeID: storeID, revision: revision, catalog: state.catalog, profile: state.athleteProfile) }
         catch let error as GymaError { throw error }
         catch { throw unreadableReply }
     }

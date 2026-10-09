@@ -30,6 +30,22 @@ public enum ExerciseCatalog {
         .init(id: "skull_crushers", name: "Skull crushers", muscle: .arms),
         .init(id: "crunches", name: "Crunches", muscle: .core, iconKey: "core"),
         .init(id: "plank", name: "Plank", muscle: .core, iconKey: "core"),
-        .init(id: "cable_crunch", name: "Cable crunch", muscle: .core, iconKey: "core")
+        .init(id: "cable_crunch", name: "Cable crunch", muscle: .core, iconKey: "core"),
+        .init(id: "cable_fly", name: "Cable fly", muscle: .chest, iconKey: "gymnastics",
+              metadata: .init(primaryMuscles: [.chest], secondaryMuscles: [.frontDelts], equipment: .cables, loadConvention: .machineStack)),
+        .init(id: "cable_lateral_raise", name: "Single-arm cable lateral raise", muscle: .shoulders, iconKey: "body",
+              metadata: .init(primaryMuscles: [.sideDelts], equipment: .cables, loadConvention: .machineStack)),
+        .init(id: "cable_row_single_arm", name: "Single-arm cable row", muscle: .back, iconKey: "row",
+              metadata: .init(primaryMuscles: [.lats, .upperBack], secondaryMuscles: [.biceps, .rearDelts], equipment: .cables, loadConvention: .machineStack)),
+        .init(id: "smith_bench_press", name: "Smith bench press", muscle: .chest,
+              metadata: .init(primaryMuscles: [.chest], secondaryMuscles: [.frontDelts, .triceps], equipment: .smithMachine, loadConvention: .totalExternalWeight)),
+        .init(id: "smith_squat", name: "Smith squat", muscle: .legs,
+              metadata: .init(primaryMuscles: [.quadriceps, .glutes], equipment: .smithMachine, loadConvention: .totalExternalWeight)),
+        .init(id: "machine_shoulder_press_stack", name: "Shoulder press machine (stack)", muscle: .shoulders, iconKey: "body",
+              metadata: .init(primaryMuscles: [.frontDelts], secondaryMuscles: [.sideDelts, .triceps], equipment: .machines, loadConvention: .machineStack)),
+        .init(id: "machine_row_stack", name: "Seated row machine (stack)", muscle: .back, iconKey: "row",
+              metadata: .init(primaryMuscles: [.upperBack, .lats], secondaryMuscles: [.biceps, .rearDelts], equipment: .machines, loadConvention: .machineStack)),
+        .init(id: "machine_hack_squat_plates", name: "Hack squat machine (plates)", muscle: .legs, iconKey: "legs",
+              metadata: .init(primaryMuscles: [.quadriceps, .glutes], equipment: .machines, loadConvention: .totalExternalWeight))
     ]
 }

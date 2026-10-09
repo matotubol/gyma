@@ -137,8 +137,20 @@ final class WorkoutCoachTests: XCTestCase {
         try state.finishWorkout("active", at: start.addingTimeInterval(200))
         let finished = state
         XCTAssertThrowsError(try state.applyWorkoutCoachChange(proposal.id, workoutID: "active"))
-        XCTAssertThrowsError(try state.appendWorkoutCoachMessage("Change it", workoutID: "active"))
         XCTAssertEqual(state, finished)
-        XCTAssertNotNil(state.workouts.first?.coachConversation)
+        try state.appendWorkoutCoachMessage("Review the result and my next session.", workoutID: "active")
+        let conversation = try XCTUnwrap(state.workouts.first?.coachConversation)
+        XCTAssertEqual(conversation.messages.last?.content, "Review the result and my next session.")
+        XCTAssertNil(conversation.proposal)
+        try state.saveWorkoutCoachReply(.init(message: "Your completed sets stay recorded. Let's discuss the next session."),
+                                         workoutID: "active", expectedStoreID: state.storeID,
+                                         expectedRevision: state.revision, expectedConversation: conversation)
+        XCTAssertEqual(state.workouts.first?.exercises, finished.workouts.first?.exercises)
+        XCTAssertEqual(state.workouts.first?.restHistory, finished.workouts.first?.restHistory)
+        XCTAssertEqual(state.workouts.first?.readiness, finished.workouts.first?.readiness)
+        XCTAssertEqual(state.workouts.first?.end, finished.workouts.first?.end)
+        XCTAssertEqual(state.workoutReviews, finished.workoutReviews)
+        XCTAssertEqual(state.revision, finished.revision)
+        XCTAssertEqual(state.workouts.first?.coachConversation?.messages.last?.role, .assistant)
     }
 }

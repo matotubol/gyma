@@ -29,8 +29,9 @@ public struct ExerciseDefinition: Codable, Sendable, Identifiable, Equatable {
     public var muscle: Muscle
     public var iconKey: String
     public var custom: Bool
-    public init(id: String, name: String, muscle: Muscle, iconKey: String = "barbell", custom: Bool = false) {
-        self.id = id; self.name = name; self.muscle = muscle; self.iconKey = iconKey; self.custom = custom
+    public var metadata: ExerciseMetadata?
+    public init(id: String, name: String, muscle: Muscle, iconKey: String = "barbell", custom: Bool = false, metadata: ExerciseMetadata? = nil) {
+        self.id = id; self.name = name; self.muscle = muscle; self.iconKey = iconKey; self.custom = custom; self.metadata = metadata
     }
 }
 
@@ -41,8 +42,9 @@ public struct ExerciseTarget: Codable, Sendable, Equatable {
     public var loadKg: Double?
     public var restSeconds: Int
     public var reason: String
-    public init(sets: Int, repsMin: Int, repsMax: Int, loadKg: Double? = nil, restSeconds: Int = 90, reason: String = "") {
-        self.sets = sets; self.repsMin = repsMin; self.repsMax = repsMax; self.loadKg = loadKg; self.restSeconds = restSeconds; self.reason = reason
+    public var targetEffort: SetEffort?
+    public init(sets: Int, repsMin: Int, repsMax: Int, loadKg: Double? = nil, restSeconds: Int = 90, reason: String = "", targetEffort: SetEffort? = nil) {
+        self.sets = sets; self.repsMin = repsMin; self.repsMax = repsMax; self.loadKg = loadKg; self.restSeconds = restSeconds; self.reason = reason; self.targetEffort = targetEffort
     }
     public func validate() throws {
         guard (1...10).contains(sets), (1...50).contains(repsMin), repsMax >= repsMin, repsMax <= 50,
@@ -123,8 +125,11 @@ public struct Workout: Codable, Sendable, Identifiable, Equatable {
     public var planAcceptedAt: Date?
     public var exercises: [WorkoutExercise]
     public var restHistory: [CompletedRest]?
-    public init(id: String = UUID().uuidString, start: Date = Date(), end: Date? = nil, shift: Shift = .off, energy: Energy = .good, checkIn: SessionCheckIn? = nil, readiness: WorkoutReadiness? = nil, coachConversation: WorkoutCoachConversation? = nil, planTitle: String? = nil, acceptedPlanID: String? = nil, planAcceptedAt: Date? = nil, exercises: [WorkoutExercise] = [], restHistory: [CompletedRest]? = nil) {
-        self.id = id; self.start = start; self.end = end; self.shift = shift; self.energy = energy; self.checkIn = checkIn; self.readiness = readiness; self.coachConversation = coachConversation; self.planTitle = planTitle; self.acceptedPlanID = acceptedPlanID; self.planAcceptedAt = planAcceptedAt; self.exercises = exercises; self.restHistory = restHistory
+    public var programID: String?
+    public var programSessionID: String?
+    public var programRevision: Int?
+    public init(id: String = UUID().uuidString, start: Date = Date(), end: Date? = nil, shift: Shift = .off, energy: Energy = .good, checkIn: SessionCheckIn? = nil, readiness: WorkoutReadiness? = nil, coachConversation: WorkoutCoachConversation? = nil, planTitle: String? = nil, acceptedPlanID: String? = nil, planAcceptedAt: Date? = nil, exercises: [WorkoutExercise] = [], restHistory: [CompletedRest]? = nil, programID: String? = nil, programSessionID: String? = nil, programRevision: Int? = nil) {
+        self.id = id; self.start = start; self.end = end; self.shift = shift; self.energy = energy; self.checkIn = checkIn; self.readiness = readiness; self.coachConversation = coachConversation; self.planTitle = planTitle; self.acceptedPlanID = acceptedPlanID; self.planAcceptedAt = planAcceptedAt; self.exercises = exercises; self.restHistory = restHistory; self.programID = programID; self.programSessionID = programSessionID; self.programRevision = programRevision
     }
     public var isActive: Bool { end == nil }
     public var totalSets: Int { exercises.reduce(0) { $0 + $1.sets.count } }
@@ -141,6 +146,11 @@ public struct Workout: Codable, Sendable, Identifiable, Equatable {
               planAcceptedAt.map({ supportedDates.contains($0.timeIntervalSince1970) && $0 <= start }) ?? true,
               (planTitle?.count ?? 0) <= 2000 else { throw GymaError.invalid("Invalid workout identity or duration.") }
         try checkIn?.validate()
+        if programID != nil || programSessionID != nil || programRevision != nil {
+            guard let programID, let programSessionID, let programRevision,
+                  !programID.isEmpty, programID.count <= 200, !programSessionID.isEmpty, programSessionID.count <= 200,
+                  (1...1_000_000).contains(programRevision) else { throw GymaError.invalid("Invalid program link on workout.") }
+        }
         try readiness?.validate()
         if let readiness, abs(readiness.recordedAt.timeIntervalSince(start)) > 300 {
             throw GymaError.invalid("Workout readiness must be recorded immediately before the workout starts.")

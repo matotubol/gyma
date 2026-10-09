@@ -76,6 +76,18 @@ struct OverviewView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 TimelineView(.periodic(from: .now, by: 30)) { context in hero(at: context.date) }
+                NavigationLink { TrainingProgramView() } label: {
+                    HStack {
+                        Image(systemName: "calendar").foregroundStyle(GymaStyle.accent)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(model.state.trainingProgram?.title ?? "Build your training program").font(.headline)
+                            Text(model.state.trainingProgram?.nextSession(history: model.state.workouts).map { "Next: \($0.title)" } ?? "Save a profile and a recurring plan")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption)
+                    }.padding(18).background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 20))
+                }.foregroundStyle(.primary)
                 HStack(spacing: 12) {
                     StatTile(value: "\(thisWeek.count)", label: "Workouts this week", symbol: "calendar")
                     StatTile(value: thisWeek.reduce(0) { $0 + $1.liftedVolume }.gymaNumber,
@@ -195,6 +207,7 @@ struct CheckInView: View {
     @State private var recentTraining = ""
     @State private var pain = ""
     @State private var error: String?
+    @State private var loadedProfileDefaults = false
 
     var body: some View {
         NavigationStack {
@@ -237,16 +250,21 @@ struct CheckInView: View {
                         if model.beginCoachConversation(checkIn: checkIn, title: title) { onPrepared() }
                         else { error = model.coachError ?? model.errorMessage }
                     } label: {
-                        Label("Create workout plan", systemImage: "sparkles").font(.headline).frame(maxWidth: .infinity)
+                        Label(model.state.trainingProgram == nil ? "Plan with coach" : "Prepare next session", systemImage: "sparkles").font(.headline).frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent).padding(.vertical, 4)
-                    .disabled(model.storageBlocked || !model.hasCoachAPIKey)
+                    .disabled(model.storageBlocked || (!model.hasCoachAPIKey && model.state.trainingProgram == nil))
                 } footer: {
-                    Text("Messages, check-in and recent workout summaries are sent to OpenAI. API usage is billed to your OpenAI account.")
+                    Text("Your saved program can prepare a session offline. Asking the coach sends your profile, program, relevant training history and feedback to OpenAI. API usage is billed to your account.")
                 }
             }
             .navigationTitle("Check in").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .onAppear {
+                guard !loadedProfileDefaults else { return }
+                loadedProfileDefaults = true
+                minutes = min(180, model.state.athleteProfile?.usualSessionMinutes ?? 45)
+            }
         }
     }
 }

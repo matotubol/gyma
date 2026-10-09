@@ -10,6 +10,7 @@ struct WatchWorkoutView: View {
     @StateObject private var local = WatchSetFlowStore()
     @State private var editor: WatchValueField?
     @State private var showSettings = false
+    @State private var chooseSetType = false
     @State private var confirmFinish = false
     @State private var confirmDiscard = false
     @State private var finishWorkoutID: String?
@@ -38,6 +39,14 @@ struct WatchWorkoutView: View {
         if let pending = connectivity.pendingCommand, draft?.phase != .submitting { return pending.action.watchDescription }
         return nil
     }
+    private var navigationTitle: String {
+        guard draft?.phase == .review else { return "Gyma" }
+        switch draft?.currentReviewStep {
+        case .weight: return "Weight"
+        case .effort: return "Effort"
+        default: return "Reps"
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -53,14 +62,17 @@ struct WatchWorkoutView: View {
                 .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
             }
             .background(Color.black)
-            .navigationTitle(draft?.phase == .review ? (draft?.currentReviewStep == .weight ? "Weight" : "Reps") : "Gyma")
+            .navigationTitle(navigationTitle)
             .toolbar {
-                if draft?.phase == .review && draft?.currentReviewStep == .weight {
+                if draft?.phase == .review && draft?.currentReviewStep != .reps {
                     ToolbarItem(placement: .topBarLeading) {
                         Button {
-                            change { try $0.backToReps() }
+                            change { flow in
+                                if flow.draft?.currentReviewStep == .effort { try flow.backToWeight() }
+                                else { try flow.backToReps() }
+                            }
                         } label: { Image(systemName: "chevron.left") }
-                        .accessibilityLabel("Back to reps")
+                        .accessibilityLabel(draft?.currentReviewStep == .effort ? "Back to weight" : "Back to reps")
                         .disabled(!canAct || !currentDraft)
                     }
                 }
@@ -91,6 +103,12 @@ struct WatchWorkoutView: View {
             .onChange(of: connectivity.lastAcknowledgement) { _, _ in reconcile() }
             .onChange(of: draft?.workingSetCount) { _, _ in editor = nil }
             .onChange(of: draft?.exerciseID) { _, _ in editor = nil }
+            .onChange(of: draft?.position) { _, _ in editor = nil; chooseSetType = false }
+            .confirmationDialog("Set type", isPresented: $chooseSetType, titleVisibility: .visible) {
+                Button("Working set") { selectSetType(isWarmup: false) }
+                Button("Warm-up") { selectSetType(isWarmup: true) }
+                Button("Cancel", role: .cancel) {}
+            } message: { Text("Warm-ups do not count toward the working-set target.") }
             .confirmationDialog("Finish this workout?", isPresented: $confirmFinish, titleVisibility: .visible) {
                 Button("Finish workout", role: .destructive) {
                     do {
@@ -179,12 +197,27 @@ struct WatchWorkoutView: View {
     @ViewBuilder
     private func setScreen(_ draft: WatchSetDraft, workout: Workout, compact: Bool, availableHeight: CGFloat) -> some View {
         let exercise = workout.exercises.first { $0.exerciseID == draft.exerciseID }
-        let setTitle = exercise?.target.map { "SET \(draft.workingSetCount + 1) OF \($0.sets)" } ?? "SET \(draft.workingSetCount + 1)"
-        if draft.phase != .review || draft.currentReviewStep == .weight { eyebrow(setTitle) }
+        let setTitle = draft.isWarmupSet ? "WARM-UP" :
+            (exercise?.target.map { "SET \(draft.workingSetCount + 1) OF \($0.sets)" } ?? "SET \(draft.workingSetCount + 1)")
+        if draft.phase == .prepared {
+            Button { chooseSetType = true } label: {
+                HStack(spacing: 4) {
+                    eyebrow(setTitle)
+                    Image(systemName: "chevron.down").font(.caption2).foregroundStyle(.mint)
+                }
+            }
+            .buttonStyle(.plain).disabled(!canAct || !currentDraft)
+            .accessibilityLabel(draft.isWarmupSet ? "Warm-up, change set type" : "Working set, change set type")
+        } else if draft.phase != .review || draft.currentReviewStep == .weight { eyebrow(setTitle) }
         Text(exerciseName(draft.exerciseID))
             .font(.system(size: draft.phase == .review ? 16 : (compact ? 19 : 22), weight: .bold, design: .rounded))
             .lineLimit(draft.phase == .review || compact ? 1 : 2).minimumScaleFactor(0.8)
             .multilineTextAlignment(.center)
+        if (draft.phase == .prepared || draft.phase == .performing), !draft.isWarmupSet,
+           let effort = exercise?.target?.targetEffort {
+            Text("Aim: \(effort.label)").font(.caption2).foregroundStyle(.secondary)
+                .lineLimit(1).minimumScaleFactor(0.75)
+        }
         switch draft.phase {
         case .prepared:
             preparationValues(draft)
@@ -216,11 +249,21 @@ struct WatchWorkoutView: View {
                     change { try $0.confirmReps() }
                 }
                 .disabled(!canAct || !currentDraft)
-            } else {
+            } else if draft.currentReviewStep == .weight {
                 WatchWeightReview(height: max(44, min(94, availableHeight - 108)), kg: Binding(
                     get: { local.flow.draft?.actualKg ?? draft.actualKg },
                     set: { kg in change { try $0.setActual(kg: kg, reps: $0.draft?.actualReps ?? draft.actualReps) } }
                 ), isEnabled: canAct && currentDraft, confirm: confirmWeight)
+            } else {
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(SetEffort.allCases) { effort in
+                            effortButton(effort.label, effort: effort)
+                        }
+                        effortButton("Not sure", effort: nil)
+                    }
+                }
+                .frame(maxHeight: max(100, availableHeight - 30))
             }
         case .submitting:
             Text("\(draft.actualKg.formatted()) kg × \(draft.actualReps)")
@@ -269,6 +312,7 @@ struct WatchWorkoutView: View {
             if let draft, currentDraft {
                 Text(exerciseName(draft.exerciseID)).font(.caption.bold()).lineLimit(1).minimumScaleFactor(0.7)
                 HStack(spacing: 12) {
+                    Button(draft.isWarmupSet ? "Warm-up" : "Working") { chooseSetType = true }
                     Button("\(draft.kg.formatted()) kg") { editor = .preparedKg }
                     Button("\(draft.expectedReps) reps") { editor = .expectedReps }
                 }
@@ -367,9 +411,31 @@ struct WatchWorkoutView: View {
             try local.update { flow in
                 guard let draft = flow.draft else { return }
                 try flow.setActual(kg: kg, reps: draft.actualReps)
+                try flow.confirmWeight()
             }
-            submitSet()
+            if local.flow.draft?.isWarmupSet == true { submitSet() }
         } catch { localError = error.localizedDescription }
+    }
+
+    private func selectSetType(isWarmup: Bool) {
+        guard canAct, currentDraft else { return }
+        change { try $0.setWarmup(isWarmup) }
+    }
+
+    private func effortButton(_ title: String, effort: SetEffort?) -> some View {
+        Button {
+            guard canAct, currentDraft else { return }
+            do {
+                try local.update { try $0.confirmEffort(effort) }
+                submitSet()
+            } catch { localError = error.localizedDescription }
+        } label: {
+            Text(title).font(.caption.weight(.semibold))
+                .frame(maxWidth: .infinity).padding(.vertical, 8)
+                .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain).disabled(!canAct || !currentDraft)
+        .accessibilityHint("Save this working set")
     }
 
     private func dismissRest() {

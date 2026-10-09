@@ -5,7 +5,13 @@ public enum WatchSetPhase: String, Codable, Sendable {
 }
 
 public enum WatchSetReviewStep: String, Codable, Sendable {
-    case reps, weight
+    case reps, weight, effort
+}
+
+/// The most recent logged set also changes after a warm-up, unlike workingSetCount.
+public struct WatchSetPosition: Codable, Sendable, Equatable {
+    public var lastSetID: String?
+    public init(lastSetID: String?) { self.lastSetID = lastSetID }
 }
 
 /// A local set is tied to a position in the confirmed workout, not a revision.
@@ -20,6 +26,12 @@ public struct WatchSetDraft: Codable, Sendable, Equatable {
     public var expectedReps: Int
     public var actualKg: Double
     public var actualReps: Int
+    /// Optional fields preserve decoding of drafts saved by older Watch versions.
+    public var isWarmup: Bool?
+    public var effort: SetEffort?
+    public var effortWasConfirmed: Bool?
+    public var position: WatchSetPosition?
+    public var isWarmupSet: Bool { isWarmup == true }
     /// Optional for drafts saved before review was split into two screens.
     public var reviewStep: WatchSetReviewStep?
     public var currentReviewStep: WatchSetReviewStep { reviewStep ?? .reps }
@@ -33,6 +45,8 @@ public struct WatchSetDraft: Codable, Sendable, Equatable {
                 kg: Double? = nil, expectedReps: Int? = nil) {
         storeID = snapshot.storeID; workoutID = workout.id; exerciseID = exercise.exerciseID
         workingSetCount = exercise.workingSetCount
+        isWarmup = false
+        position = WatchSetPosition(lastSetID: exercise.sets.last?.id)
         let recent = exercise.sets.last { $0.isWarmup == false }
         self.kg = min(1000, max(0, kg ?? recent?.kg ?? exercise.target?.loadKg ?? 0))
         self.expectedReps = min(100, max(1, expectedReps ?? exercise.target?.repsMin ?? recent?.reps ?? 8))
@@ -43,7 +57,8 @@ public struct WatchSetDraft: Codable, Sendable, Equatable {
     public func matches(_ snapshot: CompanionSnapshot) -> Bool {
         guard snapshot.storeID == storeID, let workout = snapshot.activeWorkout, workout.id == workoutID,
               let next = workout.nextExercise else { return false }
-        return next.exerciseID == exerciseID && next.workingSetCount == workingSetCount
+        return next.exerciseID == exerciseID && next.workingSetCount == workingSetCount &&
+            (position.map { $0.lastSetID == next.sets.last?.id } ?? true)
     }
 }
 
@@ -61,6 +76,7 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
             guard [draft.storeID, draft.workoutID, draft.exerciseID].allSatisfy({ !$0.isEmpty && $0.count <= 200 }),
                   (0...1_000_000).contains(draft.workingSetCount),
                   draft.completionRevision.map({ (0...1_000_000_000).contains($0) }) ?? true,
+                  draft.position?.lastSetID.map({ !$0.isEmpty && $0.count <= 200 }) ?? true,
                   [draft.setID, draft.commandID].allSatisfy({ $0.map { !$0.isEmpty && $0.count <= 200 } ?? true }) else {
                 throw GymaError.invalid("Saved Watch set identity is invalid.")
             }
@@ -84,8 +100,7 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
             case .logSet(let exerciseID, let set):
                 if draft?.workoutID == pending.workoutID && draft?.exerciseID == exerciseID {
                     draft?.phase = .submitting; draft?.setID = set.id; draft?.commandID = pending.id
-                    draft?.reviewStep = .weight
-                    draft?.actualKg = set.kg; draft?.actualReps = set.reps
+                    recoverSubmittedValues(set)
                 } else if draft == nil, let workout = snapshot.activeWorkout,
                           workout.id == pending.workoutID,
                           let exercise = workout.exercises.first(where: { $0.exerciseID == exerciseID }) {
@@ -93,8 +108,7 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
                     let alreadyCounted = set.isWarmup == false && exercise.sets.contains(where: { $0.id == set.id })
                     draft?.workingSetCount = max(0, exercise.workingSetCount - (alreadyCounted ? 1 : 0))
                     draft?.phase = .submitting; draft?.setID = set.id; draft?.commandID = pending.id
-                    draft?.reviewStep = .weight
-                    draft?.actualKg = set.kg; draft?.actualReps = set.reps
+                    recoverSubmittedValues(set)
                 }
             case .skipRest(let timerID):
                 if resumeRestTimer?.id == timerID { resumeCommandID = pending.id }
@@ -105,18 +119,20 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
         if let current = draft, current.phase == .submitting {
             if current.commandID == nil || pending?.id != current.commandID {
                 if let acknowledgement, acknowledgement.commandID == current.commandID {
-                    if acknowledgement.wasApplied { advance(snapshot) }
+                    if acknowledgement.wasApplied {
+                        // The receipt can arrive before its snapshot. In particular,
+                        // a warm-up has not advanced workingSetCount to prove progress.
+                        if snapshot.revision >= acknowledgement.revision { advance(snapshot) }
+                    }
                     else {
-                        draft?.phase = .review; draft?.commandID = nil; draft?.completionRevision = nil
-                        draft?.reviewStep = .weight
+                        returnToReview()
                     }
                 } else if containsSubmittedSet(snapshot, draft: current) {
                     advance(snapshot)
                 } else {
                     // The draft was persisted before submit, but submit never
                     // reached the durable outbox. Keep the completed values.
-                    draft?.phase = .review; draft?.commandID = nil; draft?.completionRevision = nil
-                    draft?.reviewStep = .weight
+                    returnToReview()
                 }
             }
         } else if let current = draft, containsSubmittedSet(snapshot, draft: current) {
@@ -146,6 +162,12 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
         draft?.actualKg = kg; draft?.actualReps = reps
     }
 
+    public mutating func setWarmup(_ isWarmup: Bool) throws {
+        guard draft?.phase == .prepared else { throw GymaError.stale("Choose the set type before starting the set.") }
+        draft?.isWarmup = isWarmup
+        draft?.effort = nil; draft?.effortWasConfirmed = nil
+    }
+
     public mutating func start(snapshot: CompanionSnapshot) throws {
         guard draft?.phase == .prepared, draft?.matches(snapshot) == true, snapshot.restTimer == nil else {
             throw GymaError.stale("Review the current exercise before starting this set.")
@@ -163,7 +185,11 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
     public mutating func setActual(kg: Double, reps: Int) throws {
         guard draft?.phase == .review else { throw GymaError.stale("Complete the set before confirming your reps.") }
         try validateValues(kg: kg, reps: reps)
-        if draft?.currentReviewStep == .weight, reps != draft?.actualReps { draft?.reviewStep = .reps }
+        if reps != draft?.actualReps {
+            draft?.reviewStep = .reps; draft?.effortWasConfirmed = nil
+        } else if draft?.currentReviewStep == .effort, kg != draft?.actualKg {
+            draft?.reviewStep = .weight; draft?.effortWasConfirmed = nil
+        }
         draft?.actualKg = kg; draft?.actualReps = reps
     }
 
@@ -179,7 +205,29 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
         guard draft?.phase == .review, draft?.currentReviewStep == .weight else {
             throw GymaError.stale("Finish the current review step first.")
         }
-        draft?.reviewStep = .reps
+        draft?.reviewStep = .reps; draft?.effortWasConfirmed = nil
+    }
+
+    public mutating func confirmWeight() throws {
+        guard let current = draft, current.phase == .review, current.currentReviewStep == .weight else {
+            throw GymaError.stale("Review your completed weight before confirming it.")
+        }
+        try validateValues(kg: current.actualKg, reps: current.actualReps)
+        if !current.isWarmupSet { draft?.reviewStep = .effort; draft?.effortWasConfirmed = nil }
+    }
+
+    public mutating func backToWeight() throws {
+        guard draft?.phase == .review, draft?.currentReviewStep == .effort else {
+            throw GymaError.stale("Finish the current review step first.")
+        }
+        draft?.reviewStep = .weight; draft?.effortWasConfirmed = nil
+    }
+
+    /// Nil is an explicit "Not sure" answer; it is never inferred as easy.
+    public mutating func confirmEffort(_ effort: SetEffort?) throws {
+        guard let current = draft, current.phase == .review, current.currentReviewStep == .effort,
+              !current.isWarmupSet else { throw GymaError.stale("Confirm reps and weight before choosing effort.") }
+        draft?.effort = effort; draft?.effortWasConfirmed = true
     }
 
     /// Capture the CURRENT revision only after checking the original set position.
@@ -188,10 +236,14 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
         guard let current = draft, current.phase == .review, current.matches(snapshot), snapshot.restTimer == nil else {
             throw GymaError.stale("The workout advanced. Review your saved set before continuing.")
         }
-        guard current.currentReviewStep == .weight else { throw GymaError.invalid("Confirm your reps before confirming the weight.") }
+        guard current.isWarmupSet ? current.currentReviewStep == .weight :
+                (current.currentReviewStep == .effort && current.effortWasConfirmed == true) else {
+            throw GymaError.invalid("Confirm reps, weight and effort before saving a working set.")
+        }
         try validateValues(kg: current.actualKg, reps: current.actualReps)
         let set = WorkSet(id: current.setID ?? UUID().uuidString, kg: current.actualKg,
-                          reps: current.actualReps, isWarmup: false)
+                          reps: current.actualReps, effort: current.isWarmupSet ? nil : current.effort,
+                          isWarmup: current.isWarmupSet)
         draft?.setID = set.id; draft?.completionRevision = snapshot.revision; draft?.phase = .submitting
         return set
     }
@@ -202,8 +254,8 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
     }
 
     public mutating func submissionFailed() {
-        if draft?.phase == .submitting { draft?.reviewStep = .weight }
-        draft?.phase = .review; draft?.commandID = nil; draft?.completionRevision = nil
+        guard draft?.phase == .submitting else { return }
+        returnToReview()
     }
 
     public mutating func prepareRestResume(snapshot: CompanionSnapshot) throws {
@@ -239,15 +291,16 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
         let loadChanged = sameExercise && previous?.sourceTarget != nil && previous?.sourceTarget?.loadKg != next.target?.loadKg
         let repsChanged = sameExercise && previous?.sourceTarget != nil &&
             (previous?.sourceTarget?.repsMin != next.target?.repsMin || previous?.sourceTarget?.repsMax != next.target?.repsMax)
+        let continueWorkingSet = sameExercise && previous?.isWarmupSet != true
         draft = WatchSetDraft(snapshot: snapshot, workout: workout, exercise: next,
-                              kg: loadChanged ? next.target?.loadKg : (sameExercise ? previous?.actualKg : nil),
-                              expectedReps: repsChanged ? next.target?.repsMin : (sameExercise ? previous?.expectedReps : nil))
+                              kg: loadChanged ? next.target?.loadKg : (continueWorkingSet ? previous?.actualKg : nil),
+                              expectedReps: repsChanged ? next.target?.repsMin : (continueWorkingSet ? previous?.expectedReps : nil))
     }
 
     private mutating func refreshPreparedTarget(_ snapshot: CompanionSnapshot) {
         guard let current = draft, current.phase == .prepared, current.matches(snapshot),
               let exercise = snapshot.activeWorkout?.exercises.first(where: { $0.exerciseID == current.exerciseID }) else { return }
-        if let previous = current.sourceTarget {
+        if let previous = current.sourceTarget, !current.isWarmupSet {
             if previous.loadKg != exercise.target?.loadKg, let kg = exercise.target?.loadKg {
                 draft?.kg = kg; draft?.actualKg = kg
             }
@@ -258,7 +311,21 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
         }
         // For a migrated draft with no source target, retain user-entered values
         // while establishing a baseline for subsequent explicit target changes.
-        draft?.sourceTarget = exercise.target
+        if !current.isWarmupSet { draft?.sourceTarget = exercise.target }
+        if current.position == nil { draft?.position = WatchSetPosition(lastSetID: exercise.sets.last?.id) }
+    }
+
+    private mutating func recoverSubmittedValues(_ set: WorkSet) {
+        draft?.reviewStep = set.isWarmup == true ? .weight : .effort
+        draft?.actualKg = set.kg; draft?.actualReps = set.reps
+        draft?.isWarmup = set.isWarmup; draft?.effort = set.effort
+        draft?.effortWasConfirmed = true
+    }
+
+    private mutating func returnToReview() {
+        let step: WatchSetReviewStep = draft?.isWarmupSet == true ? .weight : .effort
+        draft?.reviewStep = step
+        draft?.phase = .review; draft?.commandID = nil; draft?.completionRevision = nil
     }
 
     private func containsSubmittedSet(_ snapshot: CompanionSnapshot, draft: WatchSetDraft) -> Bool {

@@ -19,6 +19,9 @@ public struct WorkoutPlan: Codable, Sendable, Identifiable, Equatable {
     public var createdAt: Date
     public var acceptedAt: Date?
     public var scheduledFor: Date?
+    public var programID: String?
+    public var programSessionID: String?
+    public var programRevision: Int?
     public var scheduledDate: Date { scheduledFor ?? createdAt }
     public init(id: String = UUID().uuidString, title: String, exercises: [WorkoutExercise], checkIn: SessionCheckIn, createdAt: Date = Date(), acceptedAt: Date? = nil, scheduledFor: Date? = nil) {
         self.id = id; self.title = title; self.exercises = exercises; self.checkIn = checkIn; self.createdAt = createdAt; self.acceptedAt = acceptedAt; self.scheduledFor = scheduledFor
@@ -36,6 +39,13 @@ public struct WorkoutPlan: Codable, Sendable, Identifiable, Equatable {
             throw GymaError.invalid("A workout plan needs a title and 1–12 unique exercises.")
         }
         try checkIn.validate()
+        let hasProgram = programID != nil
+        guard (programSessionID != nil) == hasProgram, (programRevision != nil) == hasProgram,
+              programID.map({ !$0.isEmpty && $0.count <= 200 }) ?? true,
+              programSessionID.map({ !$0.isEmpty && $0.count <= 200 }) ?? true,
+              programRevision.map({ (1...1_000_000).contains($0) }) ?? true else {
+            throw GymaError.invalid("Invalid program link in workout plan.")
+        }
         let catalogIDs = Set(catalog.map(\.id))
         for exercise in exercises {
             guard catalogIDs.contains(exercise.exerciseID), exercise.sets.isEmpty, exercise.snapshotWorkingSetCount == nil, let target = exercise.target else {
@@ -51,11 +61,16 @@ public struct CoachConversation: Codable, Sendable, Equatable {
     public var messages: [CoachMessage]
     public var plan: WorkoutPlan?
     public var startedWorkoutID: String?
+    public var proposedProgram: TrainingProgram?
     public init(checkIn: SessionCheckIn, messages: [CoachMessage] = [], plan: WorkoutPlan? = nil) {
         self.checkIn = checkIn; self.messages = messages; self.plan = plan
     }
     public func validate(catalog: [ExerciseDefinition]) throws {
         try checkIn.validate()
+        try proposedProgram?.validate(catalog: catalog)
+        guard proposedProgram == nil || (plan == nil && startedWorkoutID == nil) else {
+            throw GymaError.invalid("Review a program proposal before preparing its session.")
+        }
         guard startedWorkoutID.map({ !$0.isEmpty && $0.count <= 200 && plan == nil }) ?? true else {
             throw GymaError.invalid("Start a new check-in before planning your next workout.")
         }

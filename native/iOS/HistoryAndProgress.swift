@@ -56,6 +56,7 @@ struct WorkoutDetailView: View {
                             StatTile(value: "\(workout.minutes())", label: "minutes")
                         }.listRowInsets(EdgeInsets())
                     }
+                    if !workout.isActive { WorkoutReviewSummarySection(workout: workout) }
                     Section("Before workout") {
                         if let readiness = workout.readiness { WorkoutReadinessSummary(readiness: readiness) }
                         else { Text("Pre-workout soreness was not recorded for this session.").foregroundStyle(.secondary) }
@@ -81,6 +82,9 @@ struct WorkoutDetailView: View {
                             if let target = exercise.target {
                                 Text("Planned: \(target.sets) × \(target.repsMin)–\(target.repsMax) reps · \(target.restSeconds)s rest")
                                     .font(.caption).foregroundStyle(.secondary)
+                                if let effort = target.targetEffort {
+                                    Text("Effort target: \(effort.label)").font(.caption).foregroundStyle(.secondary)
+                                }
                             }
                             if exercise.sets.isEmpty { Text("No sets logged").foregroundStyle(.secondary) }
                             ForEach(Array(exercise.sets.enumerated()), id: \.element.id) { index, set in
@@ -89,9 +93,11 @@ struct WorkoutDetailView: View {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text("\(set.kg.gymaNumber) kg × \(set.reps) reps").fontWeight(.medium)
                                         if let effort = set.effort { Text(effort.label).font(.caption).foregroundStyle(.secondary) }
+                                        else if set.isWarmup == false { Text("Effort not recorded").font(.caption).foregroundStyle(.secondary) }
                                     }
                                     Spacer()
                                     if set.isWarmup == true { Text("Warm-up").font(.caption).foregroundStyle(.secondary) }
+                                    else if set.isWarmup == nil { Text("Unclassified").font(.caption).foregroundStyle(.secondary) }
                                 }
                             }
                             ForEach((workout.restHistory ?? []).filter { $0.exerciseID == exercise.exerciseID }) { rest in
@@ -142,6 +148,9 @@ private struct DeletedWorkoutsView: View {
 
 struct ProgressViewScreen: View {
     @EnvironmentObject private var model: GymaAppModel
+    @State private var volumeWindow = 7
+
+    private var analytics: TrainingAnalytics { TrainingAnalytics.make(workouts: model.state.workouts, catalog: model.state.catalog) }
 
     private var recent: [Workout] {
         let from = Calendar.current.date(byAdding: .day, value: -29, to: Calendar.current.startOfDay(for: Date())) ?? Date()
@@ -159,8 +168,11 @@ struct ProgressViewScreen: View {
     }
 
     var body: some View {
+        let analytics = self.analytics
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
+                muscleVolumeCard(analytics)
+                dataQualityCard(analytics)
                 SectionHeading(title: "The work adds up", subtitle: "Your last 30 days of completed sessions.")
                 HStack(spacing: 12) {
                     StatTile(value: "\(recent.count)", label: "workouts", symbol: "figure.strengthtraining.traditional")
@@ -190,7 +202,17 @@ struct ProgressViewScreen: View {
                             NavigationLink { ExerciseProgressView(exercise: exercise) } label: {
                                 HStack {
                                     Circle().fill(exercise.muscle.tint).frame(width: 9, height: 9)
-                                    Text(exercise.name).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(exercise.name).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
+                                        if let exposure = analytics.exposures.first(where: { $0.exerciseID == exercise.id }) {
+                                            Text("\(exposure.totalCompletedExposures) recorded sessions")
+                                                .font(.caption).foregroundStyle(.secondary)
+                                            if let latest = exposure.recentExposures.first, let load = latest.topWorkingLoadKg {
+                                                Text("Last: \(latest.workingSetCount) working sets · top load \(load.gymaNumber) kg")
+                                                    .font(.caption).foregroundStyle(.secondary)
+                                            }
+                                        }
+                                    }
                                     Spacer()
                                     Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
                                 }.padding(18)
@@ -205,6 +227,56 @@ struct ProgressViewScreen: View {
         .background(GymaStyle.background)
         .navigationTitle("Progress")
     }
+
+    private func muscleVolumeCard(_ analytics: TrainingAnalytics) -> some View {
+        let rows = volumeWindow == 7 ? analytics.volume7Days : analytics.volume28Days
+        return VStack(alignment: .leading, spacing: 14) {
+            SectionHeading(title: "Working sets by muscle", subtitle: "From completed workouts in a rolling period.")
+            Picker("Volume period", selection: $volumeWindow) {
+                Text("7 days").tag(7)
+                Text("28 days").tag(28)
+            }.pickerStyle(.segmented)
+            HStack {
+                Text("Muscle").frame(maxWidth: .infinity, alignment: .leading)
+                Text("Direct").frame(width: 52, alignment: .trailing)
+                Text("Indirect").frame(width: 58, alignment: .trailing)
+            }.font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            ForEach(rows) { row in
+                HStack {
+                    Text(row.muscle.label).frame(maxWidth: .infinity, alignment: .leading)
+                    Text("\(row.directSets)").fontWeight(.semibold).frame(width: 52, alignment: .trailing)
+                    Text("\(row.secondarySets)").foregroundStyle(.secondary).frame(width: 58, alignment: .trailing)
+                }
+                .font(.subheadline).monospacedDigit().accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(row.muscle.label), \(row.directSets) direct sets, \(row.secondarySets) indirect sets")
+            }
+            Text("Direct and indirect involvement are separate exercise-library estimates. They are not added together. Warm-ups and unclassified sets are excluded; counts do not measure recovery or muscle growth.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(20).background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 22))
+    }
+
+    private func dataQualityCard(_ analytics: TrainingAnalytics) -> some View {
+        let quality = volumeWindow == 7 ? analytics.quality7Days : analytics.quality28Days
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("What the log can tell us").font(.headline)
+            LabeledContent("Effort recorded", value: "\(quality.workingSetsWithEffort) / \(quality.workingSetCount) working sets")
+            if let coverage = quality.effortCoverage {
+                ProgressView(value: coverage).tint(GymaStyle.accent)
+                    .accessibilityLabel("Effort coverage").accessibilityValue(coverage.formatted(.percent))
+            }
+            if quality.unclassifiedSetCount > 0 {
+                Text("\(quality.unclassifiedSetCount) unclassified sets are excluded from muscle counts and strength estimates.")
+            }
+            if quality.workingSetsWithoutMuscleMetadata > 0 {
+                Text("\(quality.workingSetsWithoutMuscleMetadata) working sets have no detailed muscle mapping and are missing from the muscle table.")
+            }
+            Text("\(quality.warmupSetCount) warm-up sets recorded. Missing effort remains unknown; it never means easy.")
+                .foregroundStyle(.secondary)
+        }
+        .font(.subheadline)
+        .padding(20).background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 22))
+    }
 }
 
 private struct VolumeDay: Identifiable {
@@ -217,12 +289,17 @@ private struct ExerciseProgressView: View {
     @EnvironmentObject private var model: GymaAppModel
     let exercise: ExerciseDefinition
 
+    private var supportsEstimate: Bool {
+        guard let metadata = exercise.trainingMetadata else { return false }
+        return metadata.measurement == .repetitions && metadata.loadConvention != .unknown && metadata.loadConvention != .bodyweight
+    }
+
     private var sessions: [ExerciseSession] {
         model.completedWorkouts.compactMap { workout in
             guard let entry = workout.exercises.first(where: { $0.exerciseID == exercise.id }) else { return nil }
-            let sets = entry.sets.filter { $0.isWarmup != true }
+            let sets = entry.sets.filter { $0.isWarmup == false }
             guard !sets.isEmpty else { return nil }
-            return ExerciseSession(workout: workout, sets: sets)
+            return ExerciseSession(workout: workout, sets: sets, supportsEstimate: supportsEstimate)
         }.sorted { $0.workout.start < $1.workout.start }
     }
 
@@ -234,15 +311,26 @@ private struct ExerciseProgressView: View {
                 Section {
                     HStack(spacing: 12) {
                         StatTile(value: (sessions.flatMap(\.sets).map(\.kg).max() ?? 0).gymaNumber, label: "best load · kg")
-                        StatTile(value: (sessions.map(\.estimate).max() ?? 0).gymaNumber, label: "estimated 1RM · kg")
+                        StatTile(value: sessions.compactMap(\.estimate).max().map(\.gymaNumber) ?? "—", label: "estimated 1RM · kg")
                     }.listRowInsets(EdgeInsets())
-                    Chart(sessions) { session in
-                        LineMark(x: .value("Workout", session.workout.start), y: .value("Estimated 1RM", session.estimate))
-                            .foregroundStyle(GymaStyle.accent)
-                        PointMark(x: .value("Workout", session.workout.start), y: .value("Estimated 1RM", session.estimate))
-                            .foregroundStyle(GymaStyle.accent)
-                    }.frame(height: 190).padding(.vertical, 10)
-                    Text("Epley estimate: load × (1 + reps ÷ 30). Warm-ups are excluded. This is a trend, not a tested maximum.")
+                    if sessions.contains(where: { $0.estimate != nil }) {
+                        Chart(sessions) { session in
+                            if let estimate = session.estimate {
+                                LineMark(x: .value("Workout", session.workout.start), y: .value("Estimated 1RM", estimate))
+                                    .foregroundStyle(GymaStyle.accent)
+                                PointMark(x: .value("Workout", session.workout.start), y: .value("Estimated 1RM", estimate))
+                                    .foregroundStyle(GymaStyle.accent)
+                            }
+                        }.frame(height: 190).padding(.vertical, 10)
+                    } else {
+                        Text(supportsEstimate
+                             ? "No estimate available yet. This log has no working sets that meet the estimate criteria below."
+                             : "No estimate is shown for an unknown load convention, added bodyweight load or a timed exercise. Your logged performance remains available below.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    LabeledContent("Load convention", value: exercise.trainingMetadata?.loadConvention.label ?? "Not specified")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("Epley estimate uses positive-load working sets of 1–10 reps, reported as 1–2 more reps or at your limit. Warm-ups, unclassified sets, easy sets and missing effort are excluded. Compare the same equipment and setup; this is a trend, not a tested maximum.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Sessions") {
@@ -251,6 +339,11 @@ private struct ExerciseProgressView: View {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(session.workout.start, format: .dateTime.day().month(.wide).year()).font(.headline)
                                 Text(session.sets.map { "\($0.kg.gymaNumber) × \($0.reps)" }.joined(separator: " · "))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Text(session.estimate.map { "Estimated 1RM: \($0.gymaNumber) kg" } ?? "1RM estimate unavailable for this session")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                let recordedEffort = session.sets.filter { $0.effort != nil }.count
+                                Text("Effort recorded for \(recordedEffort) / \(session.sets.count) working sets")
                                     .font(.caption).foregroundStyle(.secondary)
                                 if let readiness = session.workout.readiness {
                                     Text("\(readiness.energy.label) energy · \(exercise.muscle.label) soreness: \((readiness.soreness[exercise.muscle] ?? Soreness.none).label.lowercased())")
@@ -269,6 +362,7 @@ private struct ExerciseProgressView: View {
 private struct ExerciseSession: Identifiable {
     let workout: Workout
     let sets: [WorkSet]
+    let supportsEstimate: Bool
     var id: String { workout.id }
-    var estimate: Double { sets.map { $0.reps <= 1 ? $0.kg : $0.kg * (1 + Double($0.reps) / 30) }.max() ?? 0 }
+    var estimate: Double? { supportsEstimate ? TrainingAnalytics.estimatedOneRepMax(for: sets) : nil }
 }

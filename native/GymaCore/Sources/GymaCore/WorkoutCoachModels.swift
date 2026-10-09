@@ -69,8 +69,8 @@ public struct WorkoutCoachReply: Sendable, Equatable {
 
 public extension GymaState {
     mutating func appendWorkoutCoachMessage(_ text: String, workoutID: String) throws {
-        guard let index = workouts.firstIndex(where: { $0.id == workoutID && $0.isActive }) else {
-            throw GymaError.stale("This workout has ended. Its coach conversation is saved with your history.")
+        guard let index = workouts.firstIndex(where: { $0.id == workoutID }) else {
+            throw GymaError.stale("This workout is no longer available.")
         }
         let content = text.trimmingCharacters(in: .whitespacesAndNewlines)
         var conversation = workouts[index].coachConversation ?? WorkoutCoachConversation()
@@ -88,7 +88,7 @@ public extension GymaState {
                                        expectedStoreID: String, expectedRevision: Int,
                                        expectedConversation: WorkoutCoachConversation) throws {
         guard storeID == expectedStoreID, revision == expectedRevision,
-              let index = workouts.firstIndex(where: { $0.id == workoutID && $0.isActive }),
+              let index = workouts.firstIndex(where: { $0.id == workoutID }),
               workouts[index].coachConversation == expectedConversation else {
             throw GymaError.stale("Your workout changed while the coach was replying. Send again for advice based on your latest sets.")
         }
@@ -99,6 +99,7 @@ public extension GymaState {
                 throw GymaError.stale("The proposed change is based on an earlier workout. Ask again with your latest sets.")
             }
             try change.validate(for: workouts[index], catalog: catalog)
+            try CoachingConstraints.validate(exercises: [.init(exerciseID: change.replacementExerciseID ?? change.exerciseID, target: change.target)], profile: athleteProfile, catalog: catalog)
         }
         var conversation = expectedConversation
         conversation.messages.append(CoachMessage(role: .assistant, content: message))
@@ -114,6 +115,7 @@ public extension GymaState {
             throw GymaError.stale("Your workout changed after this suggestion. Ask the coach to update it before applying.")
         }
         try change.validate(for: workouts[index], catalog: catalog)
+        try CoachingConstraints.validate(exercises: [.init(exerciseID: change.replacementExerciseID ?? change.exerciseID, target: change.target)], profile: athleteProfile, catalog: catalog)
         guard let exerciseIndex = workouts[index].exercises.firstIndex(where: { $0.exerciseID == change.exerciseID }) else {
             throw GymaError.stale("This exercise is no longer in the workout.")
         }

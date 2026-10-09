@@ -10,6 +10,11 @@ public struct GymaState: Codable, Sendable, Equatable {
     public var restEnabled = true
     public var restTimer: RestTimer?
     public var coachConversation: CoachConversation?
+    public var athleteProfile: AthleteProfile?
+    public var trainingProgram: TrainingProgram?
+    public var programHistory: [TrainingProgram]?
+    public var workoutReviews: [WorkoutReview]?
+    public var workoutFeedback: [WorkoutFeedback]?
     public var commandReceipts: [String: CommandAcknowledgement] = [:]
     public var commandPayloads: [String: Data] = [:]
 
@@ -34,6 +39,7 @@ public struct GymaState: Codable, Sendable, Equatable {
         }
         var exerciseIDs = Set(ExerciseCatalog.builtIn.map(\.id))
         for exercise in customExercises {
+            try exercise.metadata?.validate()
             guard !exercise.id.isEmpty, exercise.id.count <= 200, !exercise.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   exercise.name.count <= 200, exercise.iconKey.count <= 100,
                   exerciseIDs.insert(exercise.id).inserted else { throw GymaError.invalid("Invalid custom exercise identity or name.") }
@@ -42,6 +48,28 @@ public struct GymaState: Codable, Sendable, Equatable {
             workout.exercises.allSatisfy { exerciseIDs.contains($0.exerciseID) && $0.snapshotWorkingSetCount == nil }
         }) else { throw GymaError.invalid("A workout refers to an exercise missing from the catalog.") }
         try coachConversation?.validate(catalog: catalog)
+        try athleteProfile?.validate()
+        try trainingProgram?.validate(catalog: catalog)
+        for program in programHistory ?? [] { try program.validate(catalog: catalog) }
+        guard (programHistory?.count ?? 0) <= 100,
+              Set((workoutReviews ?? []).map(\.workoutID)).count == (workoutReviews?.count ?? 0) else {
+            throw GymaError.invalid("Invalid coaching history.")
+        }
+        for review in workoutReviews ?? [] {
+            try review.validate()
+            guard (workouts + deletedWorkouts).contains(where: { $0.id == review.workoutID && !$0.isActive }) else {
+                throw GymaError.invalid("A workout review must belong to completed training.")
+            }
+        }
+        guard Set((workoutFeedback ?? []).map(\.workoutID)).count == (workoutFeedback?.count ?? 0) else {
+            throw GymaError.invalid("Duplicate workout feedback.")
+        }
+        for feedback in workoutFeedback ?? [] {
+            try feedback.validate()
+            guard (workouts + deletedWorkouts).contains(where: { $0.id == feedback.workoutID && !$0.isActive }) else {
+                throw GymaError.invalid("Feedback must belong to a completed workout.")
+            }
+        }
         if let timer = restTimer {
             let supportedDates = -2_208_988_800.0...4_102_444_800.0
             guard restEnabled, !timer.id.isEmpty, timer.id.count <= 200,
@@ -74,6 +102,8 @@ public struct GymaState: Codable, Sendable, Equatable {
         guard var conversation = coachConversation, var plan = conversation.plan, plan.id == planID else {
             throw GymaError.stale("That coach plan has changed. Review the current proposal first.")
         }
+        try validateProgramLink(plan, now: now)
+        try CoachingConstraints.validate(exercises: plan.exercises, profile: athleteProfile, catalog: catalog)
         plan.acceptedAt = now; conversation.plan = plan
         try conversation.validate(catalog: catalog)
         coachConversation = conversation; revision += 1
@@ -89,9 +119,14 @@ public struct GymaState: Codable, Sendable, Equatable {
             try readiness.validate()
             guard abs(now.timeIntervalSince(readiness.recordedAt)) <= 300 else { throw GymaError.stale("Your readiness check expired. Check your energy and soreness again before starting.") }
         }
-        let workout = Workout(start: now, shift: plan.checkIn.shift, energy: readiness?.energy ?? plan.checkIn.energy, checkIn: plan.checkIn, readiness: readiness,
+        try validateProgramLink(plan, now: now)
+        try CoachingConstraints.validate(exercises: plan.exercises, profile: athleteProfile, catalog: catalog)
+        var workout = Workout(start: now, shift: plan.checkIn.shift, energy: readiness?.energy ?? plan.checkIn.energy, checkIn: plan.checkIn, readiness: readiness,
                               coachConversation: WorkoutCoachConversation(messages: conversation.messages),
                               planTitle: plan.title, acceptedPlanID: plan.id, planAcceptedAt: acceptedAt, exercises: plan.exercises)
+        workout.programID = plan.programID
+        workout.programSessionID = plan.programSessionID
+        workout.programRevision = plan.programRevision
         try startWorkout(workout)
         coachConversation?.plan = nil
         coachConversation?.startedWorkoutID = workout.id
@@ -108,6 +143,7 @@ public struct GymaState: Codable, Sendable, Equatable {
         workouts.insert(workout, at: 0); restTimer = nil; revision += 1
     }
     public mutating func addCustomExercise(_ exercise: ExerciseDefinition) throws {
+        try exercise.metadata?.validate()
         guard !catalog.contains(where: { $0.id == exercise.id }), !exercise.id.isEmpty, exercise.id.count <= 200,
               !exercise.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, exercise.name.count <= 200,
               exercise.iconKey.count <= 100 else { throw GymaError.invalid("Custom exercise must have a unique identity and a name of at most 200 characters.") }
@@ -168,7 +204,12 @@ public struct GymaState: Codable, Sendable, Equatable {
         try validateEventDate(now, workoutIndex: wi)
         guard workouts[wi].restHistory?.allSatisfy({ $0.endedAt <= now }) ?? true else { throw GymaError.invalid("Workout cannot finish before a recorded rest ended.") }
         try completeRest(at: now)
-        workouts[wi].end = now; restTimer = nil; revision += 1
+        workouts[wi].end = now; restTimer = nil
+        let review = WorkoutReview.make(workout: workouts[wi], history: workouts, program: trainingProgram, catalog: catalog, now: now, priorPrograms: programHistory ?? [])
+        if workoutReviews == nil { workoutReviews = [] }
+        workoutReviews?.removeAll { $0.workoutID == workoutID }
+        workoutReviews?.append(review)
+        revision += 1
     }
     public mutating func deleteWorkout(_ workoutID: String) throws {
         guard let wi = workouts.firstIndex(where: { $0.id == workoutID }) else { throw GymaError.stale("Workout no longer exists.") }

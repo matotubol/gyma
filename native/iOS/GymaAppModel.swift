@@ -137,9 +137,18 @@ final class GymaAppModel: ObservableObject {
             return false
         }
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let request = title.isEmpty ? "Create a workout for today's check-in. Include sets, reps, weights and rest seconds for every exercise."
+        let request = title.isEmpty ? "Use my saved profile and training history. If I have no saved program, propose a repeatable program fitted to my goals and schedule. Otherwise prepare the next session. Explain progression and uncertainty."
             : "Create a workout named \"\(title)\" for today's check-in. Include sets, reps, weights and rest seconds for every exercise."
-        let conversation = CoachConversation(checkIn: checkIn, messages: [CoachMessage(role: .user, content: request)])
+        var conversation = CoachConversation(checkIn: checkIn, messages: [CoachMessage(role: .user, content: request)])
+        if state.trainingProgram != nil {
+            do {
+                conversation.plan = try state.nextProgramPlan(checkIn: checkIn)
+                conversation.messages.append(.init(role: .assistant, content: "Here is the next session from your saved program. Targets use your logged working sets and effort. Review the reasons below; ask me to adjust for today's time, energy or discomfort."))
+            } catch {
+                // A changed restriction or catalog needs discussion rather than an invalid local plan.
+                conversation.messages[0].content += " The saved session needs review: \(error.localizedDescription)"
+            }
+        }
         cancelCoachRequest()
         guard update({ try $0.saveCoachConversation(conversation) }) else { return false }
         coachError = nil
@@ -186,8 +195,7 @@ final class GymaAppModel: ObservableObject {
         coachRequestInFlight = true
         let generation = UUID()
         coachGeneration = generation
-        let catalog = state.catalog
-        let history = completedWorkouts
+        let requestState = state
         coachTask = Task { [weak self] in
             guard let self else { return }
             defer {
@@ -197,13 +205,18 @@ final class GymaAppModel: ObservableObject {
                 }
             }
             do {
-                let reply = try await OpenAICoachService.reply(conversation: conversation, catalog: catalog, history: history, apiKey: apiKey)
+                let reply = try await OpenAICoachService.reply(conversation: conversation, state: requestState, apiKey: apiKey)
                 // A restore, replacement check-in, or edited conversation must never receive an old reply.
                 guard !Task.isCancelled, coachGeneration == generation,
-                      state.coachConversation == conversation, state.activeWorkout == nil else { return }
+                      state.coachConversation == conversation, state.activeWorkout == nil,
+                      state.storeID == requestState.storeID, state.revision == requestState.revision else {
+                    if !Task.isCancelled { coachError = "Your profile, program or training changed while the coach replied. Try again with the latest information." }
+                    return
+                }
                 var next = conversation
                 next.messages.append(CoachMessage(role: .assistant, content: reply.message))
                 next.plan = reply.plan
+                next.proposedProgram = reply.program
                 next.plan?.acceptedAt = nil
                 if !update({ try $0.saveCoachConversation(next) }) {
                     coachError = "The reply could not be saved. Your conversation and previous draft are still available. Try again."
@@ -235,6 +248,26 @@ final class GymaAppModel: ObservableObject {
         return update { try $0.acceptCoachPlan(planID: planID) }
     }
 
+    @discardableResult
+    func acceptCoachProgram(_ programID: String) -> Bool {
+        guard !storageBlocked, !coachRequestInFlight, state.activeWorkout == nil,
+              state.coachConversation?.messages.last?.role == .assistant else { return false }
+        return update { try $0.acceptProgramProposal(programID: programID) }
+    }
+
+    @discardableResult
+    func beginProgramReview() -> Bool {
+        guard state.activeWorkout == nil, let program = state.trainingProgram else { return false }
+        let checkIn = SessionCheckIn(shift: .off, energy: .good, timeMinutes: min(180, state.athleteProfile?.usualSessionMinutes ?? 45))
+        let prompt = "Review my saved program \"\(program.title)\" using my profile, completed training, feedback and progression. Explain what is working and any uncertainty. Ask what I want to change, or propose a complete revised program only if justified. Today's readiness has not been checked; do not assume it is good."
+        cancelCoachRequest()
+        let conversation = CoachConversation(checkIn: checkIn, messages: [.init(role: .user, content: prompt)])
+        guard update({ try $0.saveCoachConversation(conversation) }) else { return false }
+        coachError = nil
+        requestCoachReply()
+        return true
+    }
+
     func startCoachPlan(_ planID: String, readiness: WorkoutReadiness? = nil) -> String? {
         guard canAcceptCoachPlan else { return nil }
         var workoutID: String?
@@ -255,7 +288,7 @@ final class GymaAppModel: ObservableObject {
 
     func requestWorkoutCoachReply(workoutID: String) {
         guard workoutCoachRequestWorkoutID == nil, !storageBlocked,
-              let workout = workout(workoutID), workout.isActive,
+              let workout = workout(workoutID),
               let conversation = workout.coachConversation, conversation.messages.last?.role == .user else { return }
         let apiKey: String
         do {
@@ -272,8 +305,7 @@ final class GymaAppModel: ObservableObject {
         let storeID = state.storeID
         let revision = state.revision
         let restTimer = state.restTimer
-        let catalog = state.catalog
-        let history = completedWorkouts
+        let requestState = state
         let generation = UUID()
         workoutCoachGeneration = generation
         workoutCoachRequestWorkoutID = workoutID
@@ -288,7 +320,7 @@ final class GymaAppModel: ObservableObject {
             }
             do {
                 let reply = try await OpenAICoachService.workoutReply(workout: workout, storeID: storeID, revision: revision,
-                                                                     restTimer: restTimer, catalog: catalog, history: history, apiKey: apiKey)
+                                                                     restTimer: restTimer, state: requestState, apiKey: apiKey)
                 guard !Task.isCancelled, workoutCoachGeneration == generation else { return }
                 var next = state
                 // The same check protects advice and edits from using sets logged during the request.

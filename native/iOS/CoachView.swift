@@ -20,6 +20,11 @@ struct CoachView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
+                    HStack {
+                        NavigationLink("Your profile", destination: AthleteProfileView())
+                        Spacer()
+                        NavigationLink("Your program", destination: TrainingProgramView())
+                    }.font(.subheadline)
                     if model.state.activeWorkout != nil {
                         workoutInProgress
                     } else if let plan = conversation?.plan, plan.acceptedAt != nil {
@@ -45,6 +50,7 @@ struct CoachView: View {
                                 .disabled(!model.hasCoachAPIKey || model.storageBlocked)
                             }
                             if let plan = conversation.plan { planCard(plan) }
+                            if let program = conversation.proposedProgram { ProgramProposalCard(program: program) }
                             composer
                         } else {
                             introduction
@@ -98,15 +104,17 @@ struct CoachView: View {
         VStack(alignment: .leading, spacing: 18) {
             Image(systemName: "bubble.left.and.bubble.right")
                 .font(.system(size: 36, weight: .light)).foregroundStyle(GymaStyle.accent)
-            Text("Build a session\nthat fits today.")
+            Text("Training that\nbuilds on last time.")
                 .font(.system(.largeTitle, design: .rounded, weight: .bold))
-            Text("Check in with your AI coach. Talk through the exercises, sets, reps, weights and rest times, then accept your workout when it feels right.")
+            Text(model.state.trainingProgram == nil
+                 ? "Set up your profile, then build a recurring program with your coach. Your goals, equipment and training history carry into every conversation."
+                 : "Check in to prepare the next session from your saved program. Review its progression, then accept or discuss adjustments with your coach.")
                 .foregroundStyle(.secondary)
             Text("After accepting, start from Overview or your Watch. Your Watch guides each exercise and logs what you actually lift.")
                 .font(.subheadline).foregroundStyle(.secondary)
             Button("Check in", systemImage: "sparkles") { checkInPresented = true }
                 .font(.headline).buttonStyle(.borderedProminent)
-                .disabled(!model.hasCoachAPIKey || model.storageBlocked)
+                .disabled((!model.hasCoachAPIKey && model.state.trainingProgram == nil) || model.storageBlocked)
         }
         .padding(22).frame(maxWidth: .infinity, alignment: .leading)
         .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 24))
@@ -218,6 +226,9 @@ struct CoachView: View {
                         if !target.reason.isEmpty {
                             Text(target.reason).font(.caption).foregroundStyle(.secondary)
                         }
+                        if let effort = target.targetEffort {
+                            Text("Effort target: \(effort.label)").font(.caption).foregroundStyle(GymaStyle.accent)
+                        }
                     }
                 }
             }
@@ -261,7 +272,7 @@ struct CoachView: View {
                 .disabled(!canSend)
             }
             .padding(14).background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 18))
-            Text("Messages, check-in and recent workout summaries are sent to OpenAI. Any changes require you to accept the plan again.")
+            Text("Messages, profile, program, relevant training history and feedback are sent to OpenAI when you ask the coach. Program and workout changes need your acceptance.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
     }

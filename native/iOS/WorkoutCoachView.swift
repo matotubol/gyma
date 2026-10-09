@@ -7,10 +7,15 @@ struct WorkoutCoachView: View {
     @State private var message = ""
     @FocusState private var composerFocused: Bool
 
+    init(workoutID: String, initialQuestion: String? = nil) {
+        self.workoutID = workoutID
+        _message = State(initialValue: initialQuestion ?? "")
+    }
+
     private var workout: Workout? { model.workout(workoutID) }
     private var inFlight: Bool { model.workoutCoachRequestWorkoutID == workoutID }
     private var canSend: Bool {
-        workout?.isActive == true && model.hasCoachAPIKey && !model.storageBlocked && model.workoutCoachRequestWorkoutID == nil
+        workout != nil && model.hasCoachAPIKey && !model.storageBlocked && model.workoutCoachRequestWorkoutID == nil
             && !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && message.count <= 16_000
     }
 
@@ -20,11 +25,12 @@ struct WorkoutCoachView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     if let workout {
                         sessionCard(workout)
-                        if workout.isActive && !model.hasCoachAPIKey { keySetup }
+                        if !model.hasCoachAPIKey { keySetup }
                         if let messages = workout.coachConversation?.messages, !messages.isEmpty {
                             ForEach(messages) { chatMessage($0) }
                         } else {
-                            Text("Ask about your technique, today's weights, how your sets compare with recent sessions, or an alternative exercise.")
+                            Text(workout.isActive ? "Ask about your technique, today's weights, how your sets compare with recent sessions, or an alternative exercise."
+                                 : "Discuss what went well, why a target was missed, and what to consider next time. Add workout feedback so the coach can use your explanation.")
                                 .foregroundStyle(.secondary)
                         }
                         if inFlight {
@@ -35,15 +41,15 @@ struct WorkoutCoachView: View {
                             Label(error, systemImage: "exclamationmark.bubble")
                                 .font(.subheadline).foregroundStyle(.orange)
                         }
-                        if workout.isActive, workout.coachConversation?.messages.last?.role == .user, !inFlight {
-                            Button("Ask again with latest sets", systemImage: "arrow.clockwise") {
+                        if workout.coachConversation?.messages.last?.role == .user, !inFlight {
+                            Button(workout.isActive ? "Ask again with latest sets" : "Ask again with latest feedback", systemImage: "arrow.clockwise") {
                                 model.requestWorkoutCoachReply(workoutID: workoutID)
                             }
                             .buttonStyle(.bordered)
                             .disabled(!model.hasCoachAPIKey || model.storageBlocked)
                         }
-                        if let proposal = workout.coachConversation?.proposal { proposalCard(proposal, workout: workout) }
-                        if workout.isActive { composer }
+                        if workout.isActive, let proposal = workout.coachConversation?.proposal { proposalCard(proposal, workout: workout) }
+                        composer
                     } else {
                         ContentUnavailableView("Workout unavailable", systemImage: "figure.strengthtraining.traditional",
                                                description: Text("Return to your workouts to open a saved session."))
@@ -64,7 +70,7 @@ struct WorkoutCoachView: View {
 
     private func sessionCard(_ workout: Workout) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(workout.isActive ? "LIVE WORKOUT" : "SAVED CONVERSATION",
+            Label(workout.isActive ? "LIVE WORKOUT" : "WORKOUT REVIEW",
                   systemImage: workout.isActive ? "waveform.path.ecg" : "bubble.left.and.bubble.right")
                 .font(.caption.weight(.bold)).foregroundStyle(GymaStyle.accent)
             Text(workout.title).font(.title2.bold())
@@ -88,7 +94,7 @@ struct WorkoutCoachView: View {
                 Text("Readiness was not recorded for this workout.").font(.caption).foregroundStyle(.secondary)
             }
             Text(workout.isActive ? "The coach sees your latest saved sets and rest intervals when you send a message."
-                                 : "This chat is kept with your workout history.")
+                                 : "Discuss the result and your next session. Completed sets and targets stay as recorded; this conversation is saved with the workout.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(20).frame(maxWidth: .infinity, alignment: .leading)
@@ -173,6 +179,9 @@ struct WorkoutCoachView: View {
                 .font(.subheadline.weight(.medium))
             Text("\(target.loadKg.map { "\($0.gymaNumber) kg" } ?? "Choose a comfortable load") · \(target.restSeconds)s rest")
                 .font(.subheadline)
+            if let effort = target.targetEffort {
+                Text("Effort target: \(effort.label)").font(.subheadline)
+            }
         }
     }
 
@@ -180,7 +189,7 @@ struct WorkoutCoachView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Ask your coach").font(.headline)
             HStack(alignment: .bottom, spacing: 10) {
-                TextField("Tips, different weights, another exercise…", text: $message, axis: .vertical)
+                TextField(workout?.isActive == true ? "Tips, different weights, another exercise…" : "What happened, what should I do next time…", text: $message, axis: .vertical)
                     .lineLimit(2...6).focused($composerFocused)
                     .disabled(inFlight || model.storageBlocked)
                 Button {
@@ -192,7 +201,9 @@ struct WorkoutCoachView: View {
                     .disabled(!canSend)
             }
             .padding(14).background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 18))
-            Text("Messages, readiness, current workout details and recent workout summaries are sent to OpenAI. Suggested changes need your approval.")
+            Text(workout?.isActive == true
+                 ? "Messages, your profile, program, readiness, workout details and training summaries are sent to OpenAI. Suggested changes need your approval."
+                 : "Messages, your profile, program, workout feedback and training summaries are sent to OpenAI when you send a message.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
     }
