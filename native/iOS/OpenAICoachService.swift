@@ -8,7 +8,7 @@ enum OpenAICoachService {
     static func reply(conversation: CoachConversation, state: GymaState, apiKey: String) async throws -> CoachReply {
         let body = try CoachAPI.requestBody(conversation: conversation, catalog: state.catalog, history: state.workouts,
                                            profile: state.athleteProfile, program: state.trainingProgram,
-                                           reviews: state.workoutReviews ?? [], feedback: state.workoutFeedback ?? [], priorPrograms: state.programHistory ?? [])
+                                           reviews: state.workoutReviews ?? [], feedback: state.workoutFeedback ?? [], priorPrograms: state.programHistory ?? [], trainingCalendar: state.trainingCalendar)
         let data = try await request(body: body, apiKey: apiKey)
         do { return try CoachAPI.parseResponse(data, checkIn: conversation.checkIn, catalog: state.catalog,
                                                profile: state.athleteProfile, existingProgram: state.trainingProgram) }
@@ -21,7 +21,7 @@ enum OpenAICoachService {
         let body = try WorkoutCoachAPI.requestBody(workout: workout, storeID: storeID, revision: revision,
                                                   restTimer: restTimer, catalog: state.catalog, history: state.workouts,
                                                   profile: state.athleteProfile, program: state.trainingProgram,
-                                                  reviews: state.workoutReviews ?? [], feedback: state.workoutFeedback ?? [], priorPrograms: state.programHistory ?? [])
+                                                  reviews: state.workoutReviews ?? [], feedback: state.workoutFeedback ?? [], priorPrograms: state.programHistory ?? [], trainingCalendar: state.trainingCalendar)
         let data = try await request(body: body, apiKey: apiKey)
         do { return try WorkoutCoachAPI.parseResponse(data, workout: workout, storeID: storeID, revision: revision, catalog: state.catalog, profile: state.athleteProfile) }
         catch let error as GymaError { throw error }

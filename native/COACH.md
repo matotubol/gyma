@@ -1,5 +1,15 @@
 # AI coach and guided Watch workouts
 
+## Eight-week shift calendar
+
+Overview → Your eight weeks shows the upcoming week and opens the complete 56-day calendar. Create the first block with 17 October 2026 as both the block start and first morning shift, in Europe/Amsterdam. The repeating roster is two mornings, two afternoons, two nights and four days off. The default five training days are cycle days 2, 5, 8, 9 and 10: after the second morning, before the first night, and the final three days off. This first block runs through 11 December, with 27 training slots and a review on 12 December. The dates and cycle-day choices remain editable.
+
+The calendar uses your saved program's sessions in continuous order; it does not invent a program or reset upper/lower rotation at the start of a week or shift cycle. Without a program it shows training slots and links to program setup. Future exercise targets are previews of the saved template. Fresh targets and readiness are checked when preparing today's workout. Actual workout history controls rotation: missed dates do not create catch-up sessions, and future labels can shift after missed or extra sessions. The eight-week boundary is a review point, not an automatic program replacement.
+
+Tap a day for its shift, projected session and base exercise targets, or recorded training. Upcoming training days can move to unoccupied recovery dates; individual dates can also switch between training and recovery. Past days and recorded workout days are protected. Calendar edits clear unstarted workout and program proposals while retaining the discussion, so check in again before accepting a workout. New block settings replace the calendar only; completed workout history remains unchanged.
+
+The saved time zone and calendar-day arithmetic keep the roster aligned across daylight-saving changes. The calendar is included in native JSON backups and sent to both coach modes when asking for coaching. It takes precedence over an approximate days-per-week profile setting for its date range. The Watch continues receiving only the existing bounded workout/accepted-plan snapshots, not the full calendar.
+
 ## Personal profile, program and continuity
 
 Settings → Profile saves your confirmed goals, experience, height, dated bodyweight measurements, training days, session time, equipment/increments, preferences and ongoing limitations. Daily readiness and workout feedback remain separate. You can edit or clear the profile; changing it invalidates draft acceptance and replies based on older state. Profile data and feedback are included in readable JSON backups. They are sent directly to OpenAI only when you request coaching; the Watch does not receive the profile or full training archive. `store: false` is a request setting, not a promise of zero provider retention.

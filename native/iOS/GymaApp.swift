@@ -76,6 +76,7 @@ struct OverviewView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 TimelineView(.periodic(from: .now, by: 30)) { context in hero(at: context.date) }
+                TrainingCalendarOverviewCard()
                 NavigationLink { TrainingProgramView() } label: {
                     HStack {
                         Image(systemName: "calendar").foregroundStyle(GymaStyle.accent)
@@ -255,7 +256,7 @@ struct CheckInView: View {
                     .buttonStyle(.borderedProminent).padding(.vertical, 4)
                     .disabled(model.storageBlocked || (!model.hasCoachAPIKey && model.state.trainingProgram == nil))
                 } footer: {
-                    Text("Your saved program can prepare a session offline. Asking the coach sends your profile, program, relevant training history and feedback to OpenAI. API usage is billed to your account.")
+                    Text("Your saved program can prepare a session offline. Asking the coach sends your profile, program, shift calendar, relevant training history and feedback to OpenAI. API usage is billed to your account.")
                 }
             }
             .navigationTitle("Check in").navigationBarTitleDisplayMode(.inline)
@@ -264,6 +265,7 @@ struct CheckInView: View {
                 guard !loadedProfileDefaults else { return }
                 loadedProfileDefaults = true
                 minutes = min(180, model.state.athleteProfile?.usualSessionMinutes ?? 45)
+                if let calendar = model.state.trainingCalendar { shift = calendar.shift(on: Date()) }
             }
         }
     }

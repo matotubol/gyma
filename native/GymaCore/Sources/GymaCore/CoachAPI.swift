@@ -13,7 +13,7 @@ public enum CoachAPI {
 
     public static func requestBody(conversation: CoachConversation, catalog: [ExerciseDefinition], history: [Workout],
                                    profile: AthleteProfile? = nil, program: TrainingProgram? = nil,
-                                   reviews: [WorkoutReview] = [], feedback: [WorkoutFeedback] = [], now: Date = Date(), priorPrograms: [TrainingProgram] = []) throws -> Data {
+                                   reviews: [WorkoutReview] = [], feedback: [WorkoutFeedback] = [], now: Date = Date(), priorPrograms: [TrainingProgram] = [], trainingCalendar: TrainingCalendarPlan? = nil) throws -> Data {
         try conversation.validate(catalog: catalog)
         guard conversation.startedWorkoutID == nil else { throw GymaError.invalid("Check in again to create your next workout.") }
         guard !catalog.isEmpty else { throw GymaError.invalid("Add exercises before asking the coach for a plan.") }
@@ -29,7 +29,7 @@ public enum CoachAPI {
         Recent completed training (readiness, planned targets, actual sets and rest seconds): \(try historyContext(history))
         Current proposed plan: \(try json(conversation.plan))
         Current proposed program: \(try json(conversation.proposedProgram))
-        \(try CoachContext.text(profile: profile, program: program, history: history, catalog: catalog, reviews: reviews, feedback: feedback, relevantExerciseIDs: relevant, now: now, priorPrograms: priorPrograms))
+        \(try CoachContext.text(profile: profile, program: program, history: history, catalog: catalog, reviews: reviews, feedback: feedback, relevantExerciseIDs: relevant, now: now, priorPrograms: priorPrograms, trainingCalendar: trainingCalendar))
         """
         var input: [[String: String]] = [["role": "user", "content": context]]
         input += conversation.messages.suffix(40).map { ["role": $0.role.rawValue, "content": $0.content] }

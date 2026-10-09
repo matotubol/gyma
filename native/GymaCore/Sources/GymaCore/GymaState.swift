@@ -12,6 +12,7 @@ public struct GymaState: Codable, Sendable, Equatable {
     public var coachConversation: CoachConversation?
     public var athleteProfile: AthleteProfile?
     public var trainingProgram: TrainingProgram?
+    public var trainingCalendar: TrainingCalendarPlan?
     public var programHistory: [TrainingProgram]?
     public var workoutReviews: [WorkoutReview]?
     public var workoutFeedback: [WorkoutFeedback]?
@@ -50,6 +51,7 @@ public struct GymaState: Codable, Sendable, Equatable {
         try coachConversation?.validate(catalog: catalog)
         try athleteProfile?.validate()
         try trainingProgram?.validate(catalog: catalog)
+        try trainingCalendar?.validate()
         for program in programHistory ?? [] { try program.validate(catalog: catalog) }
         guard (programHistory?.count ?? 0) <= 100,
               Set((workoutReviews ?? []).map(\.workoutID)).count == (workoutReviews?.count ?? 0) else {

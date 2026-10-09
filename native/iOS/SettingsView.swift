@@ -60,7 +60,7 @@ struct SettingsView: View {
                 }
                 if let keyNotice { Text(keyNotice).font(.caption).foregroundStyle(.secondary) }
             } header: { Text("AI coach") } footer: {
-                Text("Your key is stored in the iPhone Keychain and is excluded from backups and Watch sync. Your saved profile, program, messages, check-in and training summaries are sent to OpenAI when you use the coach. API usage is billed to your OpenAI account.")
+                Text("Your key is stored in the iPhone Keychain and is excluded from backups and Watch sync. Your saved profile, program, shift calendar, messages, check-in and training summaries are sent to OpenAI when you use the coach. API usage is billed to your OpenAI account.")
             }
 
             Section {
@@ -108,7 +108,7 @@ struct SettingsView: View {
                     LabeledContent("Custom exercises", value: "\(model.state.customExercises.count)")
                 }
             } header: { Text("Your data") } footer: {
-                Text("JSON backups include your profile and bodyweight history, program, workout history, custom exercises, deleted workouts, and coach conversation and draft. API keys are excluded. Restoring replaces the current data and keeps a copy of the previous file in Gyma’s Documents folder, available through Files or Finder.")
+                Text("JSON backups include your profile and bodyweight history, program, shift calendar, workout history, custom exercises, deleted workouts, and coach conversation and draft. API keys are excluded. Restoring replaces the current data and keeps a copy of the previous file in Gyma’s Documents folder, available through Files or Finder.")
             }
 
             if let notice = model.notice {

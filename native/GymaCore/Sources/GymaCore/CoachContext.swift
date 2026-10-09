@@ -8,9 +8,10 @@ public enum CoachContext {
 
     public static func text(profile: AthleteProfile?, program: TrainingProgram?, history: [Workout],
                             catalog: [ExerciseDefinition], reviews: [WorkoutReview] = [], feedback: [WorkoutFeedback] = [],
-                            relevantExerciseIDs: [String] = [], now: Date = Date(), priorPrograms: [TrainingProgram] = []) throws -> String {
+                            relevantExerciseIDs: [String] = [], now: Date = Date(), priorPrograms: [TrainingProgram] = [], trainingCalendar: TrainingCalendarPlan? = nil) throws -> String {
         try profile?.validate()
         try program?.validate(catalog: catalog)
+        try trainingCalendar?.validate()
         var boundedProfile = profile
         boundedProfile?.bodyweightHistory = Array((profile?.bodyweightHistory ?? []).sorted { $0.recordedAt > $1.recordedAt }.prefix(90))
         let requested = relevantExerciseIDs.isEmpty ? (program?.nextSession(history: history, now: now)?.exercises.map(\.exerciseID) ?? []) : relevantExerciseIDs
@@ -26,6 +27,7 @@ public enum CoachContext {
         Observation date: \(try json(now))
         Confirmed athlete profile (bodyweight limited to latest 90 measurements): \(try json(boundedProfile))
         Accepted program: \(try json(program))
+        \(try calendarContext(trainingCalendar, program: program, history: history, now: now))
         Next rotating session: \(try json(program?.nextSession(history: history, now: now)))
         Deterministic next-session targets before today's readiness/time adjustments: \(try json(program.flatMap { p in p.nextSession(history: history, now: now).map { p.recommendations(for: $0, history: history, now: now, catalog: catalog, priorPrograms: priorPrograms) } }))
         Exercise equipment, direct and secondary muscle metadata: \(try json(catalog.map { CatalogContext(id: $0.id, metadata: $0.trainingMetadata) }))
@@ -41,6 +43,28 @@ public enum CoachContext {
         Dated workout feedback, not permanent restrictions: \(try json(Array(feedback.filter { completedIDs.contains($0.workoutID) }.sorted { $0.recordedAt > $1.recordedAt }.prefix(6))))
         Reviews capture the evidence at finish time. Newer pain/discomfort feedback takes precedence over earlier progression proposals and needs discussion before increasing demands.
         \(principles)
+        """
+    }
+
+    private static func calendarContext(_ plan: TrainingCalendarPlan?, program: TrainingProgram?, history: [Workout], now: Date) throws -> String {
+        guard let plan else { return "No saved training calendar. Ask about scheduling preferences when needed." }
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        let saved = String(decoding: try encoder.encode(plan), as: UTF8.self)
+        let formatter = DateFormatter()
+        formatter.calendar = plan.calendar; formatter.timeZone = plan.calendar.timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"
+        let upcoming = plan.entries(program: program, history: history, now: now)
+            .filter { $0.date >= plan.calendar.startOfDay(for: now) && $0.isTraining && $0.workouts.isEmpty }
+            .map { "\(formatter.string(from: $0.date)): \($0.shift.label), \($0.session?.title ?? "training slot; no saved session")" }
+            .joined(separator: "\n")
+        return """
+        User-confirmed eight-week training calendar: \(saved)
+        Shift cycle: 2 mornings, 2 afternoons, 2 nights, 4 days off; cycle day 1 is the saved first morning date. Scheduled baseline: \(plan.trainingCycleDays.count) sessions per 10 days, NOT per week. Date exceptions are explicit user choices.
+        Calendar dates in \(plan.timeZoneIdentifier): \(formatter.string(from: plan.startDate)) through \(formatter.string(from: plan.lastDate)); review on \(formatter.string(from: plan.reviewDate)). Block has ended: \(now >= plan.reviewDate).
+        Upper/lower preference: \(plan.prefersUpperLower ? "Yes. When creating or revising a program, propose alternating upper/lower sessions in continuous order across cycles, subject to profile constraints and user review. Do not silently replace an existing program." : "Follow the saved program and discuss the user's preferred split.")
+        Upcoming projected sessions, assuming future planned sessions are completed:
+        \(upcoming.isEmpty ? "None remaining in this block." : upcoming)
+        While the block is current, the confirmed calendar takes precedence over the profile's approximate days-per-week field. An expired block is historical, not a new schedule. The calendar does not prove recovery or completion. Missed dates never add catch-up volume or advance the actual program. Only logged, linked completed training advances rotation; future labels may shift after missed or extra sessions. Keep the program's useful exercises stable while progressing from observed performance. The eight-week review date does not require new exercises, a deload or an automatic increase in workload. You may discuss changes, but calendar edits must be made explicitly in the app; never claim to have saved dates or workouts through chat.
         """
     }
 

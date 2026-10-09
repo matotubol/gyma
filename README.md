@@ -10,6 +10,8 @@ The Watch opens the current exercise with weight and expected-rep controls. **St
 
 The coach uses OpenAI's Responses API with `gpt-6.1-sol`. The personal API key stays in the iPhone Keychain; workout backups and Watch snapshots never contain it. See [coach setup and device checks](native/COACH.md). The Watch uses HealthKit for active workout runtime but does not save a duplicate Health workout. A body-photo journal and heart-rate tracking are not included.
 
+Overview includes an eight-week shift calendar with five training days per 10-day cycle. Set the first morning date, preview all 56 days, and move upcoming training days around work. Saved program sessions continue in order across cycles; completed workouts determine progression, while future dates show adjustable previews. Calendar settings are backed up and available to the coach. The first setup is prefilled for 17 October 2026 and cycle days 2, 5, 8, 9 and 10.
+
 ## Build through GitHub Actions
 
 Push native changes to `swift` to run **Swift iPhone + Watch build**. Native changes on `main` and pull requests also run it. Manual dispatch:
