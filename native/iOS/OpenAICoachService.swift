@@ -6,6 +6,28 @@ enum OpenAICoachService {
     static let model = CoachAPI.model
 
     static func reply(conversation: CoachConversation, catalog: [ExerciseDefinition], history: [Workout], apiKey: String) async throws -> CoachReply {
+        let body = try CoachAPI.requestBody(conversation: conversation, catalog: catalog, history: history)
+        let data = try await request(body: body, apiKey: apiKey)
+        do { return try CoachAPI.parseResponse(data, checkIn: conversation.checkIn, catalog: catalog) }
+        catch let error as GymaError { throw error }
+        catch { throw unreadableReply }
+    }
+
+    static func workoutReply(workout: Workout, storeID: String, revision: Int, restTimer: RestTimer?,
+                             catalog: [ExerciseDefinition], history: [Workout], apiKey: String) async throws -> WorkoutCoachReply {
+        let body = try WorkoutCoachAPI.requestBody(workout: workout, storeID: storeID, revision: revision,
+                                                  restTimer: restTimer, catalog: catalog, history: history)
+        let data = try await request(body: body, apiKey: apiKey)
+        do { return try WorkoutCoachAPI.parseResponse(data, workout: workout, storeID: storeID, revision: revision, catalog: catalog) }
+        catch let error as GymaError { throw error }
+        catch { throw unreadableReply }
+    }
+
+    private static var unreadableReply: GymaError {
+        .invalid("The coach reply could not be read. Your saved workout is unchanged. Try again.")
+    }
+
+    private static func request(body: Data, apiKey: String) async throws -> Data {
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { throw GymaError.invalid("Add your OpenAI API key in Settings to talk with the coach.") }
         var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
@@ -13,7 +35,7 @@ enum OpenAICoachService {
         request.timeoutInterval = 90
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try CoachAPI.requestBody(conversation: conversation, catalog: catalog, history: history)
+        request.httpBody = body
         // Ephemeral networking keeps API responses and authorization out of on-disk URL caches.
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 90
@@ -28,11 +50,9 @@ enum OpenAICoachService {
         case 401: throw GymaError.invalid("OpenAI did not accept the API key. Update it in Settings.")
         case 403, 404: throw GymaError.invalid("This API project cannot use GPT Luna. Check your OpenAI project’s model access.")
         case 429: throw GymaError.invalid("OpenAI's usage or rate limit was reached. Check your API billing or try again later.")
-        default: throw GymaError.invalid("The coach request failed (HTTP \(response.statusCode)). Your saved plan is unchanged. Try again.")
+        default: throw GymaError.invalid("The coach request failed (HTTP \(response.statusCode)). Your saved workout is unchanged. Try again.")
         }
-        do { return try CoachAPI.parseResponse(data, checkIn: conversation.checkIn, catalog: catalog) }
-        catch let error as GymaError { throw error }
-        catch { throw GymaError.invalid("The coach reply could not be read. Your saved plan is unchanged. Try again.") }
+        return data
     }
 }
 

@@ -4,7 +4,7 @@ import GymaCore
 import HealthKit
 import WatchKit
 
-/// Owns the system workout session for the workout already started on iPhone.
+/// Owns the system workout session for a phone-confirmed active workout.
 /// Gyma keeps its workout record; this session never saves a second Health workout.
 @MainActor
 final class WatchWorkoutRuntime: NSObject, ObservableObject {
@@ -106,6 +106,10 @@ final class WatchWorkoutRuntime: NSObject, ObservableObject {
 
     private var desiredIdentity: Identity? {
         guard let snapshot, let workout = snapshot.activeWorkout, workout.isActive else { return nil }
+        // A phone snapshot can arrive before the receipt for a Watch start.
+        // Wait for that receipt before beginning the native workout session.
+        if let pendingCommand, pendingCommand.storeID == snapshot.storeID,
+           case .startAcceptedPlan = pendingCommand.action { return nil }
         if let pendingCommand, pendingCommand.storeID == snapshot.storeID, pendingCommand.workoutID == workout.id,
            case .finishWorkout = pendingCommand.action { return nil }
         return Identity(storeID: snapshot.storeID, workoutID: workout.id)

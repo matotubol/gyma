@@ -3,11 +3,11 @@ import GymaCore
 
 struct CoachView: View {
     @EnvironmentObject private var model: GymaAppModel
+    @Environment(\.dismiss) private var dismiss
+    var onAccepted: (() -> Void)? = nil
     @State private var checkInPresented = false
     @State private var replacePresented = false
     @State private var message = ""
-    @State private var activeWorkoutID: String?
-    @State private var activePresented = false
     @FocusState private var composerFocused: Bool
 
     private var conversation: CoachConversation? { model.state.coachConversation }
@@ -20,8 +20,10 @@ struct CoachView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
-                    if let workout = model.state.activeWorkout {
-                        activeSession(workout)
+                    if model.state.activeWorkout != nil {
+                        workoutInProgress
+                    } else if let plan = conversation?.plan, plan.acceptedAt != nil {
+                        acceptedPlan(plan)
                     } else {
                         if !model.hasCoachAPIKey { keySetup }
                         if let conversation, conversation.startedWorkoutID == nil {
@@ -89,9 +91,6 @@ struct CoachView: View {
         } message: {
             Text("Creating a new plan replaces this conversation and its workout draft. Your completed workouts are kept.")
         }
-        .navigationDestination(isPresented: $activePresented) {
-            if let activeWorkoutID { ActiveWorkoutView(workoutID: activeWorkoutID) }
-        }
         .onAppear { model.refreshCoachCredentials() }
     }
 
@@ -103,7 +102,7 @@ struct CoachView: View {
                 .font(.system(.largeTitle, design: .rounded, weight: .bold))
             Text("Check in with your AI coach. Talk through the exercises, sets, reps, weights and rest times, then accept your workout when it feels right.")
                 .foregroundStyle(.secondary)
-            Text("Start it here on your iPhone. Your Watch will guide each exercise and log what you actually lift.")
+            Text("After accepting, start from Overview or your Watch. Your Watch guides each exercise and logs what you actually lift.")
                 .font(.subheadline).foregroundStyle(.secondary)
             Button("Check in", systemImage: "sparkles") { checkInPresented = true }
                 .font(.headline).buttonStyle(.borderedProminent)
@@ -126,21 +125,35 @@ struct CoachView: View {
         .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 20))
     }
 
-    private func activeSession(_ workout: Workout) -> some View {
+    private var workoutInProgress: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Workout in progress", systemImage: "figure.strengthtraining.traditional")
+            Label("Planning is done", systemImage: "checkmark.circle")
                 .font(.headline).foregroundStyle(GymaStyle.accent)
-            Text(workout.title).font(.title2.bold())
-            Text("Finish this session before creating your next workout with the coach.")
+            Text("Your coach can help during your workout.").font(.title2.bold())
+            Text("Open your workout from Overview and tap Ask coach for advice or exercise changes.")
                 .foregroundStyle(.secondary)
-            Button("Resume workout", systemImage: "play.fill") {
-                activeWorkoutID = workout.id
-                activePresented = true
-            }
-            .buttonStyle(.borderedProminent)
         }
         .padding(22).frame(maxWidth: .infinity, alignment: .leading)
         .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private func acceptedPlan(_ plan: WorkoutPlan) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Plan accepted", systemImage: "checkmark.seal.fill")
+                .font(.headline).foregroundStyle(GymaStyle.accent)
+            Text(plan.title).font(.title2.bold())
+            Text("Your planning chat is closed. The workout is ready in Overview and, on its scheduled day, on your Watch.")
+                .foregroundStyle(.secondary)
+            Button("Done", action: closePlanning).buttonStyle(.borderedProminent)
+        }
+        .padding(22).frame(maxWidth: .infinity, alignment: .leading)
+        .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private func closePlanning() {
+        composerFocused = false
+        if let onAccepted { onAccepted() }
+        else { dismiss() }
     }
 
     private func checkInSummary(_ checkIn: SessionCheckIn, heading: String = "TODAY’S CHECK-IN") -> some View {
@@ -150,6 +163,11 @@ struct CoachView: View {
                 .font(.subheadline)
             if let hours = checkIn.sleepHours {
                 Text("\(hours.gymaNumber) hours of sleep").font(.caption).foregroundStyle(.secondary)
+            }
+            if checkIn.soreness != nil {
+                let sore = Muscle.allCases.filter { checkIn.soreness(for: $0) != .none }
+                Text(sore.isEmpty ? "Soreness: none" : sore.map { "\($0.label): \(checkIn.soreness(for: $0).label.lowercased())" }.joined(separator: " · "))
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if !checkIn.notes.isEmpty { Text(checkIn.notes).font(.subheadline).foregroundStyle(.secondary) }
             if !checkIn.recentTrainingNote.isEmpty {
@@ -206,26 +224,13 @@ struct CoachView: View {
             Divider()
             Text("Your Watch will guide the accepted sets, reps and rest times. You can adjust the reps and kilograms you actually complete.")
                 .font(.caption).foregroundStyle(.secondary)
-            if plan.acceptedAt != nil {
-                Label("Plan accepted", systemImage: "checkmark.circle.fill")
-                    .font(.subheadline.weight(.semibold)).foregroundStyle(GymaStyle.accent)
-                Button {
-                    if let id = model.startCoachPlan(plan.id) {
-                        activeWorkoutID = id
-                        activePresented = true
-                    }
-                } label: {
-                    Label("Start workout", systemImage: "play.fill")
-                        .font(.headline).frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent).disabled(!model.canAcceptCoachPlan)
-            } else {
-                Button { model.acceptCoachPlan(plan.id) } label: {
-                    Label("Accept workout plan", systemImage: "checkmark")
-                        .font(.headline).frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent).disabled(!model.canAcceptCoachPlan)
+            Button {
+                if model.acceptCoachPlan(plan.id) { closePlanning() }
+            } label: {
+                Label("Accept workout plan", systemImage: "checkmark")
+                    .font(.headline).frame(maxWidth: .infinity)
             }
+            .buttonStyle(.borderedProminent).disabled(!model.canAcceptCoachPlan)
         }
         .padding(20).frame(maxWidth: .infinity, alignment: .leading)
         .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 24))

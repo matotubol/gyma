@@ -84,6 +84,92 @@ final class WatchSetFlowTests: XCTestCase {
         XCTAssertEqual(flow.draft?.completionRevision, 7)
     }
 
+    func testPreparedDraftAdoptsChangedCoachLoadAndRepsWithoutDiscardingManualEditsOnUnrelatedSync() throws {
+        var state = state()
+        var flow = readyFlow(state)
+        try flow.setPreparation(kg: 45, reps: 10)
+        let target = ExerciseTarget(sets: 3, repsMin: 6, repsMax: 8, loadKg: 35, restSeconds: 120)
+        try state.updateTarget(target, exerciseID: "bench_press", workoutID: "workout")
+        flow.reconcile(snapshot: snapshot(state), pending: nil, acknowledgement: nil)
+        XCTAssertEqual(flow.draft?.kg, 35)
+        XCTAssertEqual(flow.draft?.expectedReps, 6)
+        XCTAssertEqual(flow.draft?.actualKg, 35)
+        XCTAssertEqual(flow.draft?.actualReps, 6)
+        XCTAssertEqual(flow.draft?.sourceTarget, target)
+        try flow.setPreparation(kg: 37.5, reps: 7)
+        state.revision += 1
+        flow.reconcile(snapshot: snapshot(state), pending: nil, acknowledgement: nil)
+        XCTAssertEqual(flow.draft?.kg, 37.5)
+        XCTAssertEqual(flow.draft?.expectedReps, 7)
+    }
+
+    func testRestOnlyCoachEditDoesNotResetPreparedLoadOrReps() throws {
+        var state = state()
+        var flow = readyFlow(state)
+        try flow.setPreparation(kg: 42.5, reps: 10)
+        var target = try XCTUnwrap(state.activeWorkout?.exercises.first?.target)
+        target.restSeconds = 150; target.reason = "Take a longer rest."
+        try state.updateTarget(target, exerciseID: "bench_press", workoutID: "workout")
+        flow.reconcile(snapshot: snapshot(state), pending: nil, acknowledgement: nil)
+        XCTAssertEqual(flow.draft?.kg, 42.5)
+        XCTAssertEqual(flow.draft?.expectedReps, 10)
+    }
+
+    func testChangedCoachTargetWaitsUntilAfterPerformingSetAndPreservesActuals() throws {
+        var state = state()
+        var flow = readyFlow(state)
+        try flow.start(snapshot: snapshot(state))
+        let target = ExerciseTarget(sets: 3, repsMin: 6, repsMax: 8, loadKg: 35, restSeconds: 120)
+        try state.updateTarget(target, exerciseID: "bench_press", workoutID: "workout")
+        flow.reconcile(snapshot: snapshot(state), pending: nil, acknowledgement: nil)
+        XCTAssertEqual(flow.draft?.phase, .performing)
+        XCTAssertEqual(flow.draft?.kg, 40)
+        XCTAssertEqual(flow.draft?.expectedReps, 8)
+        try flow.done(snapshot: snapshot(state))
+        try flow.setActual(kg: 42.5, reps: 7)
+        try flow.confirmReps()
+        let command = try submit(&flow, state: state)
+        let receipt = GymaReducer.apply(command, to: &state, now: now)
+        flow.reconcile(snapshot: snapshot(state), pending: nil, acknowledgement: receipt)
+        XCTAssertEqual(state.activeWorkout?.exercises.first?.sets.last?.kg, 42.5)
+        XCTAssertEqual(state.activeWorkout?.exercises.first?.sets.last?.reps, 7)
+        XCTAssertEqual(flow.draft?.phase, .prepared)
+        XCTAssertEqual(flow.draft?.kg, 35)
+        XCTAssertEqual(flow.draft?.expectedReps, 6)
+        XCTAssertEqual(flow.draft?.sourceTarget, target)
+    }
+
+    func testChangedCoachTargetDoesNotReplaceReviewValues() throws {
+        var state = state()
+        var flow = try completedFlow(state)
+        try state.updateTarget(.init(sets: 3, repsMin: 6, repsMax: 8, loadKg: 35), exerciseID: "bench_press", workoutID: "workout")
+        flow.reconcile(snapshot: snapshot(state), pending: nil, acknowledgement: nil)
+        XCTAssertEqual(flow.draft?.phase, .review)
+        XCTAssertEqual(flow.draft?.actualKg, 40)
+        XCTAssertEqual(flow.draft?.actualReps, 9)
+        XCTAssertEqual(flow.draft?.currentReviewStep, .weight)
+        let submitted = try flow.prepareSubmission(snapshot: snapshot(state))
+        XCTAssertEqual(submitted.kg, 40)
+        XCTAssertEqual(submitted.reps, 9)
+    }
+
+    func testLegacyPreparedDraftSeedsTargetWithoutReplacingSavedValues() throws {
+        var state = state()
+        var flow = readyFlow(state)
+        try flow.setPreparation(kg: 37.5, reps: 10)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(flow)) as? [String: Any])
+        var draft = try XCTUnwrap(object["draft"] as? [String: Any])
+        draft.removeValue(forKey: "sourceTarget"); object["draft"] = draft
+        flow = try JSONDecoder().decode(WatchSetFlow.self, from: JSONSerialization.data(withJSONObject: object))
+        flow.reconcile(snapshot: snapshot(state), pending: nil, acknowledgement: nil)
+        XCTAssertEqual(flow.draft?.kg, 37.5)
+        XCTAssertEqual(flow.draft?.expectedReps, 10)
+        try state.updateTarget(.init(sets: 3, repsMin: 6, repsMax: 8, loadKg: 35), exerciseID: "bench_press", workoutID: "workout")
+        flow.reconcile(snapshot: snapshot(state), pending: nil, acknowledgement: nil)
+        XCTAssertEqual(flow.draft?.kg, 35)
+        XCTAssertEqual(flow.draft?.expectedReps, 6)
+    }
+
     func testPhoneAdvancingSameExerciseCannotDuplicateAnUnsentSet() throws {
         var state = state()
         var flow = try completedFlow(state)

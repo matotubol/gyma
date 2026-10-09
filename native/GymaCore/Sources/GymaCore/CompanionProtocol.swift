@@ -1,6 +1,7 @@
 import Foundation
 
 public enum WatchAction: Codable, Sendable, Equatable {
+    case startAcceptedPlan(planID: String, readiness: WorkoutReadiness)
     case logSet(exerciseID: String, set: WorkSet)
     case skipRest(timerID: String)
     case extendRest(timerID: String, seconds: Int)
@@ -34,14 +35,17 @@ public struct CompanionSnapshot: Codable, Sendable, Equatable {
     public var revision: Int
     public var generatedAt: Date
     public var activeWorkout: Workout?
+    public var readyPlan: ReadyWorkoutPlan?
     public var catalog: [ExerciseDefinition]
     public var restTimer: RestTimer?
     public var isTruncated: Bool
     /// Distinguishes a bounded set window from omitted exercises when deciding whether the session is complete.
     public var totalExerciseCount: Int?
-    public init(state: GymaState, now: Date = Date()) {
+    public init(state: GymaState, now: Date = Date(), calendar: Calendar = .current) {
         storeID = state.storeID; revision = state.revision; generatedAt = now; restTimer = state.restTimer; isTruncated = false
         totalExerciseCount = state.activeWorkout?.exercises.count
+        if state.activeWorkout == nil, let plan = state.coachConversation?.plan, plan.acceptedAt != nil,
+           plan.isScheduledForToday(at: now, calendar: calendar) { readyPlan = ReadyWorkoutPlan(plan: plan, calendar: calendar) }
         var workout = state.activeWorkout
         if var current = workout {
             // Sync only the active session and a bounded recent set window. Phone keeps full history.
@@ -53,7 +57,7 @@ public struct CompanionSnapshot: Codable, Sendable, Equatable {
             }
             current.planTitle = current.planTitle.map { String($0.prefix(160)) }
             // Notes and other sensitive history are not needed for watch controls.
-            current.checkIn = nil
+            current.checkIn = nil; current.coachConversation = nil
             if let rest = current.restHistory?.last,
                current.exercises.contains(where: { $0.exerciseID == rest.exerciseID && $0.sets.contains(where: { $0.id == rest.sourceSetID }) }) {
                 current.restHistory = [rest]
@@ -67,6 +71,7 @@ public struct CompanionSnapshot: Codable, Sendable, Equatable {
         // Character limits alone do not bound UTF-8 size. Leave headroom below WCSession's message limit.
         let encoder = JSONEncoder()
         while (try? encoder.encode(self).count).map({ $0 > 48 * 1024 }) ?? true {
+            if readyPlan != nil { readyPlan = nil; isTruncated = true; continue }
             guard var current = activeWorkout, !current.exercises.isEmpty else { break }
             isTruncated = true
             if let index = current.exercises.indices.max(by: { current.exercises[$0].sets.count < current.exercises[$1].sets.count }), !current.exercises[index].sets.isEmpty {
@@ -83,7 +88,7 @@ public struct CompanionSnapshot: Codable, Sendable, Equatable {
 
 public enum GymaReducer {
     /// Caller must persist the resulting state atomically BEFORE acknowledging either acceptance or rejection.
-    public static func apply(_ command: WatchCommand, to state: inout GymaState, now: Date = Date()) -> CommandAcknowledgement {
+    public static func apply(_ command: WatchCommand, to state: inout GymaState, now: Date = Date(), calendar: Calendar = .current) -> CommandAcknowledgement {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         guard let payload = try? encoder.encode(command), !command.id.isEmpty, command.id.count <= 200, payload.count <= 16_384 else {
             return .init(commandID: command.id, status: .rejected, revision: state.revision, message: "Invalid or oversized command.")
@@ -99,11 +104,24 @@ public enum GymaReducer {
         let receipt: CommandAcknowledgement
         do {
             guard command.storeID == state.storeID else { throw GymaError.stale("Phone data was replaced. Refresh before sending another command.") }
-            guard command.workoutID == state.activeWorkout?.id else { throw GymaError.stale("Workout changed on iPhone. Refresh before trying again.") }
+            if case .startAcceptedPlan = command.action {
+                guard state.activeWorkout == nil else { throw GymaError.stale("A workout is already active. Resume it instead.") }
+                guard command.basedOnRevision != nil else { throw GymaError.stale("Refresh today's accepted plan before starting.") }
+            } else {
+                guard command.workoutID == state.activeWorkout?.id else { throw GymaError.stale("Workout changed on iPhone. Refresh before trying again.") }
+            }
             if let revision = command.basedOnRevision, revision != state.revision { throw GymaError.stale("Workout changed on iPhone. Review the latest session and try again.") }
             let age = now.timeIntervalSince(command.createdAt)
             guard age.isFinite, age >= -300, age <= 86400 else { throw GymaError.stale("This command is too old or the watch clock differs significantly. Refresh before trying again.") }
             switch command.action {
+            case .startAcceptedPlan(let planID, let readiness):
+                guard command.workoutID == planID else { throw GymaError.invalid("The start command does not match its accepted plan.") }
+                guard age <= 300, calendar.isDate(command.createdAt, inSameDayAs: now),
+                      readiness.recordedAt <= command.createdAt,
+                      command.createdAt.timeIntervalSince(readiness.recordedAt) <= 300 else {
+                    throw GymaError.stale("The start request expired. Refresh today's plan and check your readiness again.")
+                }
+                try next.startAcceptedPlan(planID: planID, readiness: readiness, now: now, calendar: calendar)
             case .logSet(let exerciseID, let set):
                 // Queued delivery must not restart a rest interval that already elapsed on watch.
                 try next.addSet(set, exerciseID: exerciseID, workoutID: command.workoutID, now: min(command.createdAt, now))

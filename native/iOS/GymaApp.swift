@@ -20,19 +20,25 @@ struct GymaApp: App {
 
 private struct RootView: View {
     @EnvironmentObject private var model: GymaAppModel
+    @State private var selectedTab = "overview"
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             NavigationStack { OverviewView() }
                 .tabItem { Label("Overview", systemImage: "square.grid.2x2") }
-            NavigationStack { CoachView() }
+                .tag("overview")
+            NavigationStack { CoachView(onAccepted: { selectedTab = "overview" }) }
                 .tabItem { Label("Coach", systemImage: "bubble.left.and.bubble.right") }
+                .tag("coach")
             NavigationStack { HistoryView() }
                 .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
+                .tag("history")
             NavigationStack { ProgressViewScreen() }
                 .tabItem { Label("Progress", systemImage: "chart.xyaxis.line") }
+                .tag("progress")
             NavigationStack { SettingsView() }
                 .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag("settings")
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if model.storageBlocked {
@@ -53,6 +59,13 @@ struct OverviewView: View {
     @State private var coachPresented = false
     @State private var activePresented = false
     @State private var selectedWorkoutID: String?
+    @State private var preparingPlan: WorkoutPlan?
+
+    private var acceptedPlan: WorkoutPlan? {
+        guard model.state.activeWorkout == nil, let plan = model.state.coachConversation?.plan,
+              plan.acceptedAt != nil else { return nil }
+        return plan
+    }
 
     private var thisWeek: [Workout] {
         let interval = Calendar.current.dateInterval(of: .weekOfYear, for: Date())
@@ -62,7 +75,7 @@ struct OverviewView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                hero
+                TimelineView(.periodic(from: .now, by: 30)) { context in hero(at: context.date) }
                 HStack(spacing: 12) {
                     StatTile(value: "\(thisWeek.count)", label: "Workouts this week", symbol: "calendar")
                     StatTile(value: thisWeek.reduce(0) { $0 + $1.liftedVolume }.gymaNumber,
@@ -93,13 +106,20 @@ struct OverviewView: View {
         }
         .background(GymaStyle.background)
         .navigationTitle("Gyma")
-        .navigationDestination(isPresented: $coachPresented) { CoachView() }
+        .navigationDestination(isPresented: $coachPresented) { CoachView(onAccepted: { coachPresented = false }) }
         .navigationDestination(isPresented: $activePresented) {
             if let selectedWorkoutID { ActiveWorkoutView(workoutID: selectedWorkoutID) }
         }
+        .sheet(item: $preparingPlan) { plan in
+            WorkoutReadinessView(plan: plan) { workoutID in
+                preparingPlan = nil
+                selectedWorkoutID = workoutID
+                activePresented = true
+            }
+        }
     }
 
-    private var hero: some View {
+    private func hero(at now: Date) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
                 Label(model.state.activeWorkout == nil ? "YOUR NEXT SESSION" : "SESSION IN PROGRESS", systemImage: "figure.strengthtraining.traditional")
@@ -107,11 +127,16 @@ struct OverviewView: View {
                 Spacer()
                 Image(systemName: "arrow.up.right").font(.title3)
             }
-            Text(model.state.activeWorkout == nil ? "A little stronger.\nEvery session." : "Pick up where\nyou left off.")
+            Text(model.state.activeWorkout != nil ? "Pick up where\nyou left off." : (acceptedPlan?.title ?? "A little stronger.\nEvery session."))
                 .font(.system(.largeTitle, design: .rounded, weight: .bold))
                 .fixedSize(horizontal: false, vertical: true)
             if let workout = model.state.activeWorkout {
                 Text("\(workout.loggedSets) sets logged · Started \(workout.start.formatted(date: .omitted, time: .shortened))")
+                    .font(.subheadline)
+            } else if let plan = acceptedPlan {
+                Text(plan.isScheduledForToday(at: now)
+                     ? "Ready for today · \(plan.exercises.count) exercises. Check your energy and soreness before starting here or on Watch."
+                     : "Scheduled for \(plan.scheduledDate.formatted(date: .abbreviated, time: .omitted)). Make a new plan for today.")
                     .font(.subheadline)
             } else {
                 Text(model.state.coachConversation?.plan == nil || model.state.coachConversation?.startedWorkoutID != nil
@@ -122,9 +147,11 @@ struct OverviewView: View {
                 if let active = model.state.activeWorkout {
                     selectedWorkoutID = active.id
                     activePresented = true
+                } else if let plan = acceptedPlan, plan.isScheduledForToday(at: now) {
+                    preparingPlan = plan
                 } else { coachPresented = true }
             } label: {
-                Label(model.state.activeWorkout == nil ? (model.state.coachConversation == nil || model.state.coachConversation?.startedWorkoutID != nil ? "Plan with coach" : "Continue with coach") : "Resume workout", systemImage: model.state.activeWorkout == nil ? "bubble.left.and.bubble.right" : "play.fill")
+                Label(model.state.activeWorkout != nil ? "Resume workout" : (acceptedPlan?.isScheduledForToday(at: now) == true ? "Start workout" : (acceptedPlan != nil ? "Plan for today" : "Plan with coach")), systemImage: model.state.activeWorkout != nil || acceptedPlan?.isScheduledForToday(at: now) == true ? "play.fill" : "bubble.left.and.bubble.right")
                     .font(.headline).frame(maxWidth: .infinity).padding(.vertical, 8)
             }
             .buttonStyle(.borderedProminent).tint(.white).foregroundStyle(Color(red: 0.10, green: 0.30, blue: 0.19))
@@ -160,6 +187,7 @@ struct CheckInView: View {
     var onPrepared: () -> Void
     @State private var shift: Shift = .off
     @State private var energy: Energy = .good
+    @State private var soreness = Dictionary(uniqueKeysWithValues: Muscle.allCases.map { ($0, Soreness.none) })
     @State private var minutes = 45
     @State private var title = ""
     @State private var sleep = ""
@@ -181,6 +209,11 @@ struct CheckInView: View {
                     Stepper("Time available: \(minutes) min", value: $minutes, in: 10...180, step: 5)
                     TextField("Sleep in hours (optional)", text: $sleep).keyboardType(.decimalPad)
                 }
+                Section("Muscle soreness") {
+                    SorenessFields(soreness: $soreness)
+                } footer: {
+                    Text("Every muscle group starts at None. You can review this again before starting the workout.")
+                }
                 Section("Session") {
                     TextField("Workout name (optional)", text: $title)
                     TextField("Notes (optional)", text: $notes, axis: .vertical).lineLimit(2...4)
@@ -197,7 +230,8 @@ struct CheckInView: View {
                             return
                         }
                         let checkIn = SessionCheckIn(shift: shift, energy: energy, timeMinutes: minutes,
-                                                    sleepHours: value, notes: notes, recentTrainingNote: recentTraining, painNote: pain)
+                                                    sleepHours: value, notes: notes, recentTrainingNote: recentTraining, painNote: pain,
+                                                    soreness: soreness)
                         if model.beginCoachConversation(checkIn: checkIn, title: title) { onPrepared() }
                         else { error = model.coachError ?? model.errorMessage }
                     } label: {

@@ -31,8 +31,19 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
     private let journalURL: URL
 
     var canSubmit: Bool {
+        canQueueCommand && snapshot?.activeWorkout != nil
+    }
+
+    func canStartAcceptedPlan(_ planID: String, at now: Date = Date(), calendar: Calendar = .current) -> Bool {
+        guard canQueueCommand, let snapshot, snapshot.activeWorkout == nil,
+              let plan = snapshot.readyPlan, plan.id == planID,
+              plan.isAvailable(at: now), calendar.isDate(plan.scheduledFor, inSameDayAs: now) else { return false }
+        return true
+    }
+
+    private var canQueueCommand: Bool {
         guard !journalUnavailable, pendingCommand == nil,
-              let snapshot, snapshot.activeWorkout != nil else { return false }
+              let snapshot else { return false }
         return snapshot.revision >= (lastAcknowledgement?.revision ?? 0)
     }
 
@@ -48,6 +59,7 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
                 let data = try Data(contentsOf: journalURL)
                 guard data.count <= 256 * 1024 else { throw ConnectivityError.invalidJournal }
                 journal = try JSONDecoder().decode(WatchJournal.self, from: data)
+                if let savedSnapshot = journal.snapshot { try validateSnapshot(savedSnapshot) }
             }
             snapshot = journal.snapshot
             pendingCommand = journal.pending
@@ -134,13 +146,25 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
 
     /// Returns only after the command has been written to the local outbox.
     /// UI must still display it as pending until a phone receipt arrives.
-    func submit(_ action: WatchAction, expectedWorkoutID: String? = nil, basedOnRevision: Int? = nil) throws {
-        guard canSubmit, let snapshot, let workout = snapshot.activeWorkout else {
+    func submit(_ action: WatchAction, expectedWorkoutID: String? = nil, basedOnRevision: Int? = nil,
+                expectedStoreID: String? = nil) throws {
+        guard canQueueCommand, let snapshot else {
             throw ConnectivityError.waitForPhone
         }
-        if let expectedWorkoutID, expectedWorkoutID != workout.id { throw ConnectivityError.workoutChanged }
+        if let expectedStoreID, expectedStoreID != snapshot.storeID { throw ConnectivityError.workoutChanged }
+        let workoutID: String
+        switch action {
+        case .startAcceptedPlan(let planID, let readiness):
+            guard canStartAcceptedPlan(planID) else { throw ConnectivityError.planUnavailable }
+            try readiness.validate()
+            workoutID = planID
+        default:
+            guard let workout = snapshot.activeWorkout else { throw ConnectivityError.workoutChanged }
+            workoutID = workout.id
+        }
+        if let expectedWorkoutID, expectedWorkoutID != workoutID { throw ConnectivityError.workoutChanged }
         if let basedOnRevision, basedOnRevision != snapshot.revision { throw ConnectivityError.workoutChanged }
-        let command = WatchCommand(storeID: snapshot.storeID, workoutID: workout.id,
+        let command = WatchCommand(storeID: snapshot.storeID, workoutID: workoutID,
                                    basedOnRevision: snapshot.revision, action: action)
         _ = try Wire.encode(command, kind: .command)
         var updated = journal
@@ -318,9 +342,15 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
         return incoming
     }
 
-    private func acceptSnapshot(_ incoming: CompanionSnapshot) throws {
+    private func validateSnapshot(_ incoming: CompanionSnapshot) throws {
         guard incoming.revision >= 0, !incoming.storeID.isEmpty else { throw ConnectivityError.invalidPayload }
         try incoming.activeWorkout?.validate()
+        try incoming.readyPlan?.validate()
+        guard incoming.activeWorkout == nil || incoming.readyPlan == nil else { throw ConnectivityError.invalidPayload }
+    }
+
+    private func acceptSnapshot(_ incoming: CompanionSnapshot) throws {
+        try validateSnapshot(incoming)
         let value = newerSnapshot(incoming)
         let updated = journalUpdatingSnapshot(value)
         try saveJournal(updated)
@@ -334,6 +364,7 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
     }
 
     private func acceptAcknowledgement(_ result: AcknowledgedState) throws {
+        try validateSnapshot(result.snapshot)
         let acknowledgement = result.acknowledgement
         let value = newerSnapshot(result.snapshot)
         // A delayed receipt from an old phone store must not affect the current
@@ -544,16 +575,17 @@ private enum Wire {
 }
 
 private enum ConnectivityError: LocalizedError {
-    case invalidJournal, waitForPhone, phoneNotReady, unsupportedMessage, invalidPayload, payloadTooLarge, workoutChanged
+    case invalidJournal, waitForPhone, phoneNotReady, unsupportedMessage, invalidPayload, payloadTooLarge, workoutChanged, planUnavailable
     var errorDescription: String? {
         switch self {
-        case .invalidJournal: return "Watch storage is unavailable. Your pending log is being preserved. Reopen the app to retry."
-        case .waitForPhone: return "Wait for the current log to be confirmed by your iPhone."
+        case .invalidJournal: return "Watch storage is unavailable. Your pending change is being preserved. Reopen the app to retry."
+        case .waitForPhone: return "Wait for the current change to be confirmed by your iPhone."
         case .phoneNotReady: return "Open Gyma on your iPhone to finish syncing."
         case .unsupportedMessage: return "Update Gyma on both devices to sync."
         case .invalidPayload: return "The received workout could not be read. Refresh from your iPhone."
         case .payloadTooLarge: return "This workout is too large to sync to Apple Watch. Continue on your iPhone."
         case .workoutChanged: return "The workout changed on your iPhone. Review the latest workout and try again."
+        case .planUnavailable: return "This accepted plan is no longer available for today. Review your workout in Gyma on iPhone."
         }
     }
 }

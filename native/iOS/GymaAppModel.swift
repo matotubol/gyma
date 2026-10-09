@@ -16,6 +16,8 @@ final class GymaAppModel: ObservableObject {
     @Published private(set) var hasCoachAPIKey = false
     @Published private(set) var coachRequestInFlight = false
     @Published private(set) var coachError: String?
+    @Published private(set) var workoutCoachRequestWorkoutID: String?
+    @Published private var workoutCoachErrors: [String: String] = [:]
 
     let connectivity = WorkoutConnectivity.shared
     private let store: JSONFileStore
@@ -25,6 +27,8 @@ final class GymaAppModel: ObservableObject {
     private var isConnectivityConfigured = false
     private var coachTask: Task<Void, Never>?
     private var coachGeneration = UUID()
+    private var workoutCoachTask: Task<Void, Never>?
+    private var workoutCoachGeneration = UUID()
 
     init() {
         dataURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -120,6 +124,7 @@ final class GymaAppModel: ObservableObject {
         do {
             try CoachCredentials.delete()
             cancelCoachRequest()
+            cancelWorkoutCoachRequest()
             hasCoachAPIKey = false
             coachError = nil
         } catch { errorMessage = "Your OpenAI key could not be removed. \(error.localizedDescription)" }
@@ -224,16 +229,121 @@ final class GymaAppModel: ObservableObject {
             && state.coachConversation?.plan != nil
     }
 
-    func acceptCoachPlan(_ planID: String) {
-        guard canAcceptCoachPlan else { return }
-        _ = update { try $0.acceptCoachPlan(planID: planID) }
+    @discardableResult
+    func acceptCoachPlan(_ planID: String) -> Bool {
+        guard canAcceptCoachPlan else { return false }
+        return update { try $0.acceptCoachPlan(planID: planID) }
     }
 
-    func startCoachPlan(_ planID: String) -> String? {
+    func startCoachPlan(_ planID: String, readiness: WorkoutReadiness? = nil) -> String? {
         guard canAcceptCoachPlan else { return nil }
         var workoutID: String?
-        let saved = update { workoutID = try $0.startAcceptedPlan(planID: planID) }
+        let saved = update { workoutID = try $0.startAcceptedPlan(planID: planID, readiness: readiness) }
         return saved ? workoutID : nil
+    }
+
+    func workoutCoachError(for workoutID: String) -> String? { workoutCoachErrors[workoutID] }
+
+    @discardableResult
+    func sendWorkoutCoachMessage(_ text: String, workoutID: String) -> Bool {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, workoutCoachRequestWorkoutID == nil else { return false }
+        guard mutateWorkoutCoach(workoutID: workoutID, { try $0.appendWorkoutCoachMessage(text, workoutID: workoutID) }) else { return false }
+        requestWorkoutCoachReply(workoutID: workoutID)
+        return true
+    }
+
+    func requestWorkoutCoachReply(workoutID: String) {
+        guard workoutCoachRequestWorkoutID == nil, !storageBlocked,
+              let workout = workout(workoutID), workout.isActive,
+              let conversation = workout.coachConversation, conversation.messages.last?.role == .user else { return }
+        let apiKey: String
+        do {
+            guard let key = try CoachCredentials.load(), !key.isEmpty else {
+                hasCoachAPIKey = false
+                workoutCoachErrors[workoutID] = "Add your OpenAI API key in Settings to talk with your coach."
+                return
+            }
+            apiKey = key; hasCoachAPIKey = true
+        } catch {
+            workoutCoachErrors[workoutID] = "Your OpenAI key could not be read. \(error.localizedDescription)"
+            return
+        }
+        let storeID = state.storeID
+        let revision = state.revision
+        let restTimer = state.restTimer
+        let catalog = state.catalog
+        let history = completedWorkouts
+        let generation = UUID()
+        workoutCoachGeneration = generation
+        workoutCoachRequestWorkoutID = workoutID
+        workoutCoachErrors[workoutID] = nil
+        workoutCoachTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if workoutCoachGeneration == generation {
+                    workoutCoachRequestWorkoutID = nil
+                    workoutCoachTask = nil
+                }
+            }
+            do {
+                let reply = try await OpenAICoachService.workoutReply(workout: workout, storeID: storeID, revision: revision,
+                                                                     restTimer: restTimer, catalog: catalog, history: history, apiKey: apiKey)
+                guard !Task.isCancelled, workoutCoachGeneration == generation else { return }
+                var next = state
+                // The same check protects advice and edits from using sets logged during the request.
+                try next.saveWorkoutCoachReply(reply, workoutID: workoutID, expectedStoreID: storeID,
+                                               expectedRevision: revision, expectedConversation: conversation)
+                try persist(next)
+            } catch {
+                guard !Task.isCancelled, workoutCoachGeneration == generation else { return }
+                workoutCoachErrors[workoutID] = error.localizedDescription
+            }
+        }
+    }
+
+    func canApplyWorkoutCoachChange(_ change: WorkoutCoachChange, workoutID: String) -> Bool {
+        guard !storageBlocked, workoutCoachRequestWorkoutID == nil, let workout = workout(workoutID),
+              workout.coachConversation?.proposal?.id == change.id,
+              change.storeID == state.storeID, change.basedOnRevision == state.revision else { return false }
+        return (try? change.validate(for: workout, catalog: state.catalog)) != nil
+    }
+
+    @discardableResult
+    func applyWorkoutCoachChange(_ change: WorkoutCoachChange, workoutID: String) -> Bool {
+        guard workoutCoachRequestWorkoutID == nil else { return false }
+        let saved = mutateWorkoutCoach(workoutID: workoutID) { try $0.applyWorkoutCoachChange(change.id, workoutID: workoutID) }
+        if saved { notice = "Updated \(name(for: change.replacementExerciseID ?? change.exerciseID)) for your upcoming sets." }
+        return saved
+    }
+
+    func dismissWorkoutCoachChange(workoutID: String) {
+        guard workoutCoachRequestWorkoutID == nil else { return }
+        _ = mutateWorkoutCoach(workoutID: workoutID) { try $0.dismissWorkoutCoachChange(workoutID: workoutID) }
+    }
+
+    private func mutateWorkoutCoach(workoutID: String, _ operation: (inout GymaState) throws -> Void) -> Bool {
+        guard !storageBlocked else {
+            workoutCoachErrors[workoutID] = "Restore a valid backup in Settings before making changes."
+            return false
+        }
+        do {
+            var next = state
+            try operation(&next)
+            try persist(next)
+            workoutCoachErrors[workoutID] = nil
+            return true
+        } catch {
+            workoutCoachErrors[workoutID] = error.localizedDescription
+            return false
+        }
+    }
+
+    private func cancelWorkoutCoachRequest() {
+        workoutCoachGeneration = UUID()
+        workoutCoachTask?.cancel()
+        workoutCoachTask = nil
+        workoutCoachRequestWorkoutID = nil
     }
 
     func exportData() throws -> Data {
@@ -256,6 +366,7 @@ final class GymaAppModel: ObservableObject {
     @discardableResult
     func restore(_ imported: GymaState) -> Bool {
         cancelCoachRequest()
+        cancelWorkoutCoachRequest()
         do {
             try imported.validate()
             // Preserve the exact previous bytes, including an unreadable file.
@@ -274,6 +385,7 @@ final class GymaAppModel: ObservableObject {
             try persist(next)
             storageBlocked = false
             coachError = nil
+            workoutCoachErrors = [:]
             configureConnectivity()
             connectivity.publishSnapshot()
             synchronizeNotifications()

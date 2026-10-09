@@ -26,6 +26,8 @@ public struct WatchSetDraft: Codable, Sendable, Equatable {
     public var setID: String?
     public var commandID: String?
     public var completionRevision: Int?
+    /// The target that informed preparation; absent in drafts from older app versions.
+    public var sourceTarget: ExerciseTarget?
 
     public init(snapshot: CompanionSnapshot, workout: Workout, exercise: WorkoutExercise,
                 kg: Double? = nil, expectedReps: Int? = nil) {
@@ -35,6 +37,7 @@ public struct WatchSetDraft: Codable, Sendable, Equatable {
         self.kg = min(1000, max(0, kg ?? recent?.kg ?? exercise.target?.loadKg ?? 0))
         self.expectedReps = min(100, max(1, expectedReps ?? exercise.target?.repsMin ?? recent?.reps ?? 8))
         actualKg = self.kg; actualReps = self.expectedReps; reviewStep = .reps
+        sourceTarget = exercise.target
     }
 
     public func matches(_ snapshot: CompanionSnapshot) -> Bool {
@@ -63,6 +66,7 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
             }
             try validateValues(kg: draft.kg, reps: draft.expectedReps)
             try validateValues(kg: draft.actualKg, reps: draft.actualReps)
+            try draft.sourceTarget?.validate()
         }
         if resumeCommandID != nil && resumeRestTimer == nil {
             throw GymaError.invalid("Saved Watch rest is incomplete.")
@@ -120,6 +124,7 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
         }
 
         if draft == nil { advance(snapshot) }
+        refreshPreparedTarget(snapshot)
 
         if let commandID = resumeCommandID, pending?.id != commandID,
            let acknowledgement, acknowledgement.commandID == commandID {
@@ -231,9 +236,29 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
         let previous = draft
         let sameExercise = previous?.storeID == snapshot.storeID && previous?.workoutID == workout.id &&
             previous?.exerciseID == next.exerciseID
+        let loadChanged = sameExercise && previous?.sourceTarget != nil && previous?.sourceTarget?.loadKg != next.target?.loadKg
+        let repsChanged = sameExercise && previous?.sourceTarget != nil &&
+            (previous?.sourceTarget?.repsMin != next.target?.repsMin || previous?.sourceTarget?.repsMax != next.target?.repsMax)
         draft = WatchSetDraft(snapshot: snapshot, workout: workout, exercise: next,
-                              kg: sameExercise ? previous?.actualKg : nil,
-                              expectedReps: sameExercise ? previous?.expectedReps : nil)
+                              kg: loadChanged ? next.target?.loadKg : (sameExercise ? previous?.actualKg : nil),
+                              expectedReps: repsChanged ? next.target?.repsMin : (sameExercise ? previous?.expectedReps : nil))
+    }
+
+    private mutating func refreshPreparedTarget(_ snapshot: CompanionSnapshot) {
+        guard let current = draft, current.phase == .prepared, current.matches(snapshot),
+              let exercise = snapshot.activeWorkout?.exercises.first(where: { $0.exerciseID == current.exerciseID }) else { return }
+        if let previous = current.sourceTarget {
+            if previous.loadKg != exercise.target?.loadKg, let kg = exercise.target?.loadKg {
+                draft?.kg = kg; draft?.actualKg = kg
+            }
+            if previous.repsMin != exercise.target?.repsMin || previous.repsMax != exercise.target?.repsMax,
+               let reps = exercise.target?.repsMin {
+                draft?.expectedReps = reps; draft?.actualReps = reps
+            }
+        }
+        // For a migrated draft with no source target, retain user-entered values
+        // while establishing a baseline for subsequent explicit target changes.
+        draft?.sourceTarget = exercise.target
     }
 
     private func containsSubmittedSet(_ snapshot: CompanionSnapshot, draft: WatchSetDraft) -> Bool {

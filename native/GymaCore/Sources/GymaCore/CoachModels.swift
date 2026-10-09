@@ -18,13 +18,19 @@ public struct WorkoutPlan: Codable, Sendable, Identifiable, Equatable {
     public var checkIn: SessionCheckIn
     public var createdAt: Date
     public var acceptedAt: Date?
-    public init(id: String = UUID().uuidString, title: String, exercises: [WorkoutExercise], checkIn: SessionCheckIn, createdAt: Date = Date(), acceptedAt: Date? = nil) {
-        self.id = id; self.title = title; self.exercises = exercises; self.checkIn = checkIn; self.createdAt = createdAt; self.acceptedAt = acceptedAt
+    public var scheduledFor: Date?
+    public var scheduledDate: Date { scheduledFor ?? createdAt }
+    public init(id: String = UUID().uuidString, title: String, exercises: [WorkoutExercise], checkIn: SessionCheckIn, createdAt: Date = Date(), acceptedAt: Date? = nil, scheduledFor: Date? = nil) {
+        self.id = id; self.title = title; self.exercises = exercises; self.checkIn = checkIn; self.createdAt = createdAt; self.acceptedAt = acceptedAt; self.scheduledFor = scheduledFor
+    }
+    public func isScheduledForToday(at now: Date = Date(), calendar: Calendar = .current) -> Bool {
+        calendar.isDate(scheduledDate, inSameDayAs: now)
     }
     public func validate(catalog: [ExerciseDefinition]) throws {
         let supportedDates = -2_208_988_800.0...4_102_444_800.0
         guard !id.isEmpty, id.count <= 200, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, title.count <= 200,
               supportedDates.contains(createdAt.timeIntervalSince1970),
+              supportedDates.contains(scheduledDate.timeIntervalSince1970),
               acceptedAt.map({ supportedDates.contains($0.timeIntervalSince1970) && $0 >= createdAt }) ?? true,
               (1...12).contains(exercises.count), Set(exercises.map(\.exerciseID)).count == exercises.count else {
             throw GymaError.invalid("A workout plan needs a title and 1–12 unique exercises.")

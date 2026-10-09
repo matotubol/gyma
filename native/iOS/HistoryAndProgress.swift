@@ -56,9 +56,18 @@ struct WorkoutDetailView: View {
                             StatTile(value: "\(workout.minutes())", label: "minutes")
                         }.listRowInsets(EdgeInsets())
                     }
-                    Section("Check-in") {
-                        LabeledContent("Shift", value: workout.shift.label)
-                        LabeledContent("Energy", value: workout.energy.label)
+                    Section("Before workout") {
+                        if let readiness = workout.readiness { WorkoutReadinessSummary(readiness: readiness) }
+                        else { Text("Pre-workout soreness was not recorded for this session.").foregroundStyle(.secondary) }
+                    }
+                    if workout.coachConversation?.messages.isEmpty == false {
+                        Section {
+                            NavigationLink("Workout coach conversation") { WorkoutCoachView(workoutID: workoutID) }
+                        }
+                    }
+                    Section("Planning check-in") {
+                        LabeledContent("Shift", value: workout.checkIn?.shift.label ?? workout.shift.label)
+                        LabeledContent("Energy", value: workout.checkIn?.energy.label ?? workout.energy.label)
                         if let checkIn = workout.checkIn {
                             LabeledContent("Time available", value: "\(checkIn.timeMinutes) min")
                             if let hours = checkIn.sleepHours { LabeledContent("Sleep", value: "\(hours.gymaNumber) hours") }
@@ -243,6 +252,10 @@ private struct ExerciseProgressView: View {
                                 Text(session.workout.start, format: .dateTime.day().month(.wide).year()).font(.headline)
                                 Text(session.sets.map { "\($0.kg.gymaNumber) × \($0.reps)" }.joined(separator: " · "))
                                     .font(.caption).foregroundStyle(.secondary)
+                                if let readiness = session.workout.readiness {
+                                    Text("\(readiness.energy.label) energy · \(exercise.muscle.label) soreness: \((readiness.soreness[exercise.muscle] ?? Soreness.none).label.lowercased())")
+                                        .font(.caption).foregroundStyle(GymaStyle.accent)
+                                }
                             }
                         }
                     }

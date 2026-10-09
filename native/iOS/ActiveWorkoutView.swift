@@ -7,6 +7,7 @@ struct ActiveWorkoutView: View {
     let workoutID: String
     @State private var pickerPresented = false
     @State private var finishPresented = false
+    @State private var coachPresented = false
 
     var body: some View {
         Group {
@@ -28,8 +29,18 @@ struct ActiveWorkoutView: View {
                         }
                         .font(.caption).foregroundStyle(.secondary)
                     }
+                    Section {
+                        Button { coachPresented = true } label: {
+                            Label("Ask coach", systemImage: "bubble.left.and.bubble.right.fill").font(.headline)
+                        }
+                    } footer: { Text("Ask about weights, technique or swapping an exercise. Your coach can see this workout's progress.") }
                     if let timer = model.state.restTimer, timer.workoutID == workoutID {
                         Section { RestTimerCard(timer: timer).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
+                    }
+                    if let readiness = workout.readiness {
+                        Section {
+                            DisclosureGroup("Before this workout") { WorkoutReadinessSummary(readiness: readiness) }
+                        }
                     }
                     Section {
                         if workout.exercises.isEmpty {
@@ -74,6 +85,12 @@ struct ActiveWorkoutView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $pickerPresented) { ExercisePickerView(workoutID: workoutID) }
+        .sheet(isPresented: $coachPresented) {
+            NavigationStack {
+                WorkoutCoachView(workoutID: workoutID)
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { coachPresented = false } } }
+            }
+        }
         .confirmationDialog("Finish this workout?", isPresented: $finishPresented, titleVisibility: .visible) {
             Button("Finish and save") {
                 model.update { try $0.finishWorkout(workoutID) }

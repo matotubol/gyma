@@ -60,9 +60,12 @@ public struct SessionCheckIn: Codable, Sendable, Equatable {
     public var notes: String
     public var recentTrainingNote: String
     public var painNote: String
-    public init(shift: Shift, energy: Energy, timeMinutes: Int = 45, sleepHours: Double? = nil, notes: String = "", recentTrainingNote: String = "", painNote: String = "") {
-        self.shift = shift; self.energy = energy; self.timeMinutes = timeMinutes; self.sleepHours = sleepHours; self.notes = notes; self.recentTrainingNote = recentTrainingNote; self.painNote = painNote
+    public var soreness: [Muscle: Soreness]?
+    public init(shift: Shift, energy: Energy, timeMinutes: Int = 45, sleepHours: Double? = nil, notes: String = "", recentTrainingNote: String = "", painNote: String = "", soreness: [Muscle: Soreness]? = nil) {
+        self.shift = shift; self.energy = energy; self.timeMinutes = timeMinutes; self.sleepHours = sleepHours; self.notes = notes; self.recentTrainingNote = recentTrainingNote; self.painNote = painNote; self.soreness = soreness
     }
+    public func soreness(for muscle: Muscle) -> Soreness { soreness?[muscle] ?? .none }
+    public var allSoreness: [Muscle: Soreness] { Dictionary(uniqueKeysWithValues: Muscle.allCases.map { ($0, soreness(for: $0)) }) }
     public func validate() throws {
         guard (10...180).contains(timeMinutes), sleepHours.map({ $0.isFinite && (0...24).contains($0) }) ?? true,
               [notes, recentTrainingNote, painNote].allSatisfy({ $0.count <= 2000 }) else {
@@ -113,13 +116,15 @@ public struct Workout: Codable, Sendable, Identifiable, Equatable {
     public var shift: Shift
     public var energy: Energy
     public var checkIn: SessionCheckIn?
+    public var readiness: WorkoutReadiness?
+    public var coachConversation: WorkoutCoachConversation?
     public var planTitle: String?
     public var acceptedPlanID: String?
     public var planAcceptedAt: Date?
     public var exercises: [WorkoutExercise]
     public var restHistory: [CompletedRest]?
-    public init(id: String = UUID().uuidString, start: Date = Date(), end: Date? = nil, shift: Shift = .off, energy: Energy = .good, checkIn: SessionCheckIn? = nil, planTitle: String? = nil, acceptedPlanID: String? = nil, planAcceptedAt: Date? = nil, exercises: [WorkoutExercise] = [], restHistory: [CompletedRest]? = nil) {
-        self.id = id; self.start = start; self.end = end; self.shift = shift; self.energy = energy; self.checkIn = checkIn; self.planTitle = planTitle; self.acceptedPlanID = acceptedPlanID; self.planAcceptedAt = planAcceptedAt; self.exercises = exercises; self.restHistory = restHistory
+    public init(id: String = UUID().uuidString, start: Date = Date(), end: Date? = nil, shift: Shift = .off, energy: Energy = .good, checkIn: SessionCheckIn? = nil, readiness: WorkoutReadiness? = nil, coachConversation: WorkoutCoachConversation? = nil, planTitle: String? = nil, acceptedPlanID: String? = nil, planAcceptedAt: Date? = nil, exercises: [WorkoutExercise] = [], restHistory: [CompletedRest]? = nil) {
+        self.id = id; self.start = start; self.end = end; self.shift = shift; self.energy = energy; self.checkIn = checkIn; self.readiness = readiness; self.coachConversation = coachConversation; self.planTitle = planTitle; self.acceptedPlanID = acceptedPlanID; self.planAcceptedAt = planAcceptedAt; self.exercises = exercises; self.restHistory = restHistory
     }
     public var isActive: Bool { end == nil }
     public var totalSets: Int { exercises.reduce(0) { $0 + $1.sets.count } }
@@ -136,6 +141,11 @@ public struct Workout: Codable, Sendable, Identifiable, Equatable {
               planAcceptedAt.map({ supportedDates.contains($0.timeIntervalSince1970) && $0 <= start }) ?? true,
               (planTitle?.count ?? 0) <= 2000 else { throw GymaError.invalid("Invalid workout identity or duration.") }
         try checkIn?.validate()
+        try readiness?.validate()
+        if let readiness, abs(readiness.recordedAt.timeIntervalSince(start)) > 300 {
+            throw GymaError.invalid("Workout readiness must be recorded immediately before the workout starts.")
+        }
+        try coachConversation?.validate()
         if Set(exercises.map(\.exerciseID)).count != exercises.count { throw GymaError.invalid("A workout cannot contain duplicate exercises.") }
         var setIDs = Set<String>()
         for exercise in exercises {

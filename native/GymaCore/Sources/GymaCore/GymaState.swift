@@ -79,12 +79,18 @@ public struct GymaState: Codable, Sendable, Equatable {
         coachConversation = conversation; revision += 1
     }
     @discardableResult
-    public mutating func startAcceptedPlan(planID: String, now: Date = Date()) throws -> String {
+    public mutating func startAcceptedPlan(planID: String, readiness: WorkoutReadiness? = nil, now: Date = Date(), calendar: Calendar = .current) throws -> String {
         guard let conversation = coachConversation, let plan = conversation.plan, plan.id == planID, let acceptedAt = plan.acceptedAt else {
             throw GymaError.invalid("Review and accept the coach plan before starting a workout.")
         }
         try conversation.validate(catalog: catalog)
-        let workout = Workout(start: now, shift: plan.checkIn.shift, energy: plan.checkIn.energy, checkIn: plan.checkIn,
+        guard plan.isScheduledForToday(at: now, calendar: calendar) else { throw GymaError.stale("This accepted plan is not scheduled for today. Update the plan on iPhone first.") }
+        if let readiness {
+            try readiness.validate()
+            guard abs(now.timeIntervalSince(readiness.recordedAt)) <= 300 else { throw GymaError.stale("Your readiness check expired. Check your energy and soreness again before starting.") }
+        }
+        let workout = Workout(start: now, shift: plan.checkIn.shift, energy: readiness?.energy ?? plan.checkIn.energy, checkIn: plan.checkIn, readiness: readiness,
+                              coachConversation: WorkoutCoachConversation(messages: conversation.messages),
                               planTitle: plan.title, acceptedPlanID: plan.id, planAcceptedAt: acceptedAt, exercises: plan.exercises)
         try startWorkout(workout)
         coachConversation?.plan = nil
@@ -153,7 +159,7 @@ public struct GymaState: Codable, Sendable, Equatable {
     public mutating func updateCheckIn(_ checkIn: SessionCheckIn, workoutID: String) throws {
         try checkIn.validate()
         guard let wi = workouts.firstIndex(where: { $0.id == workoutID }) else { throw GymaError.stale("Workout no longer exists.") }
-        workouts[wi].checkIn = checkIn; workouts[wi].shift = checkIn.shift; workouts[wi].energy = checkIn.energy
+        workouts[wi].checkIn = checkIn; workouts[wi].shift = checkIn.shift; workouts[wi].energy = workouts[wi].readiness?.energy ?? checkIn.energy
         if workouts[wi].acceptedPlanID == nil, !checkIn.painNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, restTimer?.workoutID == workoutID { restTimer = nil }
         revision += 1
     }

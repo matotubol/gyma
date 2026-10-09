@@ -12,10 +12,11 @@ The watch starts its session and notification observer during app initialization
 - A watch command is written atomically to its local journal before transport. `transferUserInfo` queues background delivery; `sendMessage` provides an immediate path when reachable. Both carry the same command ID.
 - Only a persisted phone acknowledgment clears the outbox. Successful WCSession transfer completion alone never means the set was saved. Retry after relaunch or from the watch's Retry sync button retains the original command ID.
 - One watch command can be pending at a time. This makes an offline change explicit and avoids inventing a sequence of unconfirmed revisions.
+- An accepted plan scheduled for today is included as bounded `readyPlan` metadata, without chat or private notes. A Watch start command contains its plan identity and a timestamped energy/all-muscle soreness check. The phone checks store, revision, acceptance, calendar day, five-minute freshness and absence of an active workout before starting atomically. Duplicate delivery returns the existing receipt instead of creating another workout. The Watch waits for the start receipt before enabling sets and native workout runtime.
 - Receipts and payload fingerprints in the phone state make duplicate delivery idempotent and reject command-ID reuse with different values.
 - Store IDs identify a phone data store. Revision guards reject conflicting edits. A replacement store can restart revisions; the watch retires the old store ID and preserves an unconfirmed old command for review instead of replaying it.
 - Snapshots show the first 12 exercises and latest 20 sets per exercise; the watch labels truncated data. The phone retains the complete workout. Wire data has an additional 60 KiB bound, with an 8 KiB command bound.
-- Rest notifications use the phone's confirmed deadline, explicit watch permission, and one replaceable notification ID. Expired restored deadlines do not trigger immediate reminders. Notification delivery follows watchOS settings and Focus; there is no background haptic guarantee.
+- Rest alerts use the confirmed deadline and a deduplicated haptic sequence while foreground or native workout runtime is active. A silent visual notification provides a fallback. Stale expired deadlines do not replay the sequence. Delivery follows watchOS settings and requires physical-device verification.
 
 ## Device validation
 

@@ -16,6 +16,7 @@ struct WatchWorkoutView: View {
     @State private var finishRevision: Int?
     @State private var localError: String?
     @State private var settingsAction: WatchSettingsAction?
+    @State private var readyContext: WatchReadyContext?
 
     private var draft: WatchSetDraft? { local.flow.draft }
     private var canAct: Bool { connectivity.canSubmit && local.storageError == nil }
@@ -76,6 +77,9 @@ struct WatchWorkoutView: View {
                 }
             }
             .sheet(item: $editor) { field in valueEditor(field) }
+            .sheet(item: $readyContext) { context in
+                WatchReadinessView(context: context)
+            }
             .sheet(isPresented: $showSettings, onDismiss: handleSettingsAction) {
                 WatchWorkoutSettings(storageError: local.storageError, draft: draft, isDraftCurrent: currentDraft,
                                      discardDraft: { settingsAction = .discard; showSettings = false },
@@ -113,7 +117,12 @@ struct WatchWorkoutView: View {
 
     @ViewBuilder
     private func focusedWorkout(compact: Bool, availableHeight: CGFloat) -> some View {
-        if let workout = connectivity.snapshot?.activeWorkout {
+        if let pending = connectivity.pendingCommand, case .startAcceptedPlan = pending.action {
+            ProgressView().tint(.mint)
+            Text("Starting workout…").font(.headline)
+            Text("Waiting for iPhone confirmation")
+                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+        } else if let workout = connectivity.snapshot?.activeWorkout {
             if let timer = restTimer, timer.workoutID == workout.id {
                 restScreen(timer, compact: compact)
             } else if let draft, !currentDraft && draft.phase != .submitting {
@@ -133,11 +142,37 @@ struct WatchWorkoutView: View {
         } else if draft != nil {
             draftRecovery
         } else {
-            Image(systemName: "figure.strengthtraining.traditional")
-                .font(.system(size: 40)).foregroundStyle(.mint)
-            Text("Your next workout").font(.title3.bold())
-            Text("Create and accept a workout in Gyma on iPhone to begin.")
-                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            readyWorkout
+        }
+    }
+
+    private var readyWorkout: some View {
+        // Re-evaluate absolute availability and the Watch's local day even if no
+        // new phone snapshot arrives at midnight or after a time-zone change.
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            VStack(spacing: 8) {
+                if let snapshot = connectivity.snapshot, let plan = snapshot.readyPlan,
+                   plan.isAvailable(at: context.date), Calendar.current.isDate(plan.scheduledFor, inSameDayAs: context.date) {
+                    eyebrow("TODAY")
+                    Text(plan.title).font(.system(size: 23, weight: .bold, design: .rounded))
+                        .multilineTextAlignment(.center).lineLimit(3).minimumScaleFactor(0.8)
+                    primaryButton("Start Workout", symbol: "play.fill") {
+                        guard connectivity.canStartAcceptedPlan(plan.id) else {
+                            localError = "This workout is no longer ready for today. Review it in Gyma on iPhone."
+                            return
+                        }
+                        readyContext = WatchReadyContext(storeID: snapshot.storeID, revision: snapshot.revision, plan: plan)
+                    }
+                    .disabled(!connectivity.canStartAcceptedPlan(plan.id, at: context.date) || local.storageError != nil)
+                } else {
+                    Image(systemName: "figure.strengthtraining.traditional")
+                        .font(.system(size: 36)).foregroundStyle(.mint)
+                    Text("No workout ready").font(.headline)
+                    Text("Create, accept and schedule today’s workout in Gyma on iPhone.")
+                        .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                }
+            }
+            .onChange(of: Calendar.current.startOfDay(for: context.date)) { _, _ in connectivity.refresh() }
         }
     }
 
@@ -383,6 +418,99 @@ struct WatchWorkoutView: View {
     }
 }
 
+private struct WatchReadyContext: Identifiable {
+    let id = UUID()
+    let storeID: String
+    let revision: Int
+    let plan: ReadyWorkoutPlan
+}
+
+@MainActor
+private struct WatchReadinessView: View {
+    @EnvironmentObject private var connectivity: WorkoutConnectivity
+    @Environment(\.dismiss) private var dismiss
+    let context: WatchReadyContext
+    @State private var energy: Energy
+    @State private var soreness: [Muscle: Soreness]
+    @State private var error: String?
+
+    init(context: WatchReadyContext) {
+        self.context = context
+        _energy = State(initialValue: context.plan.energy)
+        _soreness = State(initialValue: Dictionary(uniqueKeysWithValues: Muscle.allCases.map {
+            ($0, context.plan.soreness[$0] ?? .none)
+        }))
+    }
+
+    var body: some View {
+        NavigationStack {
+            TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                Form {
+                    Section {
+                        Text(context.plan.title).font(.headline)
+                        Text("Confirm how you feel today before starting.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Section("Energy") {
+                        Picker("Energy", selection: $energy) {
+                            ForEach(Energy.allCases) { value in Text(value.label).tag(value) }
+                        }
+                    }
+                    Section("Muscle soreness") {
+                        ForEach(Muscle.allCases) { muscle in
+                            Picker(muscle.label, selection: Binding(
+                                get: { soreness[muscle] ?? .none },
+                                set: { soreness[muscle] = $0 }
+                            )) {
+                                ForEach(Soreness.allCases) { value in Text(value.label).tag(value) }
+                            }
+                        }
+                    }
+                    if let reason = unavailableReason(at: timeline.date) {
+                        Text(reason).font(.caption2).foregroundStyle(.orange)
+                    }
+                    Button("Confirm & Start") { confirmStart() }
+                        .font(.headline).buttonStyle(WatchPrimaryButtonStyle())
+                        .disabled(unavailableReason(at: timeline.date) != nil)
+                }
+            }
+            .navigationTitle("Readiness")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .alert("Workout not started", isPresented: Binding(
+                get: { error != nil }, set: { if !$0 { error = nil } }
+            )) {
+                Button("OK", role: .cancel) { error = nil }
+            } message: { Text(error ?? "") }
+        }
+    }
+
+    private func unavailableReason(at now: Date) -> String? {
+        guard let snapshot = connectivity.snapshot, snapshot.storeID == context.storeID,
+              snapshot.revision == context.revision, snapshot.readyPlan == context.plan,
+              snapshot.activeWorkout == nil else {
+            return "The plan changed on iPhone. Close this screen and review today’s workout."
+        }
+        guard context.plan.isAvailable(at: now), Calendar.current.isDate(context.plan.scheduledFor, inSameDayAs: now) else {
+            return "This workout is no longer scheduled for today. Review your plan on iPhone."
+        }
+        guard connectivity.canStartAcceptedPlan(context.plan.id, at: now) else {
+            return "Waiting for the previous change to be confirmed."
+        }
+        return nil
+    }
+
+    private func confirmStart() {
+        do {
+            if let reason = unavailableReason(at: Date()) { throw GymaError.stale(reason) }
+            let readiness = WorkoutReadiness(energy: energy, soreness: soreness, recordedAt: Date())
+            try connectivity.submit(.startAcceptedPlan(planID: context.plan.id, readiness: readiness),
+                                    expectedWorkoutID: context.plan.id, basedOnRevision: context.revision,
+                                    expectedStoreID: context.storeID)
+            dismiss()
+        } catch { self.error = error.localizedDescription }
+    }
+}
+
 @MainActor
 private struct WatchRepsControl: View {
     let title: String
@@ -393,7 +521,7 @@ private struct WatchRepsControl: View {
         VStack(spacing: 3) {
             Text(title).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
             HStack(spacing: 4) {
-                adjustmentButton(1, symbol: "plus")
+                adjustmentButton(-1, symbol: "minus")
                 Text("\(reps)")
                     .font(.system(size: 34, weight: .bold, design: .rounded).monospacedDigit())
                     .lineLimit(1).minimumScaleFactor(0.7)
@@ -401,7 +529,7 @@ private struct WatchRepsControl: View {
                     .background(Color.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 12))
                     .accessibilityLabel("Reps")
                     .accessibilityValue("\(reps)")
-                adjustmentButton(-1, symbol: "minus")
+                adjustmentButton(1, symbol: "plus")
             }
         }
     }
@@ -572,6 +700,9 @@ private struct WatchWorkoutSettings: View {
                         if case let .logSet(_, set) = pending.action {
                             Text("\(set.kg.formatted()) kg × \(set.reps)")
                         }
+                        if case let .startAcceptedPlan(_, readiness) = pending.action {
+                            readinessDetails(readiness)
+                        }
                     }
                 }
                 if let receipt = connectivity.lastAcknowledgement, receipt.status == .rejected {
@@ -581,6 +712,10 @@ private struct WatchWorkoutSettings: View {
                         if let command = connectivity.rejectedCommand, case let .logSet(_, set) = command.action {
                             Text("Not saved: \(set.kg.formatted()) kg × \(set.reps)")
                         }
+                        if let command = connectivity.rejectedCommand,
+                           case let .startAcceptedPlan(_, readiness) = command.action {
+                            readinessDetails(readiness)
+                        }
                     }
                 }
                 if let command = connectivity.quarantinedCommand {
@@ -589,6 +724,9 @@ private struct WatchWorkoutSettings: View {
                             .font(.caption2).foregroundStyle(.orange)
                         if case let .logSet(_, set) = command.action {
                             Text("Not saved: \(set.kg.formatted()) kg × \(set.reps)")
+                        }
+                        if case let .startAcceptedPlan(_, readiness) = command.action {
+                            readinessDetails(readiness)
                         }
                     }
                 }
@@ -615,6 +753,15 @@ private struct WatchWorkoutSettings: View {
             }
             .navigationTitle("Settings")
             .onDisappear { notifications.stopHapticPreview() }
+        }
+    }
+
+    private func readinessDetails(_ readiness: WorkoutReadiness) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Energy: \(readiness.energy.label)").font(.caption)
+            ForEach(Muscle.allCases) { muscle in
+                Text("\(muscle.label): \(readiness.soreness(for: muscle).label)").font(.caption2)
+            }
         }
     }
 }
@@ -671,6 +818,7 @@ private func watchDuration(_ seconds: TimeInterval) -> String {
 private extension WatchAction {
     var watchDescription: String {
         switch self {
+        case .startAcceptedPlan: return "Starting workout…"
         case .logSet: return "Saving set…"
         case .skipRest: return "Starting next set…"
         case .extendRest: return "Updating rest…"
