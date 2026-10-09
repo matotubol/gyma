@@ -76,6 +76,13 @@ final class GymaCoreTests: XCTestCase {
         XCTAssertEqual(state.restTimer?.endsAt, now.addingTimeInterval(120))
         XCTAssertEqual(state.restTimer?.remaining(at: now.addingTimeInterval(300)), 0)
     }
+    func testTimerRemainingIsSafeFor32BitWatchIntegerConversion() {
+        let distant = Date(timeIntervalSince1970: 4_102_444_800)
+        let timer = RestTimer(workoutID: "future", exerciseID: "bench_press", startedAt: distant.addingTimeInterval(-120), endsAt: distant, sourceSetID: "set")
+        XCTAssertEqual(timer.remaining(at: now), 86400)
+        XCTAssertNotNil(Int32(exactly: ceil(timer.remaining(at: now))))
+        XCTAssertEqual(timer.remaining(at: distant.addingTimeInterval(1)), 0)
+    }
     func testExpiredAndFutureCommandsCannotMutateWorkout() throws {
         for offset in [-86401.0, 301.0] {
             var state = try activeState()
@@ -154,5 +161,15 @@ final class GymaCoreTests: XCTestCase {
         var invalid = good; invalid.workouts[0].exercises.append(.init(exerciseID: "bench_press"))
         XCTAssertThrowsError(try store.save(invalid))
         XCTAssertEqual(try store.load(), good)
+    }
+    func testNativeBackupRejectsOrphanExerciseReferencesIncludingDeletedWorkouts() throws {
+        var state = try activeState()
+        state.workouts[0].exercises = [.init(exerciseID: "missing-custom-definition")]
+        XCTAssertThrowsError(try NativeBackup.decode(JSONEncoder().encode(state)))
+        state = try activeState()
+        state.deletedWorkouts = [Workout(id: "deleted", start: now, end: now, exercises: [.init(exerciseID: "missing-custom-definition")])]
+        XCTAssertThrowsError(try NativeBackup.decode(JSONEncoder().encode(state)))
+        try state.addCustomExercise(.init(id: "missing-custom-definition", name: "Custom movement", muscle: .legs, custom: true))
+        XCTAssertNoThrow(try state.validate())
     }
 }

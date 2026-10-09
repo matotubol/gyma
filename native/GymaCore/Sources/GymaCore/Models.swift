@@ -148,7 +148,12 @@ public struct RestTimer: Codable, Sendable, Identifiable, Equatable {
     public init(id: String = UUID().uuidString, workoutID: String, exerciseID: String, startedAt: Date, endsAt: Date, sourceSetID: String) {
         self.id = id; self.workoutID = workoutID; self.exerciseID = exerciseID; self.startedAt = startedAt; self.endsAt = endsAt; self.sourceSetID = sourceSetID
     }
-    public func remaining(at now: Date = Date()) -> TimeInterval { max(0, endsAt.timeIntervalSince(now)) }
+    public func remaining(at now: Date = Date()) -> TimeInterval {
+        let seconds = endsAt.timeIntervalSince(now)
+        // Keep watchOS arm64_32 countdown arithmetic safe even when a restored device clock differs.
+        guard seconds.isFinite else { return 0 }
+        return min(86400, max(0, seconds))
+    }
 }
 
 public enum GymaError: Error, LocalizedError, Equatable {

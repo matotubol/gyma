@@ -37,6 +37,9 @@ public struct GymaState: Codable, Sendable, Equatable {
                   exercise.name.count <= 200, exercise.iconKey.count <= 100,
                   exerciseIDs.insert(exercise.id).inserted else { throw GymaError.invalid("Invalid custom exercise identity or name.") }
         }
+        guard (workouts + deletedWorkouts).allSatisfy({ workout in
+            workout.exercises.allSatisfy { exerciseIDs.contains($0.exerciseID) }
+        }) else { throw GymaError.invalid("A workout refers to an exercise missing from the catalog.") }
         if let timer = restTimer {
             let supportedDates = -2_208_988_800.0...4_102_444_800.0
             guard restEnabled, !timer.id.isEmpty, timer.id.count <= 200,
