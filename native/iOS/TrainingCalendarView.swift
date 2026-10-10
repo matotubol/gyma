@@ -24,7 +24,7 @@ struct TrainingCalendarOverviewCard: View {
                     summary(plan, now: now)
                 } else {
                     Text("Plan training around your shifts").font(.title3.bold())
-                    Text("Five sessions per 10-day cycle. Set up your dates and see all eight weeks ahead.")
+                    Text("Choose your training days in each 10-day cycle and see all eight weeks ahead.")
                         .font(.subheadline).foregroundStyle(.secondary)
                     Text("Set up calendar").font(.subheadline.bold()).foregroundStyle(GymaStyle.accent)
                 }
@@ -126,7 +126,7 @@ struct TrainingCalendarView: View {
         VStack(alignment: .leading, spacing: 20) {
             Label("A plan that fits your shifts", systemImage: "calendar.badge.clock")
                 .font(.title2.bold()).foregroundStyle(GymaStyle.accent)
-            Text("See 56 days of training and recovery, with five sessions in each 10-day shift cycle.")
+            Text("See 56 days of training and recovery, with the training days you choose in each 10-day shift cycle.")
             Text("Start training on 13 October 2026, after sleep following your night shifts. Your first morning shift stays on 17 October. The opening strength dates are 13, 14 and 16 October.")
                 .foregroundStyle(.secondary)
             Text("Add optional incline walking, stretching or abs to individual days. These activities keep your strength program in its usual order.")
@@ -754,8 +754,8 @@ private struct TrainingCalendarSetupView: View {
                             }
                         }.tint(GymaStyle.accent)
                     }
-                } header: { Text("Training days · \(trainingDays.count) of 5 selected") } footer: {
-                    Text("Choose exactly five days per cycle. Individual dates can be moved or changed to recovery after saving. Saved program sessions continue across cycles.")
+                } header: { Text("Training days · \(trainingDays.count) of 10 selected") } footer: {
+                    Text("Choose 1–10 training days per cycle to fit your schedule. Individual dates can be moved or changed to recovery after saving. Saved program sessions continue across cycles.")
                 }
                 Section {
                     Toggle("Prefer alternating upper/lower", isOn: $prefersUpperLower)
@@ -774,7 +774,7 @@ private struct TrainingCalendarSetupView: View {
                 if let error { Section { Text(error).foregroundStyle(.red) } }
                 Section {
                     Button(existing == nil ? "Create calendar" : "Save calendar") { save() }
-                        .disabled(trainingDays.count != 5 || configurationError != nil || model.storageBlocked || model.state.activeWorkout != nil)
+                        .disabled(configurationError != nil || model.storageBlocked || model.state.activeWorkout != nil)
                 } footer: {
                     Text("The calendar reserves training dates. It does not start workouts or replace your program at the end of eight weeks. Changing the calendar clears an unstarted draft. Check in again before training.")
                 }
