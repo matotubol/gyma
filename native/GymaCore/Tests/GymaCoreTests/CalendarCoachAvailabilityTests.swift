@@ -39,6 +39,7 @@ final class CalendarCoachAvailabilityTests: XCTestCase {
             return .init(id: "exposure-\(index)", start: start, end: start.addingTimeInterval(1800), exercises: [
                 .init(exerciseID: "bench_press", sets: [.init(kg: 40 + Double(index) * 2.5, reps: 8, effort: .challenging, isWarmup: false)])
             ])
+        }
         let conversation = CoachConversation(checkIn: .init(shift: .off, energy: .good),
                                              messages: [.init(role: .user, content: "Compare my progress since I started.")])
         var selected = try XCTUnwrap(history.last)
