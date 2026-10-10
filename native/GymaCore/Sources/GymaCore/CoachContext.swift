@@ -7,7 +7,7 @@ public enum CoachContext {
     Optional activities are user-chosen additions on individual calendar dates: incline treadmill walking, gentle stretching, or abs. A strength rest day may include one of these without becoming a rotating strength session. Discuss optional activity without creating or revising an unrelated strength plan. Planned activity is not completed activity; a completion marker is a user report, not measured sets or wearable evidence. Optional activity never advances the upper/lower rotation. Never claim to schedule, complete or save activity through chat.
     On recovery days, keep incline treadmill walking easy enough for comfortable full-sentence conversation; adjust speed, incline and duration to current comfort and fatigue. Do not assume a particular gradient, speed or duration is easy for this person. Keep stretching gentle and comfortable, never painful. After night shifts, prioritize sleep before deciding whether to train; being off work does not prove readiness.
     Abs are resistance training, not an automatic daily recovery activity. Leave at least one full recovery day between hard sessions for the same muscles, including direct ab work in strength workouts. Consider recent and upcoming direct ab work, soreness, poor sleep and pain before suggesting optional abs; reduce or skip work when recovery is doubtful and never train through pain. A calendar abs duration is a time budget, not sets, repetitions, load, intensity or proof of recovery. Do not infer hard or easy intensity from an activity completion marker.
-    The structured strength schemas support repetition-based exercises only. Never encode walking or stretching minutes, distance, speed, incline or timed holds as repetitions or kilograms. Keep walking/stretching advice in message text and direct the user to calendar activity controls to save it. Use plan:null and program:null for activity-only advice unless a strength proposal is explicitly requested; live-workout activity-only advice uses change:null. Only in daily workout planning, a requested standalone repetition-based abs workout can use supported catalog exercises with programSessionID:null; do not attach it to the next upper/lower session merely to log optional abs. Recurring-program planning must still return plan:null; live coaching can only propose supported changes to the existing workout.
+    The structured strength schemas support repetition-based exercises only. Never encode walking or stretching minutes, distance, speed, incline or timed holds as repetitions or kilograms. Keep walking/stretching advice in message text and direct the user to calendar activity controls to save it. Use plan:null and program:null for activity-only advice unless a strength proposal is explicitly requested; live-workout activity-only advice uses change:null. Only in daily workout planning, a requested standalone repetition-based abs workout can use supported catalog exercises with programSessionID:null; do not attach it to the next upper/lower session merely to log optional abs. Such a strength workout still follows today's saved-calendar start eligibility. On recovery days, use optional Calendar activity controls for abs; do not offer a strength workout start. Recurring-program planning must still return plan:null; live coaching can only propose supported changes to the existing workout.
     Recovery reference: https://www.mayoclinic.org/healthy-lifestyle/fitness/basics/strength-training/hlv-20049447 . Talking effort reference: https://www.cdc.gov/physical-activity-basics/measuring/ . Easy recovery activity and adjustable activity time budgets are conservative product guidance, not a personalized medical prescription.
     """
 
@@ -31,6 +31,10 @@ public enum CoachContext {
         let candidates = requested + completed.flatMap { $0.exercises.map(\.exerciseID) }
         let relevant = Array(candidates.filter { seen.insert($0).inserted }.prefix(12))
         let analytics = TrainingAnalytics.make(workouts: history, catalog: catalog, now: now, relevantExerciseIDs: relevant)
+        let comparisons = relevant.compactMap { id -> ExerciseProgressComparison? in
+            guard let exercise = catalog.first(where: { $0.id == id }) else { return nil }
+            return ExerciseProgressComparison.make(exercise: exercise, workouts: history, now: now)
+        }
         let completedIDs = Set(history.filter { !$0.isActive }.map(\.id))
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         func json<T: Encodable>(_ value: T) throws -> String { String(decoding: try encoder.encode(value), as: UTF8.self) }
@@ -45,6 +49,8 @@ public enum CoachContext {
         Deterministic next-session targets before today's readiness/time adjustments: \(try json(program.flatMap { p in p.nextSession(history: history, now: now).map { p.recommendations(for: $0, history: history, now: now, catalog: catalog, priorPrograms: priorPrograms) } }))
         Exercise equipment, direct and secondary muscle metadata: \(try json(catalog.map { CatalogContext(id: $0.id, metadata: $0.trainingMetadata) }))
         Computed full-history analytics, relevant exposures and missing-data coverage: \(try json(analytics))
+        First and latest working exposures across all retained calendar blocks, for these relevant exercises: \(try json(comparisons))
+        These comparisons retain early baseline results even when they are outside the recent-session detail below. A single exposure is not a trend. Load differences alone do not establish improvement: compare repetitions, working-set counts, recorded effort, equipment and load convention. Working-set samples are limited to ten per exposure; totals include all classified working sets. Missing effort stays unknown. Calendar rollover does not reset workout history or these comparisons. Do not invent a specific eight-week or block-to-block result when its dates or intermediate sessions are not in this context.
         Actual sets for relevant exercises (latest four exposures per exercise, latest ten sets per exposure): \(try json(relevant.map { id in
             RelevantExerciseRecords(exerciseID: id, exposures: Array(completed.compactMap { workout in
                 workout.exercises.first(where: { $0.exerciseID == id && !$0.sets.isEmpty }).map { entry in
@@ -100,11 +106,33 @@ public enum CoachContext {
             }.joined(separator: "; ")
             return "\(formatter.string(from: entry.date)): \(details)"
         }.joined(separator: "\n")
+        var calendarState = GymaState()
+        calendarState.trainingCalendar = plan
+        calendarState.workouts = history
+        let availability: String
+        switch calendarState.dailyTrainingStatus(now: now) {
+        case .beforeStart(let start):
+            availability = "BLOCK NOT STARTED. The block begins \(formatter.string(from: start)); no strength workout can start today. Future sessions are previews."
+        case .recoveryDay:
+            availability = "RECOVERY DAY. Optional activities may be planned or completed, but no strength workout can start today."
+        case .completedToday:
+            availability = "TODAY ALREADY RECORDED. Review the saved workout; do not offer the next rotating session as ready today."
+        case .blockComplete:
+            availability = "BLOCK COMPLETE. Review history and save a new calendar block before starting another strength workout."
+        case .activeWorkout:
+            availability = "WORKOUT IN PROGRESS. The existing workout can be resumed, including after midnight; no new workout can start."
+        case .trainingDay:
+            availability = "TRAINING DAY. Today's workout may start after readiness and plan review. Future sessions remain previews."
+        case .noCalendar, .unavailable:
+            availability = "Check the saved training calendar before offering a workout start."
+        }
         return """
         User-confirmed eight-week training calendar: \(saved)
         Shift cycle: 2 mornings, 2 afternoons, 2 nights, 4 days off; cycle day 1 is the saved first morning date. Scheduled baseline: \(plan.trainingCycleDays.count) sessions per 10 days, NOT per week. Date exceptions are explicit user choices.
         Training block starts \(formatter.string(from: plan.startDate)); first morning shift anchor is \(formatter.string(from: plan.cycleAnchorDate)). These dates are independent: the block can begin on days off before the first morning shift. Start-day shift: \(plan.shift(on: plan.startDate).label), cycle day \(plan.cycleDay(on: plan.startDate)).
         Calendar dates in \(plan.timeZoneIdentifier): \(formatter.string(from: plan.startDate)) through \(formatter.string(from: plan.lastDate)); review on \(formatter.string(from: plan.reviewDate)). Block has ended: \(now >= plan.reviewDate).
+        Today's calendar availability: \(availability)
+        Discussing or saving a program is allowed before the block begins and on recovery days. Do not tell the user a future session is ready to start today. A draft dated today cannot override the calendar. The user can explicitly adjust dates in Calendar; chat does not reschedule or start workouts.
         Upper/lower preference: \(plan.prefersUpperLower ? "Yes. When creating or revising a program, propose alternating upper/lower sessions in continuous order across cycles, subject to profile constraints and user review. Do not silently replace an existing program." : "Follow the saved program and discuss the user's preferred split.")
         Upcoming projected sessions, assuming future planned sessions are completed:
         \(upcoming.isEmpty ? "None remaining in this block." : upcoming)

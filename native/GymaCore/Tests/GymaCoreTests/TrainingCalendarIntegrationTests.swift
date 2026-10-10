@@ -49,10 +49,10 @@ final class TrainingCalendarIntegrationTests: XCTestCase {
             conversation.proposedProgram = proposal
             try state.saveCoachConversation(conversation)
         } else {
-            let draft = try state.nextProgramPlan(checkIn: checkIn, now: date(10, 17))
+            let draft = try state.nextProgramPlan(checkIn: checkIn, now: date(10, 18))
             conversation.plan = draft
             try state.saveCoachConversation(conversation)
-            try state.acceptCoachPlan(planID: draft.id, now: date(10, 17))
+            try state.acceptCoachPlan(planID: draft.id, now: date(10, 18))
         }
         try state.validate()
         return state
@@ -104,14 +104,16 @@ final class TrainingCalendarIntegrationTests: XCTestCase {
 
     func testWatchSnapshotExcludesCalendarAndCalendarEditsRemoveReadyDraft() throws {
         var state = try stateWithDraft()
-        let ready = CompanionSnapshot(state: state, now: date(10, 17), calendar: calendar)
+        let ready = CompanionSnapshot(state: state, now: date(10, 18), calendar: calendar)
         XCTAssertNotNil(ready.readyPlan)
         let text = String(decoding: try JSONEncoder().encode(ready), as: UTF8.self)
         for field in ["trainingCalendar", "trainingCycleDays", "cycleAnchorDate", "dayOverrides", "Europe/Amsterdam"] {
             XCTAssertFalse(text.contains(field), "Watch snapshot leaked calendar field \(field)")
         }
         try state.setCalendarTrainingDay(on: date(10, 19), isTraining: true, now: date(10, 17))
-        XCTAssertNil(CompanionSnapshot(state: state, now: date(10, 17), calendar: calendar).readyPlan)
+        let refreshed = CompanionSnapshot(state: state, now: date(10, 18), calendar: calendar)
+        XCTAssertNotEqual(refreshed.readyPlan?.id, ready.readyPlan?.id, "A calendar edit invalidates the accepted daily draft.")
+        XCTAssertEqual(refreshed.readyPlan?.programID, program.id, "Today's saved program can still collect a fresh check-in.")
     }
 
     func testBothCoachModesReceiveCivilDatesFrequencyAndProjectionsWithoutRawPrivateHistory() throws {

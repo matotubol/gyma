@@ -61,10 +61,11 @@ struct OverviewView: View {
     @State private var selectedWorkoutID: String?
     @State private var preparingPlan: WorkoutPlan?
     @State private var startingProgram = false
+    @State private var calendarPresented = false
 
     private var acceptedPlan: WorkoutPlan? {
         guard model.state.activeWorkout == nil, let plan = model.state.coachConversation?.plan,
-              plan.acceptedAt != nil else { return nil }
+              plan.acceptedAt != nil, model.state.coachConversation?.startedWorkoutID == nil else { return nil }
         return plan
     }
 
@@ -100,7 +101,7 @@ struct OverviewView: View {
                 }
                 SectionHeading(title: "Keep showing up", subtitle: "Your training, one session at a time.")
                 if model.completedWorkouts.isEmpty {
-                    EmptyState(title: "Your first session", message: "Build your recurring program with the coach. When you are ready to train, start a session and check how you feel that day. Your Watch guides you through each exercise.", symbol: "figure.strengthtraining.traditional")
+                    EmptyState(title: "Your first session", message: "Build your recurring program with the coach. On a scheduled training day, start today's session and check how you feel. Your Watch guides you through each exercise.", symbol: "figure.strengthtraining.traditional")
                         .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 22))
                 } else {
                     VStack(spacing: 0) {
@@ -121,6 +122,7 @@ struct OverviewView: View {
         .background(GymaStyle.background)
         .navigationTitle("Gyma")
         .navigationDestination(isPresented: $coachPresented) { CoachView(onAccepted: { coachPresented = false }) }
+        .navigationDestination(isPresented: $calendarPresented) { TrainingCalendarView() }
         .navigationDestination(isPresented: $activePresented) {
             if let selectedWorkoutID { ActiveWorkoutView(workoutID: selectedWorkoutID) }
         }
@@ -141,26 +143,43 @@ struct OverviewView: View {
     }
 
     private func hero(at now: Date) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
+        let today = DailyTrainingPresentation(state: model.state, now: now)
+        let canStartPlan = acceptedPlan.map { model.state.canStartAcceptedPlan($0, now: now) } ?? false
+        let canStartProgram = model.state.trainingProgram != nil && today.status.allowsWorkoutStart
+        let hasActive = model.state.activeWorkout != nil
+        let showsCalendar = !today.status.allowsWorkoutStart || acceptedPlan != nil
+        let availableTitle = (canStartPlan ? acceptedPlan?.title : nil)
+            ?? (canStartProgram ? model.state.trainingProgram?.nextSession(history: model.state.workouts, now: now)?.title : nil)
+            ?? "A little stronger.\nEvery session."
+        let actionTitle = hasActive ? "Resume workout"
+            : canStartPlan || canStartProgram ? "Start today's workout"
+            : showsCalendar ? "View calendar"
+            : model.hasUnfinishedProgramPlanning ? "Continue planning" : "Plan program with coach"
+        let actionSymbol = hasActive || canStartPlan || canStartProgram ? "play.fill"
+            : showsCalendar ? "calendar" : "bubble.left.and.bubble.right"
+        return VStack(alignment: .leading, spacing: 18) {
             HStack {
-                Label(model.state.activeWorkout == nil ? "YOUR NEXT SESSION" : "SESSION IN PROGRESS", systemImage: "figure.strengthtraining.traditional")
+                Label(hasActive ? "SESSION IN PROGRESS" : "TODAY · \(today.date(now))", systemImage: "figure.strengthtraining.traditional")
                     .font(.caption.weight(.bold)).tracking(1)
                 Spacer()
                 Image(systemName: "arrow.up.right").font(.title3)
             }
-            Text(model.state.activeWorkout != nil ? "Pick up where\nyou left off." : (acceptedPlan?.title ?? model.state.trainingProgram?.nextSession(history: model.state.workouts, now: now)?.title ?? "A little stronger.\nEvery session."))
+            Text(hasActive || !today.status.allowsWorkoutStart ? today.title : availableTitle)
                 .font(.system(.largeTitle, design: .rounded, weight: .bold))
                 .fixedSize(horizontal: false, vertical: true)
             if let workout = model.state.activeWorkout {
                 Text("\(workout.loggedSets) sets logged · Started \(workout.start.formatted(date: .omitted, time: .shortened))")
                     .font(.subheadline)
-            } else if let plan = acceptedPlan {
-                Text(plan.isScheduledForToday(at: now)
-                     ? "Ready for today · \(plan.exercises.count) exercises. Check your energy and soreness before starting here or on Watch."
-                     : "Scheduled for \(plan.scheduledDate.formatted(date: .abbreviated, time: .omitted)). Make a new plan for today.")
+            } else if !today.status.allowsWorkoutStart {
+                Text(today.message).font(.subheadline)
+            } else if let plan = acceptedPlan, canStartPlan {
+                Text("Ready for today · \(plan.exercises.count) exercises. Check your energy and soreness before starting here or on Watch.")
                     .font(.subheadline)
-            } else if model.state.trainingProgram != nil {
-                Text("Your program is ready. Check today's energy, sleep and soreness when you start this session.")
+            } else if canStartProgram {
+                Text(today.message)
+                    .font(.subheadline)
+            } else if let plan = acceptedPlan {
+                Text("Saved workout: \(plan.title) · Scheduled for \(today.date(plan.scheduledDate)). A workout can only start on its scheduled training day.")
                     .font(.subheadline)
             } else {
                 Text(model.state.coachConversation?.plan == nil || model.state.coachConversation?.startedWorkoutID != nil
@@ -171,15 +190,17 @@ struct OverviewView: View {
                 if let active = model.state.activeWorkout {
                     selectedWorkoutID = active.id
                     activePresented = true
-                } else if let plan = acceptedPlan, plan.isScheduledForToday(at: now) {
+                } else if let plan = acceptedPlan, model.state.canStartAcceptedPlan(plan, now: Date()) {
                     preparingPlan = plan
-                } else if model.state.trainingProgram != nil {
+                } else if model.state.trainingProgram != nil, model.state.dailyTrainingStatus().allowsWorkoutStart {
                     startingProgram = true
+                } else if !model.state.dailyTrainingStatus().allowsWorkoutStart || acceptedPlan != nil {
+                    calendarPresented = true
                 } else {
                     if model.beginProgramPlanning() { coachPresented = true }
                 }
             } label: {
-                Label(model.state.activeWorkout != nil ? "Resume workout" : (acceptedPlan?.isScheduledForToday(at: now) == true || model.state.trainingProgram != nil ? "Start next workout" : (model.hasUnfinishedProgramPlanning ? "Continue planning" : "Plan program with coach")), systemImage: model.state.activeWorkout != nil || acceptedPlan?.isScheduledForToday(at: now) == true || model.state.trainingProgram != nil ? "play.fill" : "bubble.left.and.bubble.right")
+                Label(actionTitle, systemImage: actionSymbol)
                     .font(.headline).frame(maxWidth: .infinity).padding(.vertical, 8)
             }
             .buttonStyle(.borderedProminent).tint(.white).foregroundStyle(Color(red: 0.10, green: 0.30, blue: 0.19))

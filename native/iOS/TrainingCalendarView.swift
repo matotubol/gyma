@@ -462,11 +462,16 @@ private struct TrainingCalendarDayView: View {
                 }
             }
         }
-        if plan.calendar.isDate(day.date, inSameDayAs: now), day.workouts.isEmpty {
+        if plan.calendar.isDate(day.date, inSameDayAs: now), day.isTraining, day.workouts.isEmpty,
+           model.state.dailyTrainingStatus(now: now).allowsWorkoutStart {
             Section {
                 if model.state.trainingProgram != nil {
-                    Button("Start next workout", systemImage: "play.fill") { startingProgram = true }
-                        .disabled(model.storageBlocked || model.state.activeWorkout != nil)
+                    Button("Start today's workout", systemImage: "play.fill") {
+                        guard plan.calendar.isDate(day.date, inSameDayAs: Date()),
+                              model.state.dailyTrainingStatus().allowsWorkoutStart else { return }
+                        startingProgram = true
+                    }
+                    .disabled(model.storageBlocked || model.coachRequestInFlight)
                 } else {
                     NavigationLink("Plan your program with coach") { TrainingProgramView() }
                 }

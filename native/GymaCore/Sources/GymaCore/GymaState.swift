@@ -123,10 +123,13 @@ public struct GymaState: Codable, Sendable, Equatable {
     }
     @discardableResult
     public mutating func startAcceptedPlan(planID: String, readiness: WorkoutReadiness? = nil, now: Date = Date(), calendar: Calendar = .current) throws -> String {
-        guard let conversation = coachConversation, let plan = conversation.plan, plan.id == planID, let acceptedAt = plan.acceptedAt else {
+        guard let conversation = coachConversation, conversation.startedWorkoutID == nil,
+              let plan = conversation.plan, plan.id == planID, let acceptedAt = plan.acceptedAt else {
             throw GymaError.invalid("Review and accept the coach plan before starting a workout.")
         }
         try conversation.validate(catalog: catalog)
+        let calendar = planningCalendar(fallback: calendar)
+        try validateCalendarWorkoutStart(now: now, calendar: calendar)
         guard plan.isScheduledForToday(at: now, calendar: calendar) else { throw GymaError.stale("This accepted plan is not scheduled for today. Update the plan on iPhone first.") }
         if let readiness {
             try readiness.validate()
@@ -150,6 +153,8 @@ public struct GymaState: Codable, Sendable, Equatable {
     @discardableResult
     public mutating func startPreparedProgramPlan(_ plan: WorkoutPlan, readiness: WorkoutReadiness, now: Date = Date(), calendar: Calendar = .current) throws -> String {
         guard activeWorkout == nil else { throw GymaError.invalid("Finish or resume your current workout first.") }
+        let calendar = planningCalendar(fallback: calendar)
+        try validateCalendarWorkoutStart(now: now, calendar: calendar)
         try plan.validate(catalog: catalog)
         try readiness.validate()
         guard plan.programID != nil, plan.isScheduledForToday(at: now, calendar: calendar),
@@ -192,6 +197,7 @@ public struct GymaState: Codable, Sendable, Equatable {
     }
     public mutating func startWorkout(_ workout: Workout) throws {
         guard activeWorkout == nil else { throw GymaError.invalid("Finish or resume your current workout first.") }
+        if trainingCalendar != nil { try validateCalendarWorkoutStart(now: workout.start) }
         try workout.validate()
         guard workout.isActive, !workouts.contains(where: { $0.id == workout.id }), !deletedWorkouts.contains(where: { $0.id == workout.id }),
               workout.exercises.allSatisfy({ $0.sets.isEmpty }),

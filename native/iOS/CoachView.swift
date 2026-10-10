@@ -32,9 +32,9 @@ struct CoachView: View {
                     } else if let program = model.state.trainingProgram,
                               conversation?.isProgramPlanning == true,
                               conversation?.acceptedProgramID == program.id {
-                        acceptedProgram(program)
+                        TimelineView(.periodic(from: .now, by: 30)) { context in acceptedProgram(program, now: context.date) }
                     } else if conversation?.startedWorkoutID == nil, let plan = conversation?.plan, plan.acceptedAt != nil {
-                        acceptedPlan(plan)
+                        TimelineView(.periodic(from: .now, by: 30)) { context in acceptedPlan(plan, now: context.date) }
                     } else {
                         if !model.hasCoachAPIKey { keySetup }
                         if let conversation, conversation.startedWorkoutID == nil {
@@ -63,7 +63,7 @@ struct CoachView: View {
                             }
                             composer
                         } else {
-                            introduction
+                            TimelineView(.periodic(from: .now, by: 30)) { context in introduction(at: context.date) }
                             if let previous = conversation {
                                 DisclosureGroup("Previous conversation") {
                                     VStack(alignment: .leading, spacing: 18) {
@@ -114,15 +114,16 @@ struct CoachView: View {
         .onAppear { model.refreshCoachCredentials() }
     }
 
-    private var introduction: some View {
-        VStack(alignment: .leading, spacing: 18) {
+    private func introduction(at now: Date) -> some View {
+        let today = DailyTrainingPresentation(state: model.state, now: now)
+        return VStack(alignment: .leading, spacing: 18) {
             Image(systemName: "bubble.left.and.bubble.right")
                 .font(.system(size: 36, weight: .light)).foregroundStyle(GymaStyle.accent)
             Text("Training that\nbuilds on last time.")
                 .font(.system(.largeTitle, design: .rounded, weight: .bold))
             Text(model.state.trainingProgram == nil
                  ? "Set up your profile, then build a recurring program with your coach. Your goals, equipment and training history carry into every conversation."
-                 : "Your saved program keeps your sessions consistent. Discuss longer-term changes with your coach, or start your next workout when you are ready to train.")
+                 : "Your saved program keeps your sessions consistent. Discuss longer-term changes with your coach, or start today's workout on a scheduled training day.")
                 .foregroundStyle(.secondary)
             Text("Plan the program now. Check in about energy, sleep and soreness once, when you start each workout.")
                 .font(.subheadline).foregroundStyle(.secondary)
@@ -135,8 +136,16 @@ struct CoachView: View {
                 .font(.headline).buttonStyle(.borderedProminent)
                 .disabled(!model.hasCoachAPIKey || model.storageBlocked || model.coachRequestInFlight)
             if model.state.trainingProgram != nil {
-                Button("Start next workout", systemImage: "play.fill") { workoutStartPresented = true }
+                if today.status.allowsWorkoutStart {
+                    Button("Start today's workout", systemImage: "play.fill") {
+                        guard model.state.dailyTrainingStatus().allowsWorkoutStart else { return }
+                        workoutStartPresented = true
+                    }
                     .buttonStyle(.bordered).disabled(model.storageBlocked || model.coachRequestInFlight)
+                } else {
+                    Text(today.message).font(.subheadline).foregroundStyle(.secondary)
+                    NavigationLink("View calendar") { TrainingCalendarView() }.buttonStyle(.bordered)
+                }
             }
             if let error = model.coachError { Text(error).font(.subheadline).foregroundStyle(.orange) }
         }
@@ -169,26 +178,32 @@ struct CoachView: View {
         .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 24))
     }
 
-    private func acceptedPlan(_ plan: WorkoutPlan) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+    private func acceptedPlan(_ plan: WorkoutPlan, now: Date) -> some View {
+        let today = DailyTrainingPresentation(state: model.state, now: now)
+        return VStack(alignment: .leading, spacing: 14) {
             Label("Plan accepted", systemImage: "checkmark.seal.fill")
                 .font(.headline).foregroundStyle(GymaStyle.accent)
             Text(plan.title).font(.title2.bold())
-            Text("Your planning chat is closed. The workout is ready in Overview and, on its scheduled day, on your Watch.")
+            Text(model.state.canStartAcceptedPlan(plan, now: now)
+                 ? "Your planning chat is closed. Today's workout is available in Overview and on your Watch."
+                 : "Your planning chat is closed. This workout is saved for \(today.date(plan.scheduledDate)); it can only start on its scheduled training day.")
                 .foregroundStyle(.secondary)
+            if !today.status.allowsWorkoutStart { Text(today.message).font(.subheadline).foregroundStyle(.secondary) }
             Button("Done", action: closePlanning).buttonStyle(.borderedProminent)
         }
         .padding(22).frame(maxWidth: .infinity, alignment: .leading)
         .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 24))
     }
 
-    private func acceptedProgram(_ program: TrainingProgram) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+    private func acceptedProgram(_ program: TrainingProgram, now: Date) -> some View {
+        let today = DailyTrainingPresentation(state: model.state, now: now)
+        return VStack(alignment: .leading, spacing: 14) {
             Label("Program saved", systemImage: "checkmark.seal.fill")
                 .font(.headline).foregroundStyle(GymaStyle.accent)
             Text(program.title).font(.title2.bold())
-            Text("Your recurring sessions are ready in your calendar. When you are ready to train, start your next workout from Overview and check in once for that day.")
+            Text("Your recurring sessions are saved. \(today.message)")
                 .foregroundStyle(.secondary)
+            NavigationLink("View training calendar") { TrainingCalendarView() }
             Button("Done", action: closePlanning).buttonStyle(.borderedProminent)
             Button("Discuss program changes", systemImage: "bubble.left.and.bubble.right") { replacePresented = true }
                 .buttonStyle(.bordered)

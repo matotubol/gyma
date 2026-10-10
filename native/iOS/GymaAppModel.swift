@@ -192,7 +192,9 @@ final class GymaAppModel: ObservableObject {
             try plan.validate(catalog: state.catalog)
             try state.validateProgramLink(plan, now: now)
             try state.validatePlanningContext(plan)
-            guard let sessionID = plan.programSessionID, plan.isScheduledForToday(at: now) else {
+            guard state.dailyTrainingStatus(now: now).allowsWorkoutStart,
+                  let sessionID = plan.programSessionID,
+                  plan.isScheduledForToday(at: now, calendar: state.planningCalendar()) else {
                 throw GymaError.stale("Prepare today's session from your saved program before discussing adjustments.")
             }
             var draft = plan

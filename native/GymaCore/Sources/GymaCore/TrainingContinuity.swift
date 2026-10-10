@@ -58,8 +58,13 @@ public extension GymaState {
             conversation.acceptedProgramID = program.id
             conversation.messages.append(.init(role: .assistant, content: "Program saved. Its sessions repeat across your calendar; missed days do not add extra work. Check in when you start a workout so daily adjustments leave the saved program unchanged."))
         } else {
-            conversation.messages.append(.init(role: .assistant, content: "Program saved. Its sessions repeat in order; missed days do not add extra work. Review today's session below."))
-            conversation.plan = try next.nextProgramPlan(checkIn: conversation.checkIn, now: now)
+            if next.dailyTrainingStatus(now: now).allowsWorkoutStart {
+                conversation.messages.append(.init(role: .assistant, content: "Program saved. Its sessions repeat in order; missed days do not add extra work. Review today's session below."))
+                conversation.plan = try next.nextProgramPlan(checkIn: conversation.checkIn, now: now)
+            } else {
+                conversation.plan = nil
+                conversation.messages.append(.init(role: .assistant, content: "Program saved. Check Calendar for your next training date, then check in on that day. Missed days do not add extra work."))
+            }
         }
         try conversation.validate(catalog: catalog)
         next.coachConversation = conversation
@@ -68,6 +73,7 @@ public extension GymaState {
     }
 
     func nextProgramPlan(checkIn: SessionCheckIn, now: Date = Date()) throws -> WorkoutPlan {
+        if trainingCalendar != nil { try validateCalendarWorkoutStart(now: now) }
         guard let program = trainingProgram, let session = program.nextSession(history: workouts, now: now) else {
             throw GymaError.invalid("Save a program before preparing its next session.")
         }

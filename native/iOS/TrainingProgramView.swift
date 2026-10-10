@@ -10,7 +10,14 @@ struct TrainingProgramView: View {
     @State private var archivePresented = false
 
     var body: some View {
-        List {
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            content(at: context.date)
+        }
+    }
+
+    private func content(at now: Date) -> some View {
+        let today = DailyTrainingPresentation(state: model.state, now: now)
+        return List {
             if let program = model.state.trainingProgram {
                 Section {
                     Text(program.title).font(.title2.bold())
@@ -19,8 +26,13 @@ struct TrainingProgramView: View {
                     Text("Version \(program.revision) · Updated \(program.updatedAt.formatted(date: .abbreviated, time: .omitted))")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                if let next = program.nextSession(history: model.state.workouts) {
+                if let next = program.nextSession(history: model.state.workouts, now: now) {
                     Section {
+                        Text(today.sessionPreviewDate).font(.subheadline.weight(.medium))
+                        if !today.status.allowsWorkoutStart {
+                            Text(today.message).font(.subheadline).foregroundStyle(.secondary)
+                            NavigationLink("View calendar") { TrainingCalendarView() }
+                        }
                         let discomfort = recentDiscomfort(program: program, session: next)
                         ForEach(program.recommendations(for: next, history: model.state.workouts, catalog: model.state.catalog, priorPrograms: model.state.programHistory ?? [])) { recommendation in
                             VStack(alignment: .leading, spacing: 6) {
@@ -34,10 +46,15 @@ struct TrainingProgramView: View {
                                 }
                             }.padding(.vertical, 3)
                         }
-                        Button("Start next workout", systemImage: "play.fill") { workoutStartPresented = true }
-                            .disabled(model.state.activeWorkout != nil || model.storageBlocked || model.coachRequestInFlight)
-                    } header: { Text("Next session · \(next.title)") } footer: {
-                        Text("Sessions repeat in order after you finish them. Missed days do not create extra work. Review today's readiness and targets before accepting.")
+                        if today.status.allowsWorkoutStart {
+                            Button("Start today's workout", systemImage: "play.fill") {
+                                guard model.state.dailyTrainingStatus().allowsWorkoutStart else { return }
+                                workoutStartPresented = true
+                            }
+                            .disabled(model.storageBlocked || model.coachRequestInFlight)
+                        }
+                    } header: { Text("Session preview · \(next.title)") } footer: {
+                        Text("Sessions repeat in order after you finish them. Missed days do not create extra work. Start on a scheduled training day and review that day's readiness and targets before accepting.")
                     }
                 }
                 Section("Your recurring sessions") { ProgramSessionsContent(program: program) }

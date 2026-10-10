@@ -36,7 +36,14 @@ struct ProgramWorkoutStartView: View {
         NavigationStack {
             TimelineView(.periodic(from: .now, by: 15)) { context in
                 Form {
-                    if let preview { sessionPreview(preview, at: context.date) }
+                    let today = DailyTrainingPresentation(state: model.state, now: context.date)
+                    if !today.status.allowsWorkoutStart {
+                        Section {
+                            Text(today.title).font(.title2.bold())
+                            Text(today.message).foregroundStyle(.secondary)
+                            NavigationLink("View calendar") { TrainingCalendarView() }
+                        }
+                    } else if let preview { sessionPreview(preview, at: context.date) }
                     else { checkInFields }
                     if let error { Section { Text(error).foregroundStyle(.orange) } }
                 }
@@ -71,7 +78,7 @@ struct ProgramWorkoutStartView: View {
             Text("How are you arriving today?").font(.title2.bold())
             if let program = model.state.trainingProgram,
                let next = program.nextSession(history: model.state.workouts) {
-                Text("Next: \(next.title)").font(.headline)
+                Text("Today: \(next.title)").font(.headline)
             }
             Text("Check in once for this workout. Review today's targets before accepting and starting.")
                 .foregroundStyle(.secondary)
@@ -227,7 +234,8 @@ struct ProgramWorkoutStartView: View {
     private func isCurrent(_ preview: PreparedSession, at now: Date) -> Bool {
         let age = now.timeIntervalSince(preview.readiness.recordedAt)
         return preview.storeID == model.state.storeID && preview.revision == model.state.revision
-            && age >= 0 && age <= 300 && preview.plan.isScheduledForToday(at: now)
+            && model.state.dailyTrainingStatus(now: now).allowsWorkoutStart
+            && age >= 0 && age <= 300 && preview.plan.isScheduledForToday(at: now, calendar: model.state.planningCalendar())
     }
 
     private func matchesDiscussion(_ preview: PreparedSession, at now: Date) -> Bool {
@@ -237,7 +245,8 @@ struct ProgramWorkoutStartView: View {
               conversation.purpose == .workout, conversation.startedWorkoutID == nil,
               conversation.messages.first?.id == discussionFirstMessageID,
               conversation.checkIn == preview.plan.checkIn,
-              preview.plan.programID != nil, preview.plan.isScheduledForToday(at: now) else { return false }
+              preview.plan.programID != nil,
+              preview.plan.isScheduledForToday(at: now, calendar: model.state.planningCalendar()) else { return false }
         return (try? model.state.validateProgramLink(preview.plan, now: now)) != nil
             && (try? model.state.validatePlanningContext(preview.plan)) != nil
     }
@@ -257,7 +266,7 @@ struct ProgramWorkoutStartView: View {
               plan.checkIn == previous.plan.checkIn,
               plan.programID == previous.plan.programID,
               plan.programSessionID == previous.plan.programSessionID,
-              plan.isScheduledForToday() else {
+              plan.isScheduledForToday(calendar: model.state.planningCalendar()) else {
             error = "This discussion did not accept the same daily workout. Review today's session again before starting."
             return
         }
@@ -274,7 +283,8 @@ struct ProgramWorkoutStartView: View {
     private func canConfirmReadiness(_ preview: PreparedSession, at now: Date) -> Bool {
         preview.plan.acceptedAt != nil && model.state.coachConversation?.plan == preview.plan
             && preview.storeID == model.state.storeID && preview.revision == model.state.revision
-            && preview.plan.isScheduledForToday(at: now)
+            && model.state.dailyTrainingStatus(now: now).allowsWorkoutStart
+            && preview.plan.isScheduledForToday(at: now, calendar: model.state.planningCalendar())
             && (try? model.state.validateProgramLink(preview.plan, now: now)) != nil
             && (try? model.state.validatePlanningContext(preview.plan)) != nil
     }
@@ -293,6 +303,11 @@ struct ProgramWorkoutStartView: View {
 
     private func preparePreview() {
         error = nil
+        let status = model.state.dailyTrainingStatus()
+        guard status.allowsWorkoutStart else {
+            error = status.startUnavailableReason
+            return
+        }
         discussionFirstMessageID = nil
         let hours = sleep.trimmingCharacters(in: .whitespacesAndNewlines)
         let value = Double(hours.replacingOccurrences(of: ",", with: "."))

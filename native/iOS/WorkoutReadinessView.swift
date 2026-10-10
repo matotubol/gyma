@@ -22,6 +22,8 @@ struct WorkoutReadinessView: View {
         NavigationStack {
             TimelineView(.periodic(from: .now, by: 30)) { context in
                 Form {
+                    let today = DailyTrainingPresentation(state: model.state, now: context.date)
+                    let canStart = model.state.canStartAcceptedPlan(plan, now: context.date)
                     Section {
                         Text(plan.title).font(.title2.bold())
                         Text("How do you feel right now? This check-in is saved with today's sets, weights and rest.")
@@ -34,11 +36,19 @@ struct WorkoutReadinessView: View {
                     }
                     Section("Muscle soreness") { SorenessFields(soreness: $soreness) }
                     if let error { Section { Text(error).foregroundStyle(.orange) } }
-                    if !plan.isScheduledForToday(at: context.date) {
-                        Section { Text("This plan is not scheduled for today. Create a new plan with your coach.").foregroundStyle(.orange) }
+                    if !canStart {
+                        Section {
+                            Text(today.status.allowsWorkoutStart
+                                 ? "This saved workout is dated \(today.date(plan.scheduledDate)). Return to Overview to review today's available session."
+                                 : today.message).foregroundStyle(.orange)
+                        }
                     }
                     Section {
                         Button {
+                            guard model.state.canStartAcceptedPlan(plan) else {
+                                error = "This workout is no longer available for today. Return to Overview to review your calendar."
+                                return
+                            }
                             let readiness = WorkoutReadiness(energy: energy, soreness: soreness, recordedAt: Date())
                             if let id = model.startCoachPlan(plan.id, readiness: readiness) { onStarted(id) }
                             else { error = model.errorMessage ?? "The plan changed. Return to Overview and review it again." }
@@ -46,7 +56,7 @@ struct WorkoutReadinessView: View {
                             Label("Start workout", systemImage: "play.fill").font(.headline).frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(!model.canAcceptCoachPlan || model.state.coachConversation?.plan != plan || !plan.isScheduledForToday(at: context.date))
+                        .disabled(!model.canAcceptCoachPlan || !canStart)
                     }
                 }
             }

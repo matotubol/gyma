@@ -15,6 +15,17 @@ struct HistoryView: View {
 
     var body: some View {
         List {
+            if search.isEmpty {
+                Section {
+                    Text("Your completed workouts stay here across calendar blocks. Open a session to review its sets, weights and coach discussion.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    NavigationLink {
+                        ProgressViewScreen()
+                    } label: {
+                        Label("Compare exercise progress", systemImage: "chart.xyaxis.line")
+                    }
+                }
+            }
             if workouts.isEmpty {
                 EmptyState(title: search.isEmpty ? "Your story starts here" : "No matching workouts",
                            message: search.isEmpty ? "Completed sessions and your current workout will appear here." : "Try an exercise or workout name.", symbol: "clock.arrow.circlepath")
@@ -193,7 +204,7 @@ struct ProgressViewScreen: View {
                     }
                     .padding(20).background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 22))
                 }
-                SectionHeading(title: "By exercise", subtitle: "Watch the lifts you come back to.")
+                SectionHeading(title: "By exercise", subtitle: "Compare your saved sessions across all calendar blocks.")
                 if trainedExercises.isEmpty {
                     EmptyState(title: "Give it a session", message: "Finish a workout to start seeing your progress here.", symbol: "chart.xyaxis.line")
                 } else {
@@ -303,6 +314,10 @@ private struct ExerciseProgressView: View {
         }.sorted { $0.workout.start < $1.workout.start }
     }
 
+    private var comparison: ExerciseProgressComparison? {
+        ExerciseProgressComparison.make(exercise: exercise, workouts: model.state.workouts)
+    }
+
     var body: some View {
         List {
             if sessions.isEmpty {
@@ -333,12 +348,35 @@ private struct ExerciseProgressView: View {
                     Text("Epley estimate uses positive-load working sets of 1–10 reps, reported as 1–2 more reps or at your limit. Warm-ups, unclassified sets, easy sets and missing effort are excluded. Compare the same equipment and setup; this is a trend, not a tested maximum.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                if let comparison {
+                    Section {
+                        if comparison.hasMultipleExposures {
+                            comparisonRow(comparison.first, label: "First recorded session")
+                            comparisonRow(comparison.latest, label: "Latest recorded session")
+                            let change = comparison.topWorkingLoadChangeKg
+                            LabeledContent("Top working load change", value: "\(change > 0 ? "+" : "")\(change.gymaNumber) kg")
+                        } else {
+                            Text("Your first session is saved. Complete another session for a first-to-latest comparison.")
+                                .font(.subheadline).foregroundStyle(.secondary)
+                        }
+                        NavigationLink {
+                            WorkoutCoachView(workoutID: comparison.latest.workoutID,
+                                             initialQuestion: "Compare my first and latest recorded \(exercise.name) sessions and the recent sets you can see. Explain the changes in kilograms, reps and effort, any missing evidence, and what to consider next time.")
+                        } label: {
+                            Label("Compare with AI coach", systemImage: "bubble.left.and.bubble.right")
+                        }
+                    } header: {
+                        Text("First to latest")
+                    } footer: {
+                        Text("Uses working sets across all saved calendar blocks. Compare the same equipment and setup, and consider reps and effort alongside load. More kilograms alone do not prove a strength gain.")
+                    }
+                }
                 Section("Sessions") {
                     ForEach(sessions.reversed()) { session in
                         NavigationLink { WorkoutDetailView(workoutID: session.workout.id) } label: {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(session.workout.start, format: .dateTime.day().month(.wide).year()).font(.headline)
-                                Text(session.sets.map { "\($0.kg.gymaNumber) × \($0.reps)" }.joined(separator: " · "))
+                                Text(session.sets.map { "\($0.kg.gymaNumber) kg × \($0.reps) reps" }.joined(separator: " · "))
                                     .font(.caption).foregroundStyle(.secondary)
                                 Text(session.estimate.map { "Estimated 1RM: \($0.gymaNumber) kg" } ?? "1RM estimate unavailable for this session")
                                     .font(.caption).foregroundStyle(.secondary)
@@ -356,6 +394,22 @@ private struct ExerciseProgressView: View {
             }
         }
         .navigationTitle(exercise.name).navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func comparisonRow(_ snapshot: ExercisePerformanceSnapshot, label: String) -> some View {
+        NavigationLink {
+            WorkoutDetailView(workoutID: snapshot.workoutID)
+        } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(label).font(.subheadline.weight(.semibold))
+                Text(snapshot.completedAt, format: .dateTime.day().month(.wide).year())
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Top load: \(snapshot.topWorkingLoadKg.gymaNumber) kg · \(snapshot.workingSetCount) working sets · \(snapshot.totalWorkingReps) total reps")
+                    .font(.subheadline)
+                Text("Effort recorded for \(snapshot.workingSetsWithEffort) / \(snapshot.workingSetCount) working sets")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
     }
 }
 

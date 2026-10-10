@@ -14,6 +14,10 @@ Overview includes an eight-week shift calendar with five training days per 10-da
 
 Each calendar day can optionally include **incline treadmill walking, stretching or abs**, with an adjustable duration and a completion check on the day. Activities are saved in native backups and the current block is shared with the coach. Starting a later block keeps the previous calendar in history. Activities do not count as lifting sets or advance the strength program. Recovery walking should stay at an easy conversational effort with speed and incline adjusted as needed; keep stretching comfortable. Abs are resistance work, so optional abs days are spaced apart and checked against known abdominal work. After poor sleep, soreness or pain, reduce or skip extra work. Activity completion is recorded on iPhone; the Watch continues to run strength workouts.
 
+Overview shows **today's calendar status**. With a saved calendar, a new strength workout can start only on a scheduled day in the active block, before a workout has already been recorded that day. Future sessions are previews; phone and Watch starts recheck the saved calendar time zone. An active workout can still be resumed after midnight. Program planning stays available before the block starts and on recovery days.
+
+The eight-week review never deletes workout logs. **History** keeps recorded sessions, weights, reps, rest and reviews across blocks. **Progress > By exercise** shows the first and latest recorded working weights, sets, reps and effort coverage, plus the full session list and eligible estimated-strength trend. **Compare with AI coach** opens a review of that exercise using its retained first/latest baseline and recent training evidence. A load change alone does not establish improvement; equipment, repetitions and effort still matter. The coach receives bounded history summaries, not an unlimited copy of every past conversation.
+
 ## Build through GitHub Actions
 
 Push native changes to `swift` to run **Swift iPhone + Watch build**. Native changes on `main` and pull requests also run it. Manual dispatch:

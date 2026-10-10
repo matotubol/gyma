@@ -42,11 +42,12 @@ public struct CompanionSnapshot: Codable, Sendable, Equatable {
     /// Distinguishes a bounded set window from omitted exercises when deciding whether the session is complete.
     public var totalExerciseCount: Int?
     public init(state: GymaState, now: Date = Date(), calendar: Calendar = .current) {
+        let calendar = state.planningCalendar(fallback: calendar)
         storeID = state.storeID; revision = state.revision; generatedAt = now; restTimer = state.restTimer; isTruncated = false
         totalExerciseCount = state.activeWorkout?.exercises.count
         if state.activeWorkout == nil, state.coachConversation?.startedWorkoutID == nil,
            let plan = state.coachConversation?.plan, plan.acceptedAt != nil,
-           plan.isScheduledForToday(at: now, calendar: calendar) { readyPlan = ReadyWorkoutPlan(plan: plan, calendar: calendar) }
+           state.canStartAcceptedPlan(plan, now: now, calendar: calendar) { readyPlan = ReadyWorkoutPlan(plan: plan, calendar: calendar) }
         if readyPlan == nil { readyPlan = state.readyProgramPlan(now: now, calendar: calendar) }
         var workout = state.activeWorkout
         if var current = workout {
@@ -118,7 +119,7 @@ public enum GymaReducer {
             switch command.action {
             case .startAcceptedPlan(let planID, let readiness):
                 guard command.workoutID == planID else { throw GymaError.invalid("The start command does not match its accepted plan.") }
-                guard age <= 300, calendar.isDate(command.createdAt, inSameDayAs: now),
+                guard age <= 300, state.planningCalendar(fallback: calendar).isDate(command.createdAt, inSameDayAs: now),
                       readiness.recordedAt <= command.createdAt,
                       command.createdAt.timeIntervalSince(readiness.recordedAt) <= 300 else {
                     throw GymaError.stale("The start request expired. Refresh today's plan and check your readiness again.")
