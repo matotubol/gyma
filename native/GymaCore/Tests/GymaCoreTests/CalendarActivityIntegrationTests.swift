@@ -92,7 +92,8 @@ final class CalendarActivityIntegrationTests: XCTestCase {
 
     func testActivityChangeInvalidatesDraftButPreservesConversationAndProgram() throws {
         var state = try configuredState()
-        state.coachConversation = .init(messages: [.init(role: .user, content: "Keep my program and add an easy walk.")])
+        state.coachConversation = .init(checkIn: .init(shift: .off, energy: .good),
+                                        messages: [.init(role: .user, content: "Keep my program and add an easy walk.")])
         state.coachConversation?.proposedProgram = state.trainingProgram
         let before = state
         try state.setCalendarActivity(on: date(15), kind: .inclineWalking, isPlanned: true, durationMinutes: 20, now: date(13))
