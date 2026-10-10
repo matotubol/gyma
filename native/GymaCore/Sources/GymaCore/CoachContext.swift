@@ -2,16 +2,27 @@ import Foundation
 
 /// App-owned evidence and calculations. The language model explains these; it does not manufacture them.
 public enum CoachContext {
+    /// Shared by planning and live coaching so optional activity never becomes fabricated strength data.
+    public static let optionalActivityGuidance = """
+    Optional activities are user-chosen additions on individual calendar dates: incline treadmill walking, gentle stretching, or abs. A strength rest day may include one of these without becoming a rotating strength session. Discuss optional activity without creating or revising an unrelated strength plan. Planned activity is not completed activity; a completion marker is a user report, not measured sets or wearable evidence. Optional activity never advances the upper/lower rotation. Never claim to schedule, complete or save activity through chat.
+    On recovery days, keep incline treadmill walking easy enough for comfortable full-sentence conversation; adjust speed, incline and duration to current comfort and fatigue. Do not assume a particular gradient, speed or duration is easy for this person. Keep stretching gentle and comfortable, never painful. After night shifts, prioritize sleep before deciding whether to train; being off work does not prove readiness.
+    Abs are resistance training, not an automatic daily recovery activity. Leave at least one full recovery day between hard sessions for the same muscles, including direct ab work in strength workouts. Consider recent and upcoming direct ab work, soreness, poor sleep and pain before suggesting optional abs; reduce or skip work when recovery is doubtful and never train through pain. A calendar abs duration is a time budget, not sets, repetitions, load, intensity or proof of recovery. Do not infer hard or easy intensity from an activity completion marker.
+    The structured strength schemas support repetition-based exercises only. Never encode walking or stretching minutes, distance, speed, incline or timed holds as repetitions or kilograms. Keep walking/stretching advice in message text and direct the user to calendar activity controls to save it. Use plan:null and program:null for activity-only advice unless a strength proposal is explicitly requested; live-workout activity-only advice uses change:null. Only in daily workout planning, a requested standalone repetition-based abs workout can use supported catalog exercises with programSessionID:null; do not attach it to the next upper/lower session merely to log optional abs. Recurring-program planning must still return plan:null; live coaching can only propose supported changes to the existing workout.
+    Recovery reference: https://www.mayoclinic.org/healthy-lifestyle/fitness/basics/strength-training/hlv-20049447 . Talking effort reference: https://www.cdc.gov/physical-activity-basics/measuring/ . Easy recovery activity and adjustable activity time budgets are conservative product guidance, not a personalized medical prescription.
+    """
+
     public static let principles = """
     Training principles, reviewed 2026-10-09: use a repeatable program matched to goals, equipment, preferences and available time. More volume and training to failure are not automatically better. ACSM 2026: https://acsm.org/resistance-training-guidelines-update-2026/ . Repetition and load progression are both viable: https://pubmed.ncbi.nlm.nih.gov/36199287/ . Near-failure training can build muscle without requiring failure on every set: https://pubmed.ncbi.nlm.nih.gov/38393985/ . These population findings are starting principles, not proof of an individual's optimal dose. Progression thresholds and session-duration estimates in this app are transparent product heuristics. Do not infer injury risk, medical diagnoses, exact recovery percentages or causation from correlations. Preserve unknown effort and unclassified sets. Pain differs from soreness. A normal wearable reading cannot establish muscular recovery. Stable profile facts are confirmed by the user; dated check-ins and workout feedback are temporary context, never permanent facts. Never claim to have saved a new fact or changed the profile through chat.
     """
 
     public static func text(profile: AthleteProfile?, program: TrainingProgram?, history: [Workout],
                             catalog: [ExerciseDefinition], reviews: [WorkoutReview] = [], feedback: [WorkoutFeedback] = [],
-                            relevantExerciseIDs: [String] = [], now: Date = Date(), priorPrograms: [TrainingProgram] = [], trainingCalendar: TrainingCalendarPlan? = nil) throws -> String {
+                            relevantExerciseIDs: [String] = [], now: Date = Date(), priorPrograms: [TrainingProgram] = [], trainingCalendar: TrainingCalendarPlan? = nil,
+                            trainingCalendarHistory: [TrainingCalendarPlan] = []) throws -> String {
         try profile?.validate()
         try program?.validate(catalog: catalog)
         try trainingCalendar?.validate()
+        for archived in trainingCalendarHistory { try archived.validate() }
         var boundedProfile = profile
         boundedProfile?.bodyweightHistory = Array((profile?.bodyweightHistory ?? []).sorted { $0.recordedAt > $1.recordedAt }.prefix(90))
         let requested = relevantExerciseIDs.isEmpty ? (program?.nextSession(history: history, now: now)?.exercises.map(\.exerciseID) ?? []) : relevantExerciseIDs
@@ -28,6 +39,8 @@ public enum CoachContext {
         Confirmed athlete profile (bodyweight limited to latest 90 measurements): \(try json(boundedProfile))
         Accepted program: \(try json(program))
         \(try calendarContext(trainingCalendar, program: program, history: history, now: now))
+        Recent reported-completed optional activities from archived blocks (past seven local dates, latest 14 records): \(try json(recentArchivedActivities(trainingCalendarHistory, now: now)))
+        Archived activity dates use each record's saved time zone. They inform recent recovery; they are not the current schedule. Completion does not establish intensity, measured performance or readiness.
         Next rotating session: \(try json(program?.nextSession(history: history, now: now)))
         Deterministic next-session targets before today's readiness/time adjustments: \(try json(program.flatMap { p in p.nextSession(history: history, now: now).map { p.recommendations(for: $0, history: history, now: now, catalog: catalog, priorPrograms: priorPrograms) } }))
         Exercise equipment, direct and secondary muscle metadata: \(try json(catalog.map { CatalogContext(id: $0.id, metadata: $0.trainingMetadata) }))
@@ -46,6 +59,29 @@ public enum CoachContext {
         """
     }
 
+    private static func recentArchivedActivities(_ plans: [TrainingCalendarPlan], now: Date) -> [ArchivedActivity] {
+        var records: [(date: Date, activity: ArchivedActivity)] = []
+        for plan in plans {
+            let today = plan.calendar.startOfDay(for: now)
+            guard let earliest = plan.calendar.date(byAdding: .day, value: -6, to: today) else { continue }
+            let formatter = DateFormatter()
+            formatter.calendar = plan.calendar; formatter.timeZone = plan.calendar.timeZone
+            formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"
+            for activity in plan.activities where activity.isCompleted {
+                guard let date = plan.date(at: activity.dayOffset), date >= earliest, date <= today, date <= now else { continue }
+                records.append((date, ArchivedActivity(localDate: formatter.string(from: date), timeZoneIdentifier: plan.timeZoneIdentifier,
+                                                       kind: activity.kind, durationMinutes: activity.durationMinutes)))
+            }
+        }
+        return records.sorted {
+            if $0.date != $1.date { return $0.date > $1.date }
+            if $0.activity.timeZoneIdentifier != $1.activity.timeZoneIdentifier {
+                return $0.activity.timeZoneIdentifier < $1.activity.timeZoneIdentifier
+            }
+            return $0.activity.kind.rawValue < $1.activity.kind.rawValue
+        }.prefix(14).map { $0.activity }
+    }
+
     private static func calendarContext(_ plan: TrainingCalendarPlan?, program: TrainingProgram?, history: [Workout], now: Date) throws -> String {
         guard let plan else { return "No saved training calendar. Ask about scheduling preferences when needed." }
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
@@ -53,22 +89,35 @@ public enum CoachContext {
         let formatter = DateFormatter()
         formatter.calendar = plan.calendar; formatter.timeZone = plan.calendar.timeZone
         formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd"
-        let upcoming = plan.entries(program: program, history: history, now: now)
+        let entries = plan.entries(program: program, history: history, now: now)
+        let upcoming = entries
             .filter { $0.date >= plan.calendar.startOfDay(for: now) && $0.isTraining && $0.workouts.isEmpty }
             .map { "\(formatter.string(from: $0.date)): \($0.shift.label), \($0.session?.title ?? "training slot; no saved session")" }
             .joined(separator: "\n")
+        let activities = entries.filter { !$0.activities.isEmpty }.map { entry in
+            let details = entry.activities.map { activity in
+                "\(activity.kind.rawValue): \(activity.isCompleted ? "reported completed" : "planned only"), \(activity.durationMinutes) minutes (time budget)"
+            }.joined(separator: "; ")
+            return "\(formatter.string(from: entry.date)): \(details)"
+        }.joined(separator: "\n")
         return """
         User-confirmed eight-week training calendar: \(saved)
         Shift cycle: 2 mornings, 2 afternoons, 2 nights, 4 days off; cycle day 1 is the saved first morning date. Scheduled baseline: \(plan.trainingCycleDays.count) sessions per 10 days, NOT per week. Date exceptions are explicit user choices.
+        Training block starts \(formatter.string(from: plan.startDate)); first morning shift anchor is \(formatter.string(from: plan.cycleAnchorDate)). These dates are independent: the block can begin on days off before the first morning shift. Start-day shift: \(plan.shift(on: plan.startDate).label), cycle day \(plan.cycleDay(on: plan.startDate)).
         Calendar dates in \(plan.timeZoneIdentifier): \(formatter.string(from: plan.startDate)) through \(formatter.string(from: plan.lastDate)); review on \(formatter.string(from: plan.reviewDate)). Block has ended: \(now >= plan.reviewDate).
         Upper/lower preference: \(plan.prefersUpperLower ? "Yes. When creating or revising a program, propose alternating upper/lower sessions in continuous order across cycles, subject to profile constraints and user review. Do not silently replace an existing program." : "Follow the saved program and discuss the user's preferred split.")
         Upcoming projected sessions, assuming future planned sessions are completed:
         \(upcoming.isEmpty ? "None remaining in this block." : upcoming)
+        Optional activity by local calendar date, separate from strength sessions:
+        \(activities.isEmpty ? "None saved. Do not assume optional activity was planned or completed." : activities)
         While the block is current, the confirmed calendar takes precedence over the profile's approximate days-per-week field. An expired block is historical, not a new schedule. The calendar does not prove recovery or completion. Missed dates never add catch-up volume or advance the actual program. Only logged, linked completed training advances rotation; future labels may shift after missed or extra sessions. Keep the program's useful exercises stable while progressing from observed performance. The eight-week review date does not require new exercises, a deload or an automatic increase in workload. You may discuss changes, but calendar edits must be made explicitly in the app; never claim to have saved dates or workouts through chat.
         """
     }
 
     private struct CatalogContext: Encodable { let id: String; let metadata: ExerciseMetadata? }
+    private struct ArchivedActivity: Encodable {
+        let localDate: String; let timeZoneIdentifier: String; let kind: CalendarActivityKind; let durationMinutes: Int
+    }
     private struct RelevantExerciseRecords: Encodable { let exerciseID: String; let exposures: [RelevantRecord] }
     private struct RelevantRecord: Encodable { let workoutID: String; let date: Date; let target: ExerciseTarget?; let sets: [WorkSet]; let totalLoggedSets: Int }
 }

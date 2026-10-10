@@ -16,7 +16,8 @@ public enum CoachAPI {
 
     public static func requestBody(conversation: CoachConversation, catalog: [ExerciseDefinition], history: [Workout],
                                    profile: AthleteProfile? = nil, program: TrainingProgram? = nil,
-                                   reviews: [WorkoutReview] = [], feedback: [WorkoutFeedback] = [], now: Date = Date(), priorPrograms: [TrainingProgram] = [], trainingCalendar: TrainingCalendarPlan? = nil) throws -> Data {
+                                   reviews: [WorkoutReview] = [], feedback: [WorkoutFeedback] = [], now: Date = Date(), priorPrograms: [TrainingProgram] = [], trainingCalendar: TrainingCalendarPlan? = nil,
+                                   trainingCalendarHistory: [TrainingCalendarPlan] = []) throws -> Data {
         try conversation.validate(catalog: catalog)
         guard conversation.startedWorkoutID == nil else { throw GymaError.invalid("Check in again to create your next workout.") }
         guard !catalog.isEmpty else { throw GymaError.invalid("Add exercises before asking the coach for a plan.") }
@@ -35,7 +36,7 @@ public enum CoachAPI {
         Recent completed training (readiness, planned targets, actual sets and rest seconds): \(try historyContext(history))
         Current proposed program: \(try json(conversation.proposedProgram))
         Pending exercise additions, not yet saved in the catalog: \(try json(conversation.proposedExercises))
-        \(try CoachContext.text(profile: profile, program: program, history: history, catalog: catalog, reviews: reviews, feedback: feedback, relevantExerciseIDs: relevant, now: now, priorPrograms: priorPrograms, trainingCalendar: trainingCalendar))
+        \(try CoachContext.text(profile: profile, program: program, history: history, catalog: catalog, reviews: reviews, feedback: feedback, relevantExerciseIDs: relevant, now: now, priorPrograms: priorPrograms, trainingCalendar: trainingCalendar, trainingCalendarHistory: trainingCalendarHistory))
         """
         var input: [[String: String]] = [["role": "user", "content": context]]
         input += conversation.messages.suffix(40).map { ["role": $0.role.rawValue, "content": $0.content] }
@@ -44,7 +45,7 @@ public enum CoachAPI {
             "store": false,
             "reasoning": ["effort": "low"],
             "max_output_tokens": 14000,
-            "instructions": (conversation.isProgramPlanning ? programInstructions : instructions) + "\n" + exerciseInstructions,
+            "instructions": (conversation.isProgramPlanning ? programInstructions : instructions) + "\n" + exerciseInstructions + "\n" + CoachContext.optionalActivityGuidance,
             "input": input,
             "text": ["format": ["type": "json_schema", "name": "gyma_coach_reply", "strict": true, "schema": schema(catalog: catalog, program: program, isProgramPlanning: conversation.isProgramPlanning)]]
         ]

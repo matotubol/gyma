@@ -70,6 +70,7 @@ private struct CalendarPreviewDay: View {
             Text(calendarDate(day.date, plan: plan, template: "d")).font(.subheadline.bold())
             Image(systemName: calendarDaySymbol(day)).font(.caption)
                 .foregroundStyle(day.isTraining ? GymaStyle.accent : Color.secondary)
+            CalendarActivityIndicators(activities: day.activities)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 8)
         .background(day.isTraining ? GymaStyle.accent.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
@@ -126,8 +127,10 @@ struct TrainingCalendarView: View {
             Label("A plan that fits your shifts", systemImage: "calendar.badge.clock")
                 .font(.title2.bold()).foregroundStyle(GymaStyle.accent)
             Text("See 56 days of training and recovery, with five sessions in each 10-day shift cycle.")
-            Text("Your default is after morning shift 2, before night shift 1, and days off 2, 3 and 4. Your first morning shift is 17 October 2026.")
+            Text("Start training on 13 October 2026, after sleep following your night shifts. Your first morning shift stays on 17 October. The opening strength dates are 13, 14 and 16 October.")
                 .foregroundStyle(.secondary)
+            Text("Add optional incline walking, stretching or abs to individual days. These activities keep your strength program in its usual order.")
+                .font(.subheadline).foregroundStyle(.secondary)
             Button("Set up eight weeks", systemImage: "plus") { setupPresented = true }
                 .buttonStyle(.borderedProminent).disabled(model.storageBlocked || model.state.activeWorkout != nil)
             NavigationLink("View your recurring program") { TrainingProgramView() }
@@ -156,13 +159,21 @@ struct TrainingCalendarView: View {
                 NavigationLink("Review your program") { TrainingProgramView() }
                     .font(.subheadline.bold())
             }.padding(18).background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 20))
+            if model.state.trainingCalendarHistory?.isEmpty == false {
+                NavigationLink {
+                    TrainingCalendarHistoryView()
+                } label: {
+                    Label("Previous calendar blocks", systemImage: "clock.arrow.circlepath")
+                        .font(.subheadline.bold())
+                }
+            }
         }
     }
 
     private func blockSummary(_ plan: TrainingCalendarPlan, entries: [TrainingCalendarDay]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(calendarRange(plan)).font(.title2.bold())
-            Text("56 days · \(entries.filter(\.isTraining).count) planned sessions")
+            Text("56 days · \(entries.filter(\.isTraining).count) planned strength sessions")
                 .font(.subheadline).foregroundStyle(GymaStyle.accent)
             Text("2 mornings · 2 afternoons · 2 nights · 4 days off")
                 .font(.subheadline).foregroundStyle(.secondary)
@@ -186,6 +197,66 @@ struct TrainingCalendarView: View {
 }
 
 private struct CalendarDaySelection: Identifiable { let id: Int }
+
+private struct TrainingCalendarHistoryView: View {
+    @EnvironmentObject private var model: GymaAppModel
+    private var plans: [TrainingCalendarPlan] { model.state.trainingCalendarHistory ?? [] }
+
+    var body: some View {
+        List {
+            ForEach(Array(plans.enumerated().reversed()), id: \.offset) { _, plan in
+                NavigationLink {
+                    ArchivedCalendarPlanView(plan: plan)
+                } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(calendarRange(plan)).font(.headline)
+                        Text("\(plan.activities.filter(\.isCompleted).count) optional activities completed")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Calendar history")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct ArchivedCalendarPlanView: View {
+    @EnvironmentObject private var model: GymaAppModel
+    let plan: TrainingCalendarPlan
+
+    var body: some View {
+        List {
+            Section {
+                Text(calendarRange(plan)).font(.headline)
+                Text("Your saved schedule and optional activity records for this block.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+            ForEach(plan.entries(program: nil, history: model.state.workouts)) { day in
+                Section(calendarDate(day.date, plan: plan, template: "EEEE d MMMM")) {
+                    LabeledContent(calendarCycleLabel(day.cycleDay), value: day.isTraining ? "Strength" : "Recovery")
+                    ForEach(day.workouts) { workout in
+                        NavigationLink {
+                            if workout.isActive { ActiveWorkoutView(workoutID: workout.id) }
+                            else { WorkoutDetailView(workoutID: workout.id) }
+                        } label: {
+                            Label(workout.title, systemImage: workout.isActive ? "record.circle" : "checkmark.circle.fill")
+                        }
+                    }
+                    ForEach(day.activities) { activity in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label(activity.kind.title, systemImage: calendarActivitySymbol(activity.kind))
+                            Text("\(activity.durationMinutes) min · \(activity.isCompleted ? "Completed" : "Planned")")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle("Previous block")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
 
 private struct CalendarSessionKey: View {
     let sessions: [ProgramSession]
@@ -215,6 +286,11 @@ private struct CalendarLegend: View {
             HStack(spacing: 16) {
                 Label("Completed", systemImage: "checkmark.circle.fill")
                 Label("Active", systemImage: "record.circle")
+            }
+            HStack(spacing: 12) {
+                Label("Walk", systemImage: "figure.walk")
+                Label("Stretch", systemImage: "figure.flexibility")
+                Label("Abs", systemImage: "figure.core.training")
             }
             Text("M = morning · A = afternoon · N = night · O = off")
         }.font(.caption).foregroundStyle(.secondary)
@@ -280,14 +356,30 @@ private struct CalendarDayCell: View {
                     if let sessionNumber { Text("\(sessionNumber)").fontWeight(.semibold) }
                 }.font(.caption2)
                     .foregroundStyle(day.isTraining || !day.workouts.isEmpty ? GymaStyle.accent : Color.secondary)
+                CalendarActivityIndicators(activities: day.activities)
             }
-            .frame(maxWidth: .infinity, minHeight: 66)
+            .frame(maxWidth: .infinity, minHeight: 82)
             .background(day.isTraining ? GymaStyle.accent.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
             .overlay { RoundedRectangle(cornerRadius: 10).stroke(isToday ? GymaStyle.accent : Color.clear, lineWidth: 2) }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(calendarDayAccessibility(day, plan: plan, now: now))
-        .accessibilityHint("Show session details and calendar options")
+        .accessibilityHint("Show strength details, optional activities and calendar options")
+    }
+}
+
+private struct CalendarActivityIndicators: View {
+    let activities: [CalendarActivity]
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(activities) { activity in
+                Image(systemName: calendarActivitySymbol(activity.kind))
+                    .foregroundStyle(activity.isCompleted ? GymaStyle.accent : Color.secondary)
+            }
+        }
+        .font(.system(size: 10)).frame(height: 12)
+        .accessibilityHidden(true)
     }
 }
 
@@ -382,6 +474,7 @@ private struct TrainingCalendarDayView: View {
                 Text("Program planning uses your goals and schedule. Today's sleep, energy and soreness are collected only when starting a workout.")
             }
         }
+        CalendarDayActivities(day: day, plan: plan, now: now)
         Section {
             if calendarCanEdit(day, plan: plan, state: model.state, now: now) {
                 Button(day.isTraining ? "Make this a recovery day" : "Plan training on this day", systemImage: day.isTraining ? "moon.zzz" : "dumbbell") {
@@ -413,6 +506,100 @@ private struct TrainingCalendarDayView: View {
         } header: { Text("Preview · \(session.title)") } footer: {
             Text("These are your saved program's base targets. Loads, repetitions and readiness are reviewed when you prepare the session.")
         }
+    }
+}
+
+private struct CalendarDayActivities: View {
+    @EnvironmentObject private var model: GymaAppModel
+    @State private var error: String?
+    let day: TrainingCalendarDay
+    let plan: TrainingCalendarPlan
+    let now: Date
+
+    private var canEdit: Bool {
+        day.date >= plan.calendar.startOfDay(for: now)
+    }
+
+    private var isToday: Bool { plan.calendar.isDate(day.date, inSameDayAs: now) }
+
+    private var availableKinds: [CalendarActivityKind] {
+        CalendarActivityKind.allCases.filter { kind in !day.activities.contains(where: { $0.kind == kind }) }
+    }
+
+    var body: some View {
+        Section {
+            if day.activities.isEmpty {
+                Text("No optional activities planned.").foregroundStyle(.secondary)
+            }
+            ForEach(day.activities) { activity in activityRow(activity) }
+            if canEdit && !availableKinds.isEmpty {
+                Menu {
+                    ForEach(availableKinds) { kind in
+                        Button(kind.title, systemImage: calendarActivitySymbol(kind)) {
+                            updateActivity { try $0.setCalendarActivity(on: day.date, kind: kind, isPlanned: true, now: Date()) }
+                        }
+                    }
+                } label: {
+                    Label("Add an optional activity", systemImage: "plus.circle")
+                }.disabled(model.storageBlocked)
+            }
+            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+        } header: { Text("Optional activities") } footer: {
+            Text("Add these on strength or recovery days when you feel recovered. Walking and stretching can stay easy; hard abs sessions need recovery too. Activities do not advance your strength program. Mark them done on the day; past dates stay unchanged.")
+        }
+    }
+
+    private func activityRow(_ activity: CalendarActivity) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label(activity.kind.title, systemImage: calendarActivitySymbol(activity.kind)).font(.headline)
+                Spacer()
+                if activity.isCompleted {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(GymaStyle.accent)
+                        .accessibilityLabel("Completed")
+                }
+            }
+            if canEdit && !activity.isCompleted {
+                Stepper(value: Binding(get: { activity.durationMinutes }, set: { minutes in
+                    updateActivity {
+                        try $0.setCalendarActivity(on: day.date, kind: activity.kind, isPlanned: true, durationMinutes: minutes, now: Date())
+                    }
+                }), in: activity.kind.durationRange, step: 5) {
+                    Text("\(activity.durationMinutes) min").font(.subheadline)
+                }
+                .accessibilityLabel("\(activity.kind.title) duration")
+                .disabled(model.storageBlocked)
+            } else {
+                Text("\(activity.durationMinutes) min · \(activity.isCompleted ? "Completed" : "Planned")")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+            Text(activity.kind.guidance).font(.caption).foregroundStyle(.secondary)
+            if canEdit {
+                HStack {
+                    if isToday {
+                        Button(activity.isCompleted ? "Undo completion" : "Mark done", systemImage: activity.isCompleted ? "arrow.uturn.backward" : "checkmark") {
+                            updateActivity {
+                                try $0.setCalendarActivityCompleted(on: day.date, kind: activity.kind, isCompleted: !activity.isCompleted, now: Date())
+                            }
+                        }
+                        .disabled(model.storageBlocked)
+                    }
+                    Spacer()
+                    if !activity.isCompleted {
+                        Button("Remove", role: .destructive) {
+                            updateActivity {
+                                try $0.setCalendarActivity(on: day.date, kind: activity.kind, isPlanned: false, now: Date())
+                            }
+                        }
+                        .disabled(model.storageBlocked)
+                    }
+                }.font(.subheadline).buttonStyle(.borderless)
+            }
+        }.padding(.vertical, 5)
+    }
+
+    private func updateActivity(_ mutation: (inout GymaState) throws -> Void) {
+        error = model.update(mutation) ? nil : model.errorMessage
     }
 }
 
@@ -463,26 +650,60 @@ private struct TrainingCalendarSetupView: View {
     @State private var cycleAnchorDate: Date
     @State private var trainingDays: Set<Int>
     @State private var prefersUpperLower: Bool
+    @State private var openingScheduleRequested = false
     @State private var error: String?
     private let timeZone: TimeZone
+    private let basePlan: TrainingCalendarPlan
 
     init(existing: TrainingCalendarPlan?) {
         self.existing = existing
         let zone = existing.flatMap { TimeZone(identifier: $0.timeZoneIdentifier) } ?? TimeZone(identifier: "Europe/Amsterdam") ?? .current
         timeZone = zone
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = zone
-        let anchor = calendar.date(from: DateComponents(year: 2026, month: 10, day: 17)) ?? Date()
-        _startDate = State(initialValue: existing?.startDate ?? max(anchor, calendar.startOfDay(for: Date())))
-        _cycleAnchorDate = State(initialValue: existing?.cycleAnchorDate ?? anchor)
-        _trainingDays = State(initialValue: Set(existing?.trainingCycleDays ?? [2, 5, 8, 9, 10]))
-        _prefersUpperLower = State(initialValue: existing?.prefersUpperLower ?? true)
+        let plan = existing ?? TrainingCalendarPlan.defaultPlan(now: Date(), timeZone: zone)
+        basePlan = plan
+        _startDate = State(initialValue: plan.startDate)
+        _cycleAnchorDate = State(initialValue: plan.cycleAnchorDate)
+        _trainingDays = State(initialValue: Set(plan.trainingCycleDays))
+        _prefersUpperLower = State(initialValue: plan.prefersUpperLower)
     }
 
     private var preview: TrainingCalendarPlan {
-        var plan = TrainingCalendarPlan(startDate: startDate, cycleAnchorDate: cycleAnchorDate, trainingCycleDays: trainingDays.sorted(), timeZone: timeZone, prefersUpperLower: prefersUpperLower)
-        if let existing, plan.startDate == existing.startDate {
-            plan.dayOverrides = existing.dayOverrides
+        (try? configuredPlan()) ?? TrainingCalendarPlan(startDate: startDate, cycleAnchorDate: cycleAnchorDate, trainingCycleDays: trainingDays.sorted(), timeZone: timeZone, prefersUpperLower: prefersUpperLower)
+    }
+
+    private var openingStartDate: Date {
+        basePlan.calendar.date(from: DateComponents(year: 2026, month: 10, day: 13)) ?? basePlan.startDate
+    }
+
+    private var firstMorningDate: Date {
+        basePlan.calendar.date(from: DateComponents(year: 2026, month: 10, day: 17)) ?? basePlan.cycleAnchorDate
+    }
+
+    private var configurationError: String? {
+        do { _ = try configuredPlan(); return nil }
+        catch { return error.localizedDescription }
+    }
+
+    private func configuredPlan() throws -> TrainingCalendarPlan {
+        var plan: TrainingCalendarPlan
+        if existing != nil {
+            plan = try basePlan.reconfigured(startDate: startDate, cycleAnchorDate: cycleAnchorDate, trainingCycleDays: trainingDays.sorted(), prefersUpperLower: prefersUpperLower)
+        } else {
+            plan = TrainingCalendarPlan(startDate: startDate, cycleAnchorDate: cycleAnchorDate, trainingCycleDays: trainingDays.sorted(), timeZone: timeZone, prefersUpperLower: prefersUpperLower)
+            if plan.cycleAnchorDate == firstMorningDate {
+                for override in basePlan.dayOverrides {
+                    if let date = basePlan.date(at: override.dayOffset), let offset = plan.dayOffset(for: date) {
+                        plan.dayOverrides.append(.init(dayOffset: offset, isTraining: override.isTraining))
+                    }
+                }
+            }
+            try plan.validate()
+        }
+        if openingScheduleRequested, plan.startDate == openingStartDate, plan.cycleAnchorDate == firstMorningDate {
+            try plan.setTrainingDay(on: openingStartDate, isTraining: true, now: Date())
+            if let recoveryDate = plan.calendar.date(byAdding: .day, value: 2, to: openingStartDate) {
+                try plan.setTrainingDay(on: recoveryDate, isTraining: false, now: Date())
+            }
         }
         return plan
     }
@@ -495,8 +716,25 @@ private struct TrainingCalendarSetupView: View {
                     DatePicker("First morning shift", selection: $cycleAnchorDate, displayedComponents: .date)
                     Text("Eight weeks: \(calendarRange(preview))\nReview: \(calendarDate(preview.reviewDate, plan: preview, template: "d MMMM yyyy"))")
                         .font(.caption).foregroundStyle(.secondary)
+                    if existing != nil, basePlan.calendar.startOfDay(for: Date()) <= openingStartDate {
+                        Button("Start on 13 October") {
+                            startDate = openingStartDate
+                            cycleAnchorDate = firstMorningDate
+                            openingScheduleRequested = true
+                            error = nil
+                        }.disabled(model.storageBlocked || model.state.activeWorkout != nil)
+                    }
                 } header: { Text("Your dates") } footer: {
-                    Text("The first morning shift anchors the repeating 10-day cycle. Dates stay in \(timeZone.identifier).")
+                    Text("The block can start before your first morning shift. That shift anchors the repeating 10-day cycle. Dates stay in \(timeZone.identifier).")
+                }
+                if preview.startDate == openingStartDate, preview.cycleAnchorDate == firstMorningDate {
+                    Section("Your first days off") {
+                        ForEach(Array(preview.entries(program: nil, history: []).prefix(4))) { day in
+                            LabeledContent(calendarDate(day.date, plan: preview, template: "EEE d MMM"), value: day.isTraining ? "Strength" : "Recovery")
+                        }
+                        Text("On 13 October, sleep after your final night shift before training. Check your energy and soreness; move the session if you need more recovery.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 Section {
                     ForEach(1...10, id: \.self) { day in
@@ -521,14 +759,17 @@ private struct TrainingCalendarSetupView: View {
                 }
                 if existing != nil {
                     Section {
-                        Text("Individual date changes are kept when the block start stays the same. A new start date replaces the calendar schedule. Recorded workouts are kept. Past dates and dates with recorded training cannot be changed.")
+                        Text(startDate > basePlan.lastDate
+                             ? "This starts a new eight-week block. Your previous calendar and optional activity records will stay in calendar history."
+                             : "Individual date changes and optional activities keep their calendar dates when the block start changes. A change that would leave any of them outside the block must be resolved first. Recorded training and completed activities are kept.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                if let configurationError { Section { Text(configurationError).foregroundStyle(.red) } }
                 if let error { Section { Text(error).foregroundStyle(.red) } }
                 Section {
                     Button(existing == nil ? "Create calendar" : "Save calendar") { save() }
-                        .disabled(trainingDays.count != 5 || model.storageBlocked || model.state.activeWorkout != nil)
+                        .disabled(trainingDays.count != 5 || configurationError != nil || model.storageBlocked || model.state.activeWorkout != nil)
                 } footer: {
                     Text("The calendar reserves training dates. It does not start workouts or replace your program at the end of eight weeks. Changing the calendar clears an unstarted draft. Check in again before training.")
                 }
@@ -542,9 +783,11 @@ private struct TrainingCalendarSetupView: View {
     }
 
     private func save() {
-        let plan = preview
-        if model.update({ try $0.saveTrainingCalendar(plan, now: Date()) }) { dismiss() }
-        else { error = model.errorMessage }
+        do {
+            let plan = try configuredPlan()
+            if model.update({ try $0.saveTrainingCalendar(plan, now: Date()) }) { dismiss() }
+            else { error = model.errorMessage }
+        } catch { self.error = error.localizedDescription }
     }
 }
 
@@ -603,12 +846,22 @@ private func calendarDaySymbol(_ day: TrainingCalendarDay) -> String {
     return day.isTraining ? "dumbbell.fill" : "minus"
 }
 
+private func calendarActivitySymbol(_ kind: CalendarActivityKind) -> String {
+    switch kind {
+    case .inclineWalking: return "figure.walk"
+    case .stretching: return "figure.flexibility"
+    case .abs: return "figure.core.training"
+    }
+}
+
 private func calendarDayAccessibility(_ day: TrainingCalendarDay, plan: TrainingCalendarPlan, now: Date) -> String {
     let date = calendarDate(day.date, plan: plan, template: "EEEE d MMMM yyyy")
     let training = day.isTraining ? day.session?.title ?? "Training" : "Recovery"
     let status = day.workouts.contains(where: { $0.isActive }) ? ", workout in progress" : (!day.workouts.isEmpty ? ", completed workout" : "")
     let today = plan.calendar.isDate(day.date, inSameDayAs: now) ? "Today, " : ""
-    return "\(today)\(date), \(calendarCycleLabel(day.cycleDay)), \(training)\(status)"
+    let activities = day.activities.map { "\($0.kind.title), \($0.durationMinutes) minutes, \($0.isCompleted ? "completed" : "planned")" }.joined(separator: "; ")
+    let optionalActivities = activities.isEmpty ? "" : ", optional activities: \(activities)"
+    return "\(today)\(date), \(calendarCycleLabel(day.cycleDay)), \(training)\(status)\(optionalActivities)"
 }
 
 private func calendarTargetDescription(_ target: ExerciseTarget) -> String {

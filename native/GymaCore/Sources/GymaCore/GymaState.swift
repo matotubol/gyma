@@ -13,6 +13,7 @@ public struct GymaState: Codable, Sendable, Equatable {
     public var athleteProfile: AthleteProfile?
     public var trainingProgram: TrainingProgram?
     public var trainingCalendar: TrainingCalendarPlan?
+    public var trainingCalendarHistory: [TrainingCalendarPlan]?
     public var programHistory: [TrainingProgram]?
     public var workoutReviews: [WorkoutReview]?
     public var workoutFeedback: [WorkoutFeedback]?
@@ -52,6 +53,10 @@ public struct GymaState: Codable, Sendable, Equatable {
         try athleteProfile?.validate()
         try trainingProgram?.validate(catalog: catalog)
         try trainingCalendar?.validate()
+        guard (trainingCalendarHistory?.count ?? 0) <= 100 else {
+            throw GymaError.invalid("Calendar history can contain at most 100 saved blocks.")
+        }
+        for plan in trainingCalendarHistory ?? [] { try plan.validate() }
         for program in programHistory ?? [] { try program.validate(catalog: catalog) }
         guard (programHistory?.count ?? 0) <= 100,
               Set((workoutReviews ?? []).map(\.workoutID)).count == (workoutReviews?.count ?? 0) else {

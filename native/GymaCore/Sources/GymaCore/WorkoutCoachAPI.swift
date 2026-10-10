@@ -4,7 +4,8 @@ public enum WorkoutCoachAPI {
     public static func requestBody(workout: Workout, storeID: String, revision: Int, restTimer: RestTimer?,
                                    catalog: [ExerciseDefinition], history: [Workout], now: Date = Date(),
                                    profile: AthleteProfile? = nil, program: TrainingProgram? = nil,
-                                   reviews: [WorkoutReview] = [], feedback: [WorkoutFeedback] = [], priorPrograms: [TrainingProgram] = [], trainingCalendar: TrainingCalendarPlan? = nil) throws -> Data {
+                                   reviews: [WorkoutReview] = [], feedback: [WorkoutFeedback] = [], priorPrograms: [TrainingProgram] = [], trainingCalendar: TrainingCalendarPlan? = nil,
+                                   trainingCalendarHistory: [TrainingCalendarPlan] = []) throws -> Data {
         try workout.validate()
         guard !catalog.isEmpty, let conversation = workout.coachConversation,
               conversation.messages.last?.role == .user else {
@@ -29,14 +30,14 @@ public enum WorkoutCoachAPI {
         Program version followed by THIS workout: \(try json(matchingProgram))
         THIS workout's saved review: \(try json(reviews.first { $0.workoutID == workout.id }))
         THIS workout's dated feedback: \(try json(feedback.first { $0.workoutID == workout.id }))
-        \(try CoachContext.text(profile: profile, program: program, history: history, catalog: catalog, reviews: reviews, feedback: feedback, relevantExerciseIDs: workout.exercises.map(\.exerciseID), now: now, priorPrograms: priorPrograms, trainingCalendar: trainingCalendar))
+        \(try CoachContext.text(profile: profile, program: program, history: history, catalog: catalog, reviews: reviews, feedback: feedback, relevantExerciseIDs: workout.exercises.map(\.exerciseID), now: now, priorPrograms: priorPrograms, trainingCalendar: trainingCalendar, trainingCalendarHistory: trainingCalendarHistory))
         A change is only a proposal. The app will bind it to this workout and reject it if training changes before approval.
         """
         var input: [[String: String]] = [["role": "user", "content": context]]
         input += conversation.messages.suffix(40).map { ["role": $0.role.rawValue, "content": $0.content] }
         let body: [String: Any] = [
             "model": CoachAPI.model, "store": false, "reasoning": ["effort": "low"], "max_output_tokens": 5000,
-            "instructions": instructions, "input": input,
+            "instructions": instructions + "\n" + CoachContext.optionalActivityGuidance, "input": input,
             "text": ["format": ["type": "json_schema", "name": "gyma_workout_coach_reply", "strict": true, "schema": schema(catalog: catalog)]]
         ]
         return try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
