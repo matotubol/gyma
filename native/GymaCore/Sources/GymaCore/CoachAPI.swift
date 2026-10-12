@@ -197,8 +197,10 @@ public enum CoachAPI {
             ["type": "object", "properties": properties, "required": properties.keys.sorted(), "additionalProperties": false]
         }
         func integer(_ minimum: Int, _ maximum: Int) -> [String: Any] { ["type": "integer", "minimum": minimum, "maximum": maximum] }
+        var exerciseIDSchema: [String: Any] = ["type": "string"]
+        if !catalog.isEmpty { exerciseIDSchema["enum"] = catalog.map(\.id) }
         let exercise = object([
-            "exerciseID": catalog.isEmpty ? ["type": "string"] : ["type": "string", "enum": catalog.map(\.id)],
+            "exerciseID": exerciseIDSchema,
             "sets": integer(1, 10), "repsMin": integer(1, 50), "repsMax": integer(1, 50),
             "loadKg": ["type": ["number", "null"], "minimum": 0, "maximum": 1000],
             "restSeconds": integer(15, 600), "reason": ["type": "string"],
