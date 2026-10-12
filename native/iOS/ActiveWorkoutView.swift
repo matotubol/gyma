@@ -159,7 +159,7 @@ struct ExercisePickerView: View {
 
     private var available: [ExerciseDefinition] {
         let existing = Set(model.workout(workoutID)?.exercises.map(\.exerciseID) ?? [])
-        return model.state.catalog.filter {
+        return model.state.availableExercises.filter {
             !existing.contains($0.id) && (muscle == nil || $0.muscle == muscle) &&
             (search.isEmpty || $0.name.localizedCaseInsensitiveContains(search))
         }

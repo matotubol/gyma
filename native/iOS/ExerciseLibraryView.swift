@@ -7,7 +7,7 @@ struct ExerciseLibraryView: View {
     @State private var createPresented = false
 
     private var exercises: [ExerciseDefinition] {
-        model.state.catalog.filter { exercise in
+        model.state.availableExercises.filter { exercise in
             search.isEmpty || exercise.name.localizedCaseInsensitiveContains(search) ||
             exercise.muscle.label.localizedCaseInsensitiveContains(search) ||
             (exercise.trainingMetadata?.equipment?.label.localizedCaseInsensitiveContains(search) ?? false)

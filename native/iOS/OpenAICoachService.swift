@@ -5,14 +5,18 @@ import GymaCore
 enum OpenAICoachService {
     static let model = CoachAPI.model
 
-    static func reply(conversation: CoachConversation, state: GymaState, apiKey: String) async throws -> CoachReply {
-        let body = try CoachAPI.requestBody(conversation: conversation, catalog: state.catalog, history: state.workouts,
-                                           profile: state.athleteProfile, program: state.trainingProgram,
-                                           reviews: state.workoutReviews ?? [], feedback: state.workoutFeedback ?? [], priorPrograms: state.programHistory ?? [], trainingCalendar: state.trainingCalendar,
-                                           trainingCalendarHistory: state.trainingCalendarHistory ?? [])
-        let data = try await request(body: body, apiKey: apiKey)
-        do { return try CoachAPI.parseResponse(data, checkIn: conversation.checkIn, catalog: state.catalog,
-                                               profile: state.athleteProfile, existingProgram: state.trainingProgram, isProgramPlanning: conversation.isProgramPlanning) }
+    static func reply(conversation: CoachConversation, state: GymaState, apiKey: String,
+                      pendingAppChanges: CoachAppChangeProposal? = nil) async throws -> CoachReply {
+        var session = try CoachToolSession(conversation: conversation, state: state, pendingAppChanges: pendingAppChanges)
+        do {
+            for _ in 0...CoachToolSession.maximumToolRounds {
+                try Task.checkCancellation()
+                let data = try await request(body: session.requestBody, apiKey: apiKey)
+                if let reply = try session.consume(data) { return reply }
+            }
+            throw GymaError.invalid("The coach reached its lookup limit. Ask about fewer changes at once.")
+        }
+        catch is CancellationError { throw CancellationError() }
         catch let error as GymaError { throw error }
         catch { throw unreadableReply }
     }

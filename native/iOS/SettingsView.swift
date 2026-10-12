@@ -60,7 +60,7 @@ struct SettingsView: View {
                 }
                 if let keyNotice { Text(keyNotice).font(.caption).foregroundStyle(.secondary) }
             } header: { Text("AI coach") } footer: {
-                Text("Your key is stored in the iPhone Keychain and is excluded from backups and Watch sync. Your saved profile, program, shift calendar, messages, check-in and training summaries are sent to OpenAI when you use the coach. API usage is billed to your OpenAI account.")
+                Text("Your key is stored in the iPhone Keychain and is excluded from backups and Watch sync. Your saved profile, program, shift calendar, messages, check-in and relevant training records are sent to OpenAI when you use the coach. The coach can look up older sessions, sets and feedback to answer your questions. Review proposed app changes in the chat before applying them. API usage is billed to your OpenAI account.")
             }
 
             Section {

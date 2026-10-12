@@ -2,6 +2,17 @@ import Foundation
 
 /// App-owned evidence and calculations. The language model explains these; it does not manufacture them.
 public enum CoachContext {
+    /// The live-workout coach still has its narrower tool set. Only the main coach
+    /// replaces those capability statements with the app-management boundary.
+    static func forAppManagement(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "Never claim to schedule, complete or save activity through chat.", with: "Use app-change tools to propose scheduling or user-reported completion; nothing is saved until Apply changes.")
+            .replacingOccurrences(of: "Never claim to have saved a new fact or changed the profile through chat.", with: "Use app-change tools for user-confirmed profile updates; never claim an unapplied proposal is saved.")
+            .replacingOccurrences(of: "chat does not reschedule or start workouts", with: "the main coach can propose calendar changes through its app tools; starting a workout still requires the app's start flow")
+            .replacingOccurrences(of: "You may discuss changes, but calendar edits must be made explicitly in the app; never claim to have saved dates or workouts through chat.", with: "Use app-change tools for requested calendar edits and show the proposed changes for Apply changes. Never claim unapplied dates or workouts are saved.")
+            .replacingOccurrences(of: "direct the user to calendar activity controls to save it", with: "use app-change tools to propose saving calendar activities")
+    }
+
     /// Shared by planning and live coaching so optional activity never becomes fabricated strength data.
     public static let optionalActivityGuidance = """
     Optional activities are user-chosen additions on individual calendar dates: incline treadmill walking, gentle stretching, or abs. A strength rest day may include one of these without becoming a rotating strength session. Discuss optional activity without creating or revising an unrelated strength plan. Planned activity is not completed activity; a completion marker is a user report, not measured sets or wearable evidence. Optional activity never advances the upper/lower rotation. Never claim to schedule, complete or save activity through chat.

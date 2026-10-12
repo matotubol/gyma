@@ -16,6 +16,7 @@ final class GymaAppModel: ObservableObject {
     @Published private(set) var hasCoachAPIKey = false
     @Published private(set) var coachRequestInFlight = false
     @Published private(set) var coachError: String?
+    @Published private(set) var coachAppChanges: CoachAppChangeProposal?
     @Published private(set) var workoutCoachRequestWorkoutID: String?
     @Published private var workoutCoachErrors: [String: String] = [:]
 
@@ -134,6 +135,21 @@ final class GymaAppModel: ObservableObject {
         state.coachConversation?.isProgramPlanning == true && state.coachConversation?.acceptedProgramID == nil
     }
 
+    /// General app management is available without a readiness check or a new program request.
+    @discardableResult
+    func beginCoachDiscussion(replacingConversation: Bool = false) -> Bool {
+        guard !storageBlocked else { return false }
+        if !replacingConversation, state.coachConversation?.startedWorkoutID == nil,
+           state.coachConversation != nil { return true }
+        cancelCoachRequest()
+        var conversation = CoachConversation.programPlanning(profile: state.athleteProfile, existingProgram: state.trainingProgram)
+        conversation.messages = []
+        guard update({ try $0.saveCoachConversation(conversation) }) else { return false }
+        coachAppChanges = nil
+        coachError = nil
+        return true
+    }
+
     @discardableResult
     func beginProgramPlanning(replacingConversation: Bool = false) -> Bool {
         guard !storageBlocked, state.activeWorkout == nil else {
@@ -146,6 +162,7 @@ final class GymaAppModel: ObservableObject {
         cancelCoachRequest()
         let conversation = CoachConversation.programPlanning(profile: state.athleteProfile, existingProgram: state.trainingProgram)
         guard update({ try $0.saveCoachConversation(conversation) }) else { return false }
+        coachAppChanges = nil
         coachError = nil
         requestCoachReply()
         return true
@@ -204,6 +221,7 @@ final class GymaAppModel: ObservableObject {
             ], plan: draft)
             conversation.purpose = .workout
             guard update({ try $0.saveCoachConversation(conversation) }) else { return false }
+            coachAppChanges = nil
             coachError = nil
             requestCoachReply()
             return true
@@ -216,7 +234,7 @@ final class GymaAppModel: ObservableObject {
     @discardableResult
     func sendCoachMessage(_ text: String) -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !coachRequestInFlight, state.activeWorkout == nil,
+        guard !text.isEmpty, !coachRequestInFlight,
               var conversation = state.coachConversation, conversation.startedWorkoutID == nil else { return false }
         guard text.count <= 16_000 else {
             coachError = "Keep your message under 16,000 characters."
@@ -226,7 +244,6 @@ final class GymaAppModel: ObservableObject {
         if conversation.messages.last?.role != .user || conversation.messages.last?.content != text {
             conversation.messages.append(CoachMessage(role: .user, content: text))
         }
-        conversation.plan?.acceptedAt = nil
         conversation.acceptedProgramID = nil
         conversation.proposedExercises = nil
         guard update({ try $0.saveCoachConversation(conversation) }) else { return false }
@@ -235,7 +252,7 @@ final class GymaAppModel: ObservableObject {
     }
 
     func requestCoachReply() {
-        guard !coachRequestInFlight, !storageBlocked, state.activeWorkout == nil,
+        guard !coachRequestInFlight, !storageBlocked,
               let conversation = state.coachConversation, conversation.startedWorkoutID == nil,
               conversation.messages.last?.role == .user else { return }
         let apiKey: String
@@ -256,6 +273,7 @@ final class GymaAppModel: ObservableObject {
         let generation = UUID()
         coachGeneration = generation
         let requestState = state
+        let pendingAppChanges = coachAppChanges
         coachTask = Task { [weak self] in
             guard let self else { return }
             defer {
@@ -265,22 +283,37 @@ final class GymaAppModel: ObservableObject {
                 }
             }
             do {
-                let reply = try await OpenAICoachService.reply(conversation: conversation, state: requestState, apiKey: apiKey)
+                let reply = try await OpenAICoachService.reply(conversation: conversation, state: requestState, apiKey: apiKey,
+                                                            pendingAppChanges: pendingAppChanges)
                 // A restore, replacement discussion, or edited conversation must never receive an old reply.
                 guard !Task.isCancelled, coachGeneration == generation,
-                      state.coachConversation == conversation, state.activeWorkout == nil,
+                      state.coachConversation == conversation,
                       state.storeID == requestState.storeID, state.revision == requestState.revision else {
                     if !Task.isCancelled { coachError = "Your profile, program or training changed while the coach replied. Try again with the latest information." }
                     return
                 }
                 var next = conversation
                 next.messages.append(CoachMessage(role: .assistant, content: reply.message))
-                next.plan = reply.plan
+                // A question about data must not revoke a workout that is already ready.
+                if let plan = reply.plan {
+                    next.plan = plan
+                    next.plan?.acceptedAt = nil
+                } else if reply.program != nil || !reply.proposedExercises.isEmpty || conversation.plan?.acceptedAt == nil {
+                    next.plan = nil
+                }
                 next.proposedProgram = reply.program
                 next.proposedExercises = reply.proposedExercises.isEmpty ? nil : reply.proposedExercises
                 next.acceptedProgramID = nil
-                next.plan?.acceptedAt = nil
-                if !update({ try $0.saveCoachConversation(next) }) {
+                // Rebase only the conversation save, never a concurrent training edit.
+                // Stage against exactly the state that will be persisted with this reply.
+                var savedState = state
+                try savedState.saveCoachConversation(next)
+                let proposal = try reply.appChanges.map {
+                    try CoachAppChangeProposal(changes: $0.changes, state: savedState)
+                }
+                if update({ $0 = savedState }) {
+                    coachAppChanges = proposal
+                } else {
                     coachError = "The reply could not be saved. Your conversation and previous draft are still available. Try again."
                 }
             } catch {
@@ -295,6 +328,38 @@ final class GymaAppModel: ObservableObject {
         coachTask?.cancel()
         coachTask = nil
         coachRequestInFlight = false
+    }
+
+    var canApplyCoachAppChanges: Bool {
+        guard let proposal = coachAppChanges else { return false }
+        return !storageBlocked && !coachRequestInFlight
+            && proposal.baseStoreID == state.storeID && proposal.baseRevision == state.revision
+    }
+
+    @discardableResult
+    func applyCoachAppChanges(_ proposal: CoachAppChangeProposal) -> Bool {
+        guard canApplyCoachAppChanges, coachAppChanges == proposal else { return false }
+        let applied = update { state in
+            try state.applyCoachAppChanges(proposal)
+            if var conversation = state.coachConversation {
+                conversation.messages.append(.init(role: .assistant,
+                    content: "App confirmation — changes saved:\n" + String(proposal.summaries.joined(separator: "\n").prefix(12_000))))
+                try state.saveCoachConversation(conversation)
+            }
+        }
+        if applied { coachAppChanges = nil; coachError = nil }
+        return applied
+    }
+
+    func discardCoachAppChanges() {
+        guard let proposal = coachAppChanges, !coachRequestInFlight else { return }
+        if update({ state in
+            if var conversation = state.coachConversation {
+                conversation.messages.append(.init(role: .assistant,
+                    content: "App confirmation — the proposed changes were dismissed without being applied:\n" + String(proposal.summaries.joined(separator: "\n").prefix(12_000))))
+                try state.saveCoachConversation(conversation)
+            }
+        }) { coachAppChanges = nil }
     }
 
     var canAcceptCoachPlan: Bool {
@@ -481,6 +546,7 @@ final class GymaAppModel: ObservableObject {
             next.commandPayloads = [:]
             try persist(next)
             storageBlocked = false
+            coachAppChanges = nil
             coachError = nil
             workoutCoachErrors = [:]
             configureConnectivity()

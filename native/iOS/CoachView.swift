@@ -29,52 +29,50 @@ struct CoachView: View {
                     }.font(.subheadline)
                     if model.state.activeWorkout != nil {
                         workoutInProgress
-                    } else if let program = model.state.trainingProgram,
-                              conversation?.isProgramPlanning == true,
-                              conversation?.acceptedProgramID == program.id {
-                        TimelineView(.periodic(from: .now, by: 30)) { context in acceptedProgram(program, now: context.date) }
-                    } else if conversation?.startedWorkoutID == nil, let plan = conversation?.plan, plan.acceptedAt != nil {
-                        TimelineView(.periodic(from: .now, by: 30)) { context in acceptedPlan(plan, now: context.date) }
+                    }
+                    if !model.hasCoachAPIKey { keySetup }
+                    if let conversation, conversation.startedWorkoutID == nil {
+                        if conversation.isProgramPlanning { programPlanningSummary }
+                        else { checkInSummary(conversation.checkIn) }
+                        if conversation.messages.isEmpty { conversationSuggestions }
+                        ForEach(conversation.messages) { chatMessage($0) }
+                        if model.coachRequestInFlight {
+                            ProgressView("Your coach is thinking…")
+                                .font(.subheadline).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if let error = model.coachError {
+                            Label(error, systemImage: "exclamationmark.bubble")
+                                .font(.subheadline).foregroundStyle(.orange)
+                        }
+                        if conversation.messages.last?.role == .user && !model.coachRequestInFlight {
+                            Button(model.coachError == nil ? "Send to coach" : "Try again", systemImage: "arrow.clockwise") {
+                                model.requestCoachReply()
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(!model.hasCoachAPIKey || model.storageBlocked)
+                        }
+                        if let proposal = model.coachAppChanges { appChangesCard(proposal) }
+                        if let plan = conversation.plan {
+                            if plan.acceptedAt == nil { planCard(plan) }
+                            else { TimelineView(.periodic(from: .now, by: 30)) { context in acceptedPlan(plan, now: context.date) } }
+                        }
+                        if let program = conversation.proposedProgram { ProgramProposalCard(program: program) }
+                        if let proposals = conversation.proposedExercises, !proposals.isEmpty {
+                            exerciseProposalsCard(proposals)
+                        }
+                        composer
                     } else {
-                        if !model.hasCoachAPIKey { keySetup }
-                        if let conversation, conversation.startedWorkoutID == nil {
-                            if conversation.isProgramPlanning { programPlanningSummary }
-                            else { checkInSummary(conversation.checkIn) }
-                            ForEach(conversation.messages) { chatMessage($0) }
-                            if model.coachRequestInFlight {
-                                ProgressView("Your coach is thinking…")
-                                    .font(.subheadline).frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            if let error = model.coachError {
-                                Label(error, systemImage: "exclamationmark.bubble")
-                                    .font(.subheadline).foregroundStyle(.orange)
-                            }
-                            if conversation.messages.last?.role == .user && !model.coachRequestInFlight {
-                                Button(model.coachError == nil ? "Send to coach" : "Try again", systemImage: "arrow.clockwise") {
-                                    model.requestCoachReply()
+                        TimelineView(.periodic(from: .now, by: 30)) { context in introduction(at: context.date) }
+                        if let previous = conversation {
+                            DisclosureGroup("Previous conversation") {
+                                VStack(alignment: .leading, spacing: 18) {
+                                    if previous.isProgramPlanning { programPlanningSummary }
+                                    else { checkInSummary(previous.checkIn, heading: "PREVIOUS CHECK-IN") }
+                                    ForEach(previous.messages) { chatMessage($0) }
                                 }
-                                .buttonStyle(.bordered)
-                                .disabled(!model.hasCoachAPIKey || model.storageBlocked)
+                                .padding(.top, 14)
                             }
-                            if let plan = conversation.plan { planCard(plan) }
-                            if let program = conversation.proposedProgram { ProgramProposalCard(program: program) }
-                            if let proposals = conversation.proposedExercises, !proposals.isEmpty {
-                                exerciseProposalsCard(proposals)
-                            }
-                            composer
-                        } else {
-                            TimelineView(.periodic(from: .now, by: 30)) { context in introduction(at: context.date) }
-                            if let previous = conversation {
-                                DisclosureGroup("Previous conversation") {
-                                    VStack(alignment: .leading, spacing: 18) {
-                                        if previous.isProgramPlanning { programPlanningSummary }
-                                        else { checkInSummary(previous.checkIn, heading: "PREVIOUS CHECK-IN") }
-                                        ForEach(previous.messages) { chatMessage($0) }
-                                    }
-                                    .padding(.top, 14)
-                                }
-                                .font(.subheadline)
-                            }
+                            .font(.subheadline)
                         }
                     }
                     Color.clear.frame(height: 1).id("coach-bottom")
@@ -88,9 +86,9 @@ struct CoachView: View {
         }
         .navigationTitle("Coach")
         .toolbar {
-            if conversation != nil && conversation?.startedWorkoutID == nil && model.state.activeWorkout == nil {
+            if conversation != nil {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("New program discussion", systemImage: "plus") { replacePresented = true }
+                    Button("New conversation", systemImage: "plus") { replacePresented = true }
                         .disabled(model.storageBlocked || model.coachRequestInFlight || !model.hasCoachAPIKey)
                 }
             }
@@ -106,10 +104,10 @@ struct CoachView: View {
             if let selectedWorkoutID { ActiveWorkoutView(workoutID: selectedWorkoutID) }
         }
         .confirmationDialog("Replace this coach conversation?", isPresented: $replacePresented, titleVisibility: .visible) {
-            Button("Start program discussion", role: .destructive) { beginProgramPlanning(replacingConversation: true) }
+            Button("Start new conversation", role: .destructive) { beginCoachDiscussion(replacingConversation: true) }
             Button("Keep conversation", role: .cancel) { }
         } message: {
-            Text("This starts a new program discussion using your profile, calendar and training history. It replaces this conversation and any unaccepted proposal.")
+            Text("Your profile, calendar and training history stay available. This replaces the current conversation and any unapplied proposal.")
         }
         .onAppear { model.refreshCoachCredentials() }
     }
@@ -119,19 +117,16 @@ struct CoachView: View {
         return VStack(alignment: .leading, spacing: 18) {
             Image(systemName: "bubble.left.and.bubble.right")
                 .font(.system(size: 36, weight: .light)).foregroundStyle(GymaStyle.accent)
-            Text("Training that\nbuilds on last time.")
+            Text("Your training.\nYour coach can help.")
                 .font(.system(.largeTitle, design: .rounded, weight: .bold))
-            Text(model.state.trainingProgram == nil
-                 ? "Set up your profile, then build a recurring program with your coach. Your goals, equipment and training history carry into every conversation."
-                 : "Your saved program keeps your sessions consistent. Discuss longer-term changes with your coach, or start today's workout on a scheduled training day.")
+            Text("Manage your program, change your cycle, add training days, rename exercises, adjust sets or review any recorded session. Your coach can look up the details and prepare the changes for you.")
                 .foregroundStyle(.secondary)
-            Text("Plan the program now. Check in about energy, sleep and soreness once, when you start each workout.")
+            Text("Ask in your own words. Review the changes and apply them together here in the chat.")
                 .font(.subheadline).foregroundStyle(.secondary)
             Text("Unsure what an exercise or machine is called? Describe how you use it. Your coach can suggest an exercise to review and save to your library.")
                 .font(.subheadline).foregroundStyle(.secondary)
-            Button(model.state.trainingProgram == nil ? "Plan program with coach" : "Discuss program changes", systemImage: "sparkles") {
-                if conversation != nil { replacePresented = true }
-                else { beginProgramPlanning() }
+            Button("Talk to your coach", systemImage: "sparkles") {
+                beginCoachDiscussion()
             }
                 .font(.headline).buttonStyle(.borderedProminent)
                 .disabled(!model.hasCoachAPIKey || model.storageBlocked || model.coachRequestInFlight)
@@ -168,10 +163,10 @@ struct CoachView: View {
 
     private var workoutInProgress: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Planning is done", systemImage: "checkmark.circle")
+            Label("Workout in progress", systemImage: "figure.strengthtraining.traditional")
                 .font(.headline).foregroundStyle(GymaStyle.accent)
-            Text("Your coach can help during your workout.").font(.title2.bold())
-            Text("Open your workout from Overview and tap Ask coach for advice or exercise changes.")
+            Text("Your coach is still available.").font(.title2.bold())
+            Text("Discuss your program, schedule or training history here. For live exercise guidance, open your workout and tap Ask coach.")
                 .foregroundStyle(.secondary)
         }
         .padding(22).frame(maxWidth: .infinity, alignment: .leading)
@@ -185,8 +180,8 @@ struct CoachView: View {
                 .font(.headline).foregroundStyle(GymaStyle.accent)
             Text(plan.title).font(.title2.bold())
             Text(model.state.canStartAcceptedPlan(plan, now: now)
-                 ? "Your planning chat is closed. Today's workout is available in Overview and on your Watch."
-                 : "Your planning chat is closed. This workout is saved for \(today.date(plan.scheduledDate)); it can only start on its scheduled training day.")
+                 ? "Today's workout is available in Overview and on your Watch. You can keep talking to your coach below."
+                 : "This workout is saved for \(today.date(plan.scheduledDate)); it can start on its scheduled training day. You can keep talking to your coach below.")
                 .foregroundStyle(.secondary)
             if !today.status.allowsWorkoutStart { Text(today.message).font(.subheadline).foregroundStyle(.secondary) }
             Button("Done", action: closePlanning).buttonStyle(.borderedProminent)
@@ -195,27 +190,9 @@ struct CoachView: View {
         .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 24))
     }
 
-    private func acceptedProgram(_ program: TrainingProgram, now: Date) -> some View {
-        let today = DailyTrainingPresentation(state: model.state, now: now)
-        return VStack(alignment: .leading, spacing: 14) {
-            Label("Program saved", systemImage: "checkmark.seal.fill")
-                .font(.headline).foregroundStyle(GymaStyle.accent)
-            Text(program.title).font(.title2.bold())
-            Text("Your recurring sessions are saved. \(today.message)")
-                .foregroundStyle(.secondary)
-            NavigationLink("View training calendar") { TrainingCalendarView() }
-            Button("Done", action: closePlanning).buttonStyle(.borderedProminent)
-            Button("Discuss program changes", systemImage: "bubble.left.and.bubble.right") { replacePresented = true }
-                .buttonStyle(.bordered)
-                .disabled(!model.hasCoachAPIKey || model.storageBlocked || model.coachRequestInFlight)
-        }
-        .padding(22).frame(maxWidth: .infinity, alignment: .leading)
-        .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 24))
-    }
-
     private var programPlanningSummary: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Label("PROGRAM PLANNING", systemImage: "calendar")
+            Label("YOUR COACH", systemImage: "bubble.left.and.bubble.right")
                 .font(.caption.weight(.bold)).foregroundStyle(GymaStyle.accent)
             if let calendar = model.state.trainingCalendar {
                 Text("Eight weeks · \(calendar.startDate.formatted(date: .abbreviated, time: .omitted))–\(calendar.lastDate.formatted(date: .abbreviated, time: .omitted))")
@@ -227,15 +204,15 @@ struct CoachView: View {
                 Text("\(profile.primaryGoal.label) · \(profile.experience.label)")
                     .font(.subheadline)
             }
-            Text("Your coach uses your profile, schedule and training history to plan repeatable sessions. Daily readiness is checked when you start a workout.")
+            Text("Your coach can manage your program, calendar, exercise library and profile, and look up individual training days. Changes appear here for you to apply.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(18).frame(maxWidth: .infinity, alignment: .leading)
         .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 20))
     }
 
-    private func beginProgramPlanning(replacingConversation: Bool = false) {
-        if model.beginProgramPlanning(replacingConversation: replacingConversation) {
+    private func beginCoachDiscussion(replacingConversation: Bool = false) {
+        if model.beginCoachDiscussion(replacingConversation: replacingConversation) {
             message = ""
             composerFocused = false
         }
@@ -334,6 +311,55 @@ struct CoachView: View {
         target.repsMin == target.repsMax ? "\(target.repsMin)" : "\(target.repsMin)–\(target.repsMax)"
     }
 
+    private var conversationSuggestions: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("What would you like to work on?").font(.title3.bold())
+            ForEach(["Review my program and training cycle", "Help me add an extra training day", "Review a specific workout", "Help me change an exercise or its sets"], id: \.self) { suggestion in
+                Button(suggestion) {
+                    message = suggestion
+                    composerFocused = true
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func appChangesCard(_ proposal: CoachAppChangeProposal) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("CHANGES TO REVIEW", systemImage: "slider.horizontal.3")
+                .font(.caption.weight(.bold)).foregroundStyle(GymaStyle.accent)
+            Text("Apply these changes together").font(.title2.bold())
+            ForEach(Array(proposal.summaries.enumerated()), id: \.offset) { _, summary in
+                Text(summary).font(.subheadline).textSelection(.enabled)
+                Divider()
+            }
+            if !model.canApplyCoachAppChanges && !model.coachRequestInFlight {
+                Text("Your data changed after this proposal. Ask the coach to refresh it before applying.")
+                    .font(.subheadline).foregroundStyle(.orange)
+                Button("Refresh changes", systemImage: "arrow.clockwise") {
+                    _ = model.sendCoachMessage("Refresh your proposed app changes using my latest saved data. Keep my requested changes, look up anything that changed, and show an updated proposal.")
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.storageBlocked || !model.hasCoachAPIKey)
+            }
+            Button {
+                if model.applyCoachAppChanges(proposal) { composerFocused = false }
+            } label: {
+                Label("Apply changes", systemImage: "checkmark")
+                    .font(.headline).frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!model.canApplyCoachAppChanges)
+            Button("Dismiss proposal") { model.discardCoachAppChanges() }
+                .disabled(model.coachRequestInFlight || model.storageBlocked)
+            Text("You can describe corrections in the chat before applying.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(20).frame(maxWidth: .infinity, alignment: .leading)
+        .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 24))
+    }
+
     private func exerciseProposalsCard(_ proposals: [CoachExerciseProposal]) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             Label("EXERCISES TO REVIEW", systemImage: "dumbbell")
@@ -377,9 +403,7 @@ struct CoachView: View {
     private var composer: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Talk it through").font(.headline)
-            Text(conversation?.isProgramPlanning == true
-                 ? "Discuss your goals, recurring sessions, exercise choices and progression."
-                 : "Ask for a different exercise, load, number of sets or rest time.")
+            Text("Ask to change your program, cycle, training days, exercises or sets, or review a specific date.")
                 .font(.caption).foregroundStyle(.secondary)
             Text("You can describe unfamiliar machines in your own words. Your coach will ask for details when needed and show any new exercises for you to confirm.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -399,7 +423,7 @@ struct CoachView: View {
                 .disabled(!canSend)
             }
             .padding(14).background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 18))
-            Text("Messages, profile, program, relevant training history and feedback are sent to OpenAI when you ask the coach. Program and workout changes need your acceptance.")
+            Text("Messages and relevant app data are sent to OpenAI when you ask the coach, including older records it looks up. Review and apply proposed changes here. Unapplied app changes are cleared when the app restarts.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
     }

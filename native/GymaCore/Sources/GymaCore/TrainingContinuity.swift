@@ -173,7 +173,7 @@ public extension GymaState {
         revision += 1
     }
 
-    private func validateAvailableIncrements(_ program: TrainingProgram) throws {
+    internal func validateAvailableIncrements(_ program: TrainingProgram) throws {
         for id in Set(program.sessions.flatMap { $0.exercises.map(\.exerciseID) }) {
             guard let equipment = catalog.first(where: { $0.id == id })?.trainingMetadata?.equipment,
                   let available = athleteProfile?.loadIncrements.first(where: { $0.equipment == equipment })?.incrementKg else { continue }

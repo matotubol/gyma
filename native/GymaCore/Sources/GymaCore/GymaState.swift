@@ -7,6 +7,10 @@ public struct GymaState: Codable, Sendable, Equatable {
     public var workouts: [Workout] = []
     public var deletedWorkouts: [Workout] = []
     public var customExercises: [ExerciseDefinition] = []
+    /// Built-in edits retain stable exercise identities in saved workouts and programs.
+    public var exerciseOverrides: [ExerciseDefinition]?
+    /// Removed library entries remain resolvable in historical training and backups.
+    public var hiddenExerciseIDs: [String]?
     public var restEnabled = true
     public var restTimer: RestTimer?
     public var coachConversation: CoachConversation?
@@ -22,7 +26,15 @@ public struct GymaState: Codable, Sendable, Equatable {
 
     public init() {}
     public var activeWorkout: Workout? { workouts.first { $0.isActive } }
-    public var catalog: [ExerciseDefinition] { ExerciseCatalog.builtIn + customExercises }
+    public var catalog: [ExerciseDefinition] {
+        ExerciseCatalog.builtIn.map { original in
+            exerciseOverrides?.first(where: { $0.id == original.id }) ?? original
+        } + customExercises
+    }
+    public var availableExercises: [ExerciseDefinition] {
+        let hidden = Set(hiddenExerciseIDs ?? [])
+        return catalog.filter { !hidden.contains($0.id) }
+    }
     public func exercise(_ id: String) -> ExerciseDefinition {
         catalog.first { $0.id == id } ?? .init(id: id, name: "Unknown exercise", muscle: .core, iconKey: "bolt")
     }
@@ -45,6 +57,20 @@ public struct GymaState: Codable, Sendable, Equatable {
             guard !exercise.id.isEmpty, exercise.id.count <= 200, !exercise.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   exercise.name.count <= 200, exercise.iconKey.count <= 100,
                   exerciseIDs.insert(exercise.id).inserted else { throw GymaError.invalid("Invalid custom exercise identity or name.") }
+        }
+        let builtInIDs = Set(ExerciseCatalog.builtIn.map(\.id))
+        var overrideIDs = Set<String>()
+        for exercise in exerciseOverrides ?? [] {
+            try exercise.metadata?.validate()
+            guard builtInIDs.contains(exercise.id), overrideIDs.insert(exercise.id).inserted,
+                  !exercise.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  exercise.name.count <= 200, exercise.iconKey.count <= 100 else {
+                throw GymaError.invalid("Invalid built-in exercise override.")
+            }
+        }
+        let hidden = hiddenExerciseIDs ?? []
+        guard Set(hidden).count == hidden.count, Set(hidden).isSubset(of: exerciseIDs) else {
+            throw GymaError.invalid("Invalid removed exercise identities.")
         }
         guard (workouts + deletedWorkouts).allSatisfy({ workout in
             workout.exercises.allSatisfy { exerciseIDs.contains($0.exerciseID) && $0.snapshotWorkingSetCount == nil }
