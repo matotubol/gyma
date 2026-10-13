@@ -24,7 +24,7 @@ concurrency:
 jobs:
   build:
     runs-on: macos-26
-    timeout-minutes: 35
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
@@ -56,6 +56,24 @@ jobs:
           brew install xcodegen
           xcodegen --version
           xcodegen generate --spec project.yml
+
+      - name: Build Watch app for simulator launch checks
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Gyma.xcodeproj \
+            -scheme GymaWatch \
+            -configuration Release \
+            -destination 'generic/platform=watchOS Simulator' \
+            -derivedDataPath build/WatchSimulator \
+            CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tee build/watch-simulator-build.log
+
+      - name: Check Watch startup and visible workout content
+        timeout-minutes: 10
+        run: python3 tools/watch_launch_smoke.py build/WatchSimulator/Build/Products/Release-watchsimulator/GymaWatch.app
 
       - name: Build iPhone and embedded Watch app
         run: |
@@ -91,6 +109,17 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: gyma-swift-logs-${{ github.run_number }}
-          path: native/build/*.log
+          path: |
+            native/build/*.log
+            native/build/watch-smoke/**
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Upload device crash symbols
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: gyma-swift-symbols-${{ github.run_number }}
+          path: native/build/Gyma.xcarchive/dSYMs
+          if-no-files-found: ignore
+          retention-days: 14

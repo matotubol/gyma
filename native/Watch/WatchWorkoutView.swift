@@ -71,10 +71,11 @@ struct WatchWorkoutView: View {
         }
     }
 
-    // Separate opaque view types keep each SwiftUI expression small enough for
-    // the Watch compiler while retaining one navigation and presentation host.
-    private var workoutLayout: some View {
-        GeometryReader { geometry in
+    // Opaque computed properties still compose one concrete generic view type.
+    // Erase each root layer so the Watch does not materialize that entire type
+    // while opening the app. Keep one navigation and presentation host.
+    private var workoutLayout: AnyView {
+        AnyView(GeometryReader { geometry in
             let compact = geometry.size.height < 185
             let showsStatus = geometry.size.height >= 175 && statusText != nil
             let contentHeight = geometry.size.height - (showsStatus ? 18 : 0)
@@ -87,7 +88,7 @@ struct WatchWorkoutView: View {
         }
         .background(Color.black)
         .navigationTitle(navigationTitle)
-        .toolbar { workoutToolbar }
+        .toolbar { workoutToolbar })
     }
 
     @ToolbarContentBuilder
@@ -122,8 +123,8 @@ struct WatchWorkoutView: View {
         }
     }
 
-    private var workoutSheets: some View {
-        workoutLayout
+    private var workoutSheets: AnyView {
+        AnyView(workoutLayout
             .sheet(item: $editor) { field in valueEditor(field) }
             .sheet(item: $readyContext) { context in
                 WatchReadinessView(context: context)
@@ -137,11 +138,11 @@ struct WatchWorkoutView: View {
                                      cancelSet: { settingsAction = .cancelSet; showSettings = false },
                                      skipSet: { settingsAction = .skipSet; showSettings = false },
                                      skipExercise: { settingsAction = .skipExercise; showSettings = false })
-            }
+            })
     }
 
-    private var observedWorkout: some View {
-        workoutSheets
+    private var observedWorkout: AnyView {
+        AnyView(workoutSheets
             .task { reconcile() }
             .onChange(of: connectivity.snapshot) { _, _ in reconcile() }
             .onChange(of: connectivity.pendingCommand) { _, _ in reconcile() }
@@ -151,11 +152,11 @@ struct WatchWorkoutView: View {
             .onChange(of: draft?.position) { _, _ in editor = nil; chooseSetType = false }
             .onChange(of: connectivity.snapshot?.activeWorkout?.id) { _, _ in
                 showExerciseMenu = true; requestedExerciseID = nil
-            }
+            })
     }
 
-    private var workoutFinishDialogs: some View {
-        observedWorkout
+    private var workoutFinishDialogs: AnyView {
+        AnyView(observedWorkout
             .confirmationDialog("Set type", isPresented: $chooseSetType, titleVisibility: .visible) {
                 Button("Working set") { selectSetType(isWarmup: false) }
                 Button("Warm-up") { selectSetType(isWarmup: true) }
@@ -169,11 +170,11 @@ struct WatchWorkoutView: View {
                     } catch { localError = error.localizedDescription }
                 }
                 Button("Keep training", role: .cancel) {}
-            } message: { Text("Your confirmed sets will be saved on iPhone.") }
+            } message: { Text("Your confirmed sets will be saved on iPhone.") })
     }
 
-    private var workoutPresentation: some View {
-        workoutFinishDialogs
+    private var workoutPresentation: AnyView {
+        AnyView(workoutFinishDialogs
             .confirmationDialog("Discard this saved draft?", isPresented: $confirmDiscard, titleVisibility: .visible) {
                 Button("Discard draft", role: .destructive) {
                     guard let snapshot = connectivity.snapshot else { return }
@@ -189,7 +190,7 @@ struct WatchWorkoutView: View {
             } message: { request in Text(request.kind.message) }
             .alert("Could not save the change", isPresented: showsLocalError) {
                 Button("OK", role: .cancel) { localError = nil }
-            } message: { Text(localError ?? "") }
+            } message: { Text(localError ?? "") })
     }
 
     private var showsSetChange: Binding<Bool> {
@@ -200,38 +201,41 @@ struct WatchWorkoutView: View {
         Binding(get: { localError != nil }, set: { if !$0 { localError = nil } })
     }
 
-    @ViewBuilder
-    private func focusedWorkout(compact: Bool, availableHeight: CGFloat) -> some View {
+    private func focusedWorkout(compact: Bool, availableHeight: CGFloat) -> AnyView {
         if let pending = connectivity.pendingCommand, case .startAcceptedPlan = pending.action {
-            ProgressView().tint(.mint)
-            Text("Starting workout…").font(.headline)
-            Text("Waiting for iPhone confirmation")
-                .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            return AnyView(Group {
+                ProgressView().tint(.mint)
+                Text("Starting workout…").font(.headline)
+                Text("Waiting for iPhone confirmation")
+                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            })
         } else if let workout = connectivity.snapshot?.activeWorkout {
             if pendingExerciseChange != nil {
-                exerciseMenu(workout)
+                return AnyView(exerciseMenu(workout))
             } else if let draft, !currentDraft && draft.phase != .submitting {
-                draftRecovery
+                return AnyView(draftRecovery)
             } else if showExerciseMenu {
-                exerciseMenu(workout)
+                return AnyView(exerciseMenu(workout))
             } else if let timer = restTimer, timer.workoutID == workout.id {
-                restScreen(timer, compact: compact)
+                return AnyView(restScreen(timer, compact: compact))
             } else if let draft {
-                setScreen(draft, workout: workout, compact: compact, availableHeight: availableHeight)
+                return AnyView(setScreen(draft, workout: workout, compact: compact, availableHeight: availableHeight))
             } else if hasHiddenExercises(workout) {
-                Text("Continue on iPhone to see the remaining exercises.").font(.headline)
+                return AnyView(Text("Continue on iPhone to see the remaining exercises.").font(.headline))
             } else if workout.nextExercise == nil {
-                Image(systemName: "checkmark.circle.fill").font(.system(size: 44)).foregroundStyle(.mint)
-                Text("Workout complete").font(.title3.bold())
-                primaryButton("Finish workout", symbol: "checkmark") { prepareFinish(workout) }
-                    .disabled(!canAct)
+                return AnyView(Group {
+                    Image(systemName: "checkmark.circle.fill").font(.system(size: 44)).foregroundStyle(.mint)
+                    Text("Workout complete").font(.title3.bold())
+                    primaryButton("Finish workout", symbol: "checkmark") { prepareFinish(workout) }
+                        .disabled(!canAct)
+                })
             } else {
-                ProgressView().tint(.mint)
+                return AnyView(ProgressView().tint(.mint))
             }
         } else if draft != nil {
-            draftRecovery
+            return AnyView(draftRecovery)
         } else {
-            readyWorkout
+            return AnyView(readyWorkout)
         }
     }
 
