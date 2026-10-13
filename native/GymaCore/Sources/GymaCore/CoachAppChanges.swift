@@ -366,15 +366,21 @@ private extension GymaState {
             case .setWorkoutTarget:
                 try change.target?.validate()
                 let old = workouts[wi].exercises[ei].target
+                let wasStopped = workouts[wi].exercises[ei].skippedRemainingAt != nil
                 workouts[wi].exercises[ei].target = change.target
+                workouts[wi].exercises[ei].skippedRemainingAt = nil
                 if restTimer?.workoutID == change.workoutID, restTimer?.exerciseID == exerciseID { restTimer = nil }
-                summary = "Change target for \(context): \(coachTargetDescription(old)) → \(coachTargetDescription(change.target))."
+                let reopening = wasStopped && workouts[wi].isActive && !workouts[wi].exercises[ei].isTargetResolved
+                    ? " Reopen the exercise for remaining work; logged and skipped sets stay saved." : ""
+                summary = "Change target for \(context): \(coachTargetDescription(old)) → \(coachTargetDescription(change.target)).\(reopening)"
             case .removeWorkoutExercise:
                 let count = workouts[wi].exercises[ei].sets.count
+                let skippedCount = workouts[wi].exercises[ei].skippedSetCount
                 workouts[wi].exercises.remove(at: ei)
+                if workouts[wi].selectedExerciseID == exerciseID { workouts[wi].selectedExerciseID = nil }
                 workouts[wi].restHistory?.removeAll { $0.exerciseID == exerciseID }
                 if restTimer?.workoutID == change.workoutID, restTimer?.exerciseID == exerciseID { restTimer = nil }
-                summary = "Remove \(context), including \(count) logged sets and its rest records."
+                summary = "Remove \(context), including \(count) logged sets, \(skippedCount) skipped set records and its rest records."
             default: throw GymaError.invalid("Unsupported workout edit.")
             }
         }

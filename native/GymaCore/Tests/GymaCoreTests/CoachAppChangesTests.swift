@@ -200,6 +200,48 @@ final class CoachAppChangesTests: XCTestCase {
         XCTAssertThrowsError(try CoachAppChangeProposal(changes: [.init(kind: .renameWorkout, workoutID: "missing")], state: state, now: now))
     }
 
+    func testRemovingSelectedWorkoutExerciseClearsSelectionAndDisclosesSkippedRecords() throws {
+        var state = GymaState()
+        var active = workout; active.end = nil
+        active.exercises.append(.init(exerciseID: "squat", target: target))
+        state.workouts = [active]
+        try state.selectExercise("bench_press", workoutID: active.id, now: now.addingTimeInterval(-300))
+        try state.addSet(.init(id: "second-set", kg: 50, reps: 8, isWarmup: false), exerciseID: "bench_press", workoutID: active.id, now: now.addingTimeInterval(-200))
+        try state.skipSet(exerciseID: "bench_press", workoutID: active.id, now: now.addingTimeInterval(-100))
+        let original = state
+        let proposal = try CoachAppChangeProposal(changes: [.init(kind: .removeWorkoutExercise, exerciseID: "bench_press", workoutID: active.id)], state: state, now: now)
+        XCTAssertEqual(state, original)
+        XCTAssertTrue(proposal.summaries[0].contains("2 logged sets, 1 skipped set records"))
+        try state.applyCoachAppChanges(proposal, now: now)
+        XCTAssertNil(state.activeWorkout?.selectedExerciseID)
+        XCTAssertEqual(state.activeWorkout?.exercises.map(\.exerciseID), ["squat"])
+        XCTAssertEqual(state.activeWorkout?.nextExercise?.exerciseID, "squat")
+        XCTAssertTrue(state.activeWorkout?.restHistory?.isEmpty == true)
+        XCTAssertNil(state.restTimer)
+        try state.validate()
+    }
+
+    func testCoachTargetEditReopensStoppedExerciseAndKeepsActualAndSkippedSets() throws {
+        for originalTarget in [ExerciseTarget?.none, Optional(target)] {
+            var state = GymaState()
+            var active = workout; active.end = nil; active.exercises[0].target = originalTarget
+            state.workouts = [active]
+            try state.skipExercise(exerciseID: "bench_press", workoutID: active.id, now: now.addingTimeInterval(-100))
+            let stopped = try XCTUnwrap(state.activeWorkout?.exercises.first)
+            XCTAssertTrue(stopped.isTargetResolved)
+            try apply([.init(kind: .setWorkoutTarget, exerciseID: "bench_press", workoutID: active.id,
+                             target: .init(sets: 4, repsMin: 8, repsMax: 12))], to: &state)
+            let reopened = try XCTUnwrap(state.activeWorkout?.exercises.first)
+            XCTAssertNil(reopened.skippedRemainingAt)
+            XCTAssertFalse(reopened.isTargetResolved)
+            XCTAssertEqual(reopened.sets, stopped.sets)
+            XCTAssertEqual(reopened.skippedSets, stopped.skippedSets)
+            XCTAssertEqual(reopened.remainingSetCount, 4 - stopped.resolvedSetCount)
+            XCTAssertEqual(state.activeWorkout?.nextExercise?.exerciseID, "bench_press")
+            try state.validate()
+        }
+    }
+
     func testRestPreferenceAndWorkoutNameKeepAcceptedDailyPlan() throws {
         var state = GymaState(); state.workouts = [workout]
         let checkIn = SessionCheckIn(shift: .off, energy: .good)
