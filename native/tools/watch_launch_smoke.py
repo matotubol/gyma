@@ -180,6 +180,40 @@ class Smoke:
         (directory / "watch-journal.json").write_text(json.dumps(journal), encoding="utf-8")
         (self.output / "pending-finish-fixture.json").write_text(json.dumps(journal, indent=2), encoding="utf-8")
 
+    def seed_idle_snapshot_with_stale_draft(self):
+        # Match the reported physical Watch's startup shape: the latest phone
+        # snapshot is idle, but a prepared set from an earlier workout remains.
+        # Keep it valid and recoverable; this is not corrupt-data error handling.
+        now = time.time() - 978307200
+        store_id = "watch-smoke-stale-draft-store"
+        journal = {
+            "retiredStoreIDs": [],
+            "snapshot": {
+                "storeID": store_id, "revision": 204, "generatedAt": now,
+                "catalog": [], "isTruncated": False,
+            },
+        }
+        flow = {
+            "draft": {
+                "storeID": store_id, "workoutID": "watch-smoke-earlier-workout",
+                "exerciseID": "watch-smoke-earlier-exercise", "workingSetCount": 2,
+                "phase": "prepared", "kg": 20, "expectedReps": 8,
+                "actualKg": 20, "actualReps": 8, "isWarmup": False,
+                "position": {"lastSetID": "watch-smoke-earlier-set", "skippedSetCount": 0},
+                "reviewStep": "reps",
+                "sourceTarget": {
+                    "sets": 3, "repsMin": 8, "repsMax": 12,
+                    "loadKg": 20, "restSeconds": 90, "reason": "",
+                },
+            },
+        }
+        container = Path(self.simctl("get_app_container", self.device, BUNDLE_ID, "data").stdout.strip())
+        directory = container / "Library" / "Application Support" / "GymaConnectivity"
+        directory.mkdir(parents=True, exist_ok=True)
+        for filename, value in (("watch-journal.json", journal), ("watch-set-flow.json", flow)):
+            (directory / filename).write_text(json.dumps(value), encoding="utf-8")
+            (self.output / f"idle-stale-draft-{filename}").write_text(json.dumps(value, indent=2), encoding="utf-8")
+
     def diagnostics(self):
         if self.device:
             for args, filename in [
@@ -225,6 +259,8 @@ def main():
         smoke.check_scenario("fresh-no-workout", ["No workout ready"])
         smoke.seed_pending_finish_workout()
         smoke.check_scenario("restored-workout-pending-finish", ["Pull ups"])
+        smoke.seed_idle_snapshot_with_stale_draft()
+        smoke.check_scenario("idle-snapshot-stale-prepared-draft", ["Workout changed", "Review draft"])
         status = "passed"
     except (SmokeFailure, OSError, ValueError) as error:
         failure = str(error)

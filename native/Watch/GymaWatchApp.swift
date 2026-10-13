@@ -1,8 +1,10 @@
+import OSLog
 import SwiftUI
 
 @main
 @MainActor
 struct GymaWatchApp: App {
+    private static let launchLog = Logger(subsystem: "com.mato.gyma.watchkitapp", category: "Launch")
     @WKApplicationDelegateAdaptor(GymaWatchAppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var connectivity: WorkoutConnectivity
@@ -10,6 +12,7 @@ struct GymaWatchApp: App {
     @StateObject private var workoutRuntime: WatchWorkoutRuntime
 
     init() {
+        Self.launchLog.notice("Initializing Watch services")
         let connectivity = WorkoutConnectivity.shared
         let reminders = WatchRestNotifications.shared
         let runtime = WatchWorkoutRuntime.shared
@@ -29,6 +32,7 @@ struct GymaWatchApp: App {
             reminders?.update(snapshot)
             runtime?.update(snapshot, pendingCommand: connectivity?.pendingCommand)
         }
+        Self.launchLog.notice("Watch services initialized")
     }
 
     var body: some Scene {
@@ -38,6 +42,7 @@ struct GymaWatchApp: App {
                 .environmentObject(restNotifications)
                 .environmentObject(workoutRuntime)
                 .tint(.mint)
+                .onAppear { Self.launchLog.notice("Workout screen appeared") }
                 .onChange(of: connectivity.pendingCommand, initial: true) { _, command in
                     restNotifications.updatePendingCommand(command)
                 }
