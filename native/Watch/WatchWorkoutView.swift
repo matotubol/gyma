@@ -67,49 +67,63 @@ struct WatchWorkoutView: View {
 
     var body: some View {
         NavigationStack {
-            GeometryReader { geometry in
-                let compact = geometry.size.height < 185
-                let showsStatus = geometry.size.height >= 175 && statusText != nil
-                let contentHeight = geometry.size.height - (showsStatus ? 18 : 0)
-                VStack(spacing: compact ? 3 : 5) {
-                    focusedWorkout(compact: compact, availableHeight: contentHeight)
-                    if showsStatus { compactStatus }
-                }
-                .padding(.horizontal, 8)
-                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
+            workoutPresentation
+        }
+    }
+
+    // Separate opaque view types keep each SwiftUI expression small enough for
+    // the Watch compiler while retaining one navigation and presentation host.
+    private var workoutLayout: some View {
+        GeometryReader { geometry in
+            let compact = geometry.size.height < 185
+            let showsStatus = geometry.size.height >= 175 && statusText != nil
+            let contentHeight = geometry.size.height - (showsStatus ? 18 : 0)
+            VStack(spacing: compact ? 3 : 5) {
+                focusedWorkout(compact: compact, availableHeight: contentHeight)
+                if showsStatus { compactStatus }
             }
-            .background(Color.black)
-            .navigationTitle(navigationTitle)
-            .toolbar {
-                if !showExerciseMenu, draft?.phase == .review && draft?.currentReviewStep != .reps {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button {
-                            change { flow in
-                                if flow.draft?.currentReviewStep == .effort { try flow.backToWeight() }
-                                else { try flow.backToReps() }
-                            }
-                        } label: { Image(systemName: "chevron.left") }
-                        .accessibilityLabel(draft?.currentReviewStep == .effort ? "Back to weight" : "Back to reps")
-                        .disabled(!canAct || !currentDraft)
+            .padding(.horizontal, 8)
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
+        }
+        .background(Color.black)
+        .navigationTitle(navigationTitle)
+        .toolbar { workoutToolbar }
+    }
+
+    @ToolbarContentBuilder
+    private var workoutToolbar: some ToolbarContent {
+        if !showExerciseMenu, draft?.phase == .review && draft?.currentReviewStep != .reps {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    change { flow in
+                        if flow.draft?.currentReviewStep == .effort { try flow.backToWeight() }
+                        else { try flow.backToReps() }
                     }
-                } else if !showExerciseMenu, connectivity.snapshot?.activeWorkout != nil {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button { showExerciseMenu = true } label: { Image(systemName: "list.bullet") }
-                            .accessibilityLabel("Choose an exercise")
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showSettings = true } label: {
-                        Image(systemName: connectivity.snapshot?.activeWorkout == nil ? "gearshape" : "ellipsis")
-                            .overlay(alignment: .topTrailing) {
-                                if hasIssues || connectivity.pendingCommand != nil {
-                                    Circle().fill(hasIssues ? Color.orange : Color.mint).frame(width: 6, height: 6)
-                                }
-                            }
-                    }
-                    .accessibilityLabel(hasIssues ? "Workout options, action needed" : "Set and workout options")
-                }
+                } label: { Image(systemName: "chevron.left") }
+                .accessibilityLabel(draft?.currentReviewStep == .effort ? "Back to weight" : "Back to reps")
+                .disabled(!canAct || !currentDraft)
             }
+        } else if !showExerciseMenu, connectivity.snapshot?.activeWorkout != nil {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { showExerciseMenu = true } label: { Image(systemName: "list.bullet") }
+                    .accessibilityLabel("Choose an exercise")
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button { showSettings = true } label: {
+                Image(systemName: connectivity.snapshot?.activeWorkout == nil ? "gearshape" : "ellipsis")
+                    .overlay(alignment: .topTrailing) {
+                        if hasIssues || connectivity.pendingCommand != nil {
+                            Circle().fill(hasIssues ? Color.orange : Color.mint).frame(width: 6, height: 6)
+                        }
+                    }
+            }
+            .accessibilityLabel(hasIssues ? "Workout options, action needed" : "Set and workout options")
+        }
+    }
+
+    private var workoutSheets: some View {
+        workoutLayout
             .sheet(item: $editor) { field in valueEditor(field) }
             .sheet(item: $readyContext) { context in
                 WatchReadinessView(context: context)
@@ -124,6 +138,10 @@ struct WatchWorkoutView: View {
                                      skipSet: { settingsAction = .skipSet; showSettings = false },
                                      skipExercise: { settingsAction = .skipExercise; showSettings = false })
             }
+    }
+
+    private var observedWorkout: some View {
+        workoutSheets
             .task { reconcile() }
             .onChange(of: connectivity.snapshot) { _, _ in reconcile() }
             .onChange(of: connectivity.pendingCommand) { _, _ in reconcile() }
@@ -134,6 +152,10 @@ struct WatchWorkoutView: View {
             .onChange(of: connectivity.snapshot?.activeWorkout?.id) { _, _ in
                 showExerciseMenu = true; requestedExerciseID = nil
             }
+    }
+
+    private var workoutFinishDialogs: some View {
+        observedWorkout
             .confirmationDialog("Set type", isPresented: $chooseSetType, titleVisibility: .visible) {
                 Button("Working set") { selectSetType(isWarmup: false) }
                 Button("Warm-up") { selectSetType(isWarmup: true) }
@@ -148,6 +170,10 @@ struct WatchWorkoutView: View {
                 }
                 Button("Keep training", role: .cancel) {}
             } message: { Text("Your confirmed sets will be saved on iPhone.") }
+    }
+
+    private var workoutPresentation: some View {
+        workoutFinishDialogs
             .confirmationDialog("Discard this saved draft?", isPresented: $confirmDiscard, titleVisibility: .visible) {
                 Button("Discard draft", role: .destructive) {
                     guard let snapshot = connectivity.snapshot else { return }
@@ -156,18 +182,22 @@ struct WatchWorkoutView: View {
                 }
                 Button("Keep draft", role: .cancel) {}
             } message: { Text("Only this unsent Watch draft will be removed. Your confirmed sets stay saved.") }
-            .confirmationDialog(setChange?.kind.title ?? "Change set", isPresented: Binding(
-                get: { setChange != nil }, set: { if !$0 { setChange = nil } }
-            ), titleVisibility: .visible, presenting: setChange) { request in
+            .confirmationDialog(setChange?.kind.title ?? "Change set", isPresented: showsSetChange,
+                                titleVisibility: .visible, presenting: setChange) { request in
                 Button(request.kind.buttonTitle, role: .destructive) { applySetChange(request) }
                 Button("Keep training", role: .cancel) {}
             } message: { request in Text(request.kind.message) }
-            .alert("Could not save the change", isPresented: Binding(
-                get: { localError != nil }, set: { if !$0 { localError = nil } }
-            )) {
+            .alert("Could not save the change", isPresented: showsLocalError) {
                 Button("OK", role: .cancel) { localError = nil }
             } message: { Text(localError ?? "") }
-        }
+    }
+
+    private var showsSetChange: Binding<Bool> {
+        Binding(get: { setChange != nil }, set: { if !$0 { setChange = nil } })
+    }
+
+    private var showsLocalError: Binding<Bool> {
+        Binding(get: { localError != nil }, set: { if !$0 { localError = nil } })
     }
 
     @ViewBuilder
