@@ -475,7 +475,15 @@ final class GymaAppModel: ObservableObject {
     func applyWorkoutCoachChange(_ change: WorkoutCoachChange, workoutID: String) -> Bool {
         guard workoutCoachRequestWorkoutID == nil else { return false }
         let saved = mutateWorkoutCoach(workoutID: workoutID) { try $0.applyWorkoutCoachChange(change.id, workoutID: workoutID) }
-        if saved { notice = "Updated \(name(for: change.replacementExerciseID ?? change.exerciseID)) for your upcoming sets." }
+        if saved {
+            let exerciseName = name(for: change.replacementExerciseID ?? change.exerciseID)
+            switch change.effectiveAction {
+            case .updateTarget: notice = "Updated \(exerciseName) for your upcoming sets."
+            case .selectExercise: notice = "\(exerciseName) is up next."
+            case .skipSet: notice = "Skipped one planned set. Completed sets stay saved."
+            case .skipExercise: notice = "Stopped \(exerciseName) for today. Completed sets stay saved."
+            }
+        }
         return saved
     }
 

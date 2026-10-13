@@ -313,10 +313,10 @@ struct ProgramWorkoutStartView: View {
         // Only this explicit confirmation renews the timestamp; accepting AI targets does not.
         let readiness = WorkoutReadiness(energy: previous.readiness.energy, soreness: previous.readiness.soreness, recordedAt: now)
         var plan = previous.plan
-        plan.createdAt = now
-        if plan.acceptedAt != nil { plan.acceptedAt = now }
+        let acceptedDiscussion = plan.acceptedAt != nil && model.state.coachConversation?.plan == plan
+        if !acceptedDiscussion { plan.createdAt = now }
         preview = PreparedSession(plan: plan, readiness: readiness, storeID: previous.storeID, revision: previous.revision)
-        discussionFirstMessageID = nil; manuallyAdjusted = true
+        if !acceptedDiscussion { discussionFirstMessageID = nil; manuallyAdjusted = true }
         error = nil
     }
 
