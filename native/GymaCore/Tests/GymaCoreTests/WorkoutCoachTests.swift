@@ -89,11 +89,10 @@ final class WorkoutCoachTests: XCTestCase {
         try state.validate()
     }
 
-    func testStartedCompletedDuplicateUnknownAndTruncatedTargetsCannotBeEdited() throws {
+    func testCompletedDuplicateUnknownAndTruncatedTargetsCannotBeEdited() throws {
         var state = try stateWithLoggedSet()
         let workout = try XCTUnwrap(state.activeWorkout)
-        for proposal in [change(in: state, replacement: "squat"),
-                         change(in: state, exerciseID: "lat_pulldown", replacement: "bench_press"),
+        for proposal in [change(in: state, exerciseID: "lat_pulldown", replacement: "bench_press"),
                          change(in: state, exerciseID: "lat_pulldown", replacement: "unknown"),
                          change(in: state, sets: 1)] {
             XCTAssertThrowsError(try proposal.validate(for: workout, catalog: state.catalog))
@@ -101,6 +100,59 @@ final class WorkoutCoachTests: XCTestCase {
         try state.addSet(.init(kg: 40, reps: 8, isWarmup: false), exerciseID: "bench_press", workoutID: "active", now: start.addingTimeInterval(130))
         try state.addSet(.init(kg: 40, reps: 8, isWarmup: false), exerciseID: "bench_press", workoutID: "active", now: start.addingTimeInterval(230))
         XCTAssertThrowsError(try change(in: state, sets: 4).validate(for: XCTUnwrap(state.activeWorkout), catalog: state.catalog))
+    }
+
+    func testCoachCanReplaceRemainingWorkWithoutRelabelingLoggedSets() throws {
+        var state = try stateWithLoggedSet()
+        let original = try XCTUnwrap(state.activeWorkout?.exercises.first)
+        let proposal = change(in: state, replacement: "squat", sets: 2)
+        try save(proposal, in: &state)
+        try state.applyWorkoutCoachChange(proposal.id, workoutID: "active")
+        let workout = try XCTUnwrap(state.activeWorkout)
+        XCTAssertEqual(workout.exercises.map(\.exerciseID), ["bench_press", "squat", "lat_pulldown"])
+        XCTAssertEqual(workout.exercises[0].sets, original.sets)
+        XCTAssertEqual(workout.exercises[0].target, original.target)
+        XCTAssertEqual(workout.exercises[0].skippedSetCount, 2)
+        XCTAssertEqual(workout.exercises[1].target, proposal.target)
+        XCTAssertTrue(workout.exercises[1].sets.isEmpty)
+        XCTAssertEqual(workout.nextExercise?.exerciseID, "squat")
+        XCTAssertNil(state.restTimer)
+        XCTAssertEqual(workout.restHistory?.count, 1)
+        try state.validate()
+    }
+
+    func testCoachSkipAndSelectionProposalsPreserveActualWorkAndRejectStaleActions() throws {
+        for action in [WorkoutCoachAction.selectExercise, .skipSet, .skipExercise] {
+            var state = try stateWithLoggedSet()
+            let original = try XCTUnwrap(state.activeWorkout)
+            var proposal = change(in: state, exerciseID: action == .selectExercise ? "lat_pulldown" : "bench_press")
+            proposal.action = action
+            try save(proposal, in: &state)
+            try state.applyWorkoutCoachChange(proposal.id, workoutID: "active")
+            let workout = try XCTUnwrap(state.activeWorkout)
+            XCTAssertEqual(workout.exercises.map(\.sets), original.exercises.map(\.sets))
+            XCTAssertEqual(workout.exercises.map(\.target), original.exercises.map(\.target))
+            XCTAssertEqual(workout.volume, original.volume)
+            if action == .selectExercise { XCTAssertEqual(workout.nextExercise?.exerciseID, "lat_pulldown") }
+            if action == .skipSet { XCTAssertEqual(workout.exercises[0].skippedSetCount, 1) }
+            if action == .skipExercise {
+                XCTAssertEqual(workout.exercises[0].skippedSetCount, 2)
+                XCTAssertFalse(workout.exercises[0].isTargetComplete)
+                XCTAssertTrue(workout.exercises[0].isTargetResolved)
+            }
+            XCTAssertThrowsError(try state.applyWorkoutCoachChange(proposal.id, workoutID: "active"))
+            try state.validate()
+        }
+    }
+
+    func testLegacyCoachProposalDecodesWithoutAction() throws {
+        let state = try stateWithLoggedSet()
+        let proposal = change(in: state)
+        let encoded = try JSONEncoder().encode(proposal)
+        let restored = try JSONDecoder().decode(WorkoutCoachChange.self, from: encoded)
+        XCTAssertNil(restored.action)
+        XCTAssertEqual(restored.effectiveAction, .updateTarget)
+        XCTAssertEqual(restored, proposal)
     }
 
     func testRepliesAreRejectedWhenSetsRestStoreOrConversationChanged() throws {

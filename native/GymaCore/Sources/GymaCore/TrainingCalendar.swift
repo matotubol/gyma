@@ -34,6 +34,7 @@ public struct TrainingCalendarPlan: Codable, Sendable, Equatable {
     public var dayOverrides: [TrainingCalendarOverride]
     public var prefersUpperLower: Bool
     public var activities: [CalendarActivity]
+    public var workoutOverrides: [CalendarWorkoutOverride]?
 
     public init(startDate: Date, cycleAnchorDate: Date, trainingCycleDays: [Int] = [2, 5, 8, 9, 10], timeZone: TimeZone = .current, prefersUpperLower: Bool = true) {
         var calendar = Calendar(identifier: .gregorian)
@@ -48,7 +49,7 @@ public struct TrainingCalendarPlan: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case startDate, cycleAnchorDate, timeZoneIdentifier, trainingCycleDays, dayOverrides, prefersUpperLower, activities
+        case startDate, cycleAnchorDate, timeZoneIdentifier, trainingCycleDays, dayOverrides, prefersUpperLower, activities, workoutOverrides
     }
 
     public init(from decoder: Decoder) throws {
@@ -61,6 +62,7 @@ public struct TrainingCalendarPlan: Codable, Sendable, Equatable {
         prefersUpperLower = try values.decode(Bool.self, forKey: .prefersUpperLower)
         // Existing backups predate optional activities and keep their exact saved schedule.
         activities = try values.decodeIfPresent([CalendarActivity].self, forKey: .activities) ?? []
+        workoutOverrides = try values.decodeIfPresent([CalendarWorkoutOverride].self, forKey: .workoutOverrides)
     }
 
     /// Fresh setup only: October 13 is the first off day after nights; the first morning
@@ -107,6 +109,13 @@ public struct TrainingCalendarPlan: Codable, Sendable, Equatable {
             moved.dayOffset = offset
             result.activities.append(moved)
         }
+        for override in workoutOverrides ?? [] {
+            guard let date = date(at: override.dayOffset), let offset = result.dayOffset(for: date) else {
+                throw GymaError.invalid("That block would discard a saved single-day workout. Keep its date inside the block.")
+            }
+            if result.workoutOverrides == nil { result.workoutOverrides = [] }
+            result.workoutOverrides?.append(.init(dayOffset: offset, exercises: override.exercises))
+        }
         try result.validate()
         return result
     }
@@ -139,6 +148,12 @@ public struct TrainingCalendarPlan: Codable, Sendable, Equatable {
             throw GymaError.invalid("A training calendar needs a valid eight-week block, time zone, and unique cycle days from 1 to 10.")
         }
         for activity in activities { try activity.validate() }
+        let overrides = workoutOverrides ?? []
+        guard overrides.count <= Self.dayCount,
+              Set(overrides.map(\.dayOffset)).count == overrides.count,
+              overrides.allSatisfy({ (0..<Self.dayCount).contains($0.dayOffset) && (1...12).contains($0.exercises.count) }) else {
+            throw GymaError.invalid("Single-day workouts need unique dates and 1–12 exercises.")
+        }
         let absDays = Set(activities.filter { $0.kind == .abs }.map(\.dayOffset))
         guard !absDays.contains(where: { absDays.contains($0 + 1) }) else {
             throw GymaError.invalid("Leave at least one day between direct ab sessions, including planned or completed abs.")
@@ -225,6 +240,7 @@ public struct TrainingCalendarPlan: Codable, Sendable, Equatable {
         try validate()
         let offset = try editableOffset(for: date, now: now)
         setOverride(at: offset, isTraining: isTraining)
+        if !isTraining { workoutOverrides?.removeAll { $0.dayOffset == offset } }
     }
 
     /// Both dates are checked before mutation, so a rejected move preserves the entire plan.
@@ -235,6 +251,11 @@ public struct TrainingCalendarPlan: Codable, Sendable, Equatable {
         let destinationOffset = try editableOffset(for: destination, now: now)
         guard sourceOffset != destinationOffset, isTrainingDay(on: source), !isTrainingDay(on: destination) else {
             throw GymaError.invalid("Move a planned training day to a different rest day within this block.")
+        }
+        if let saved = workoutOverrides?.first(where: { $0.dayOffset == sourceOffset }) {
+            workoutOverrides?.removeAll { $0.dayOffset == sourceOffset || $0.dayOffset == destinationOffset }
+            workoutOverrides?.append(.init(dayOffset: destinationOffset, exercises: saved.exercises))
+            workoutOverrides?.sort { $0.dayOffset < $1.dayOffset }
         }
         setOverride(at: sourceOffset, isTraining: false)
         setOverride(at: destinationOffset, isTraining: true)
@@ -263,6 +284,7 @@ public struct TrainingCalendarPlan: Codable, Sendable, Equatable {
             var session: ProgramSession?
             if date >= today, training, actual.isEmpty, let index = nextIndex, !sessions.isEmpty {
                 session = sessions[index]
+                if let custom = workoutOverride(on: date) { session?.exercises = custom.exercises }
                 nextIndex = (index + 1) % sessions.count
             }
             return TrainingCalendarDay(dayOffset: offset, date: date, cycleDay: cycleDay(on: date), shift: shift(on: date), isTraining: training, session: session, workouts: actual, activities: activities(on: date))

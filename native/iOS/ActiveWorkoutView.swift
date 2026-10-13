@@ -8,6 +8,7 @@ struct ActiveWorkoutView: View {
     @State private var pickerPresented = false
     @State private var finishPresented = false
     @State private var coachPresented = false
+    @State private var replacement: WorkoutExercise?
 
     var body: some View {
         Group {
@@ -33,7 +34,7 @@ struct ActiveWorkoutView: View {
                         Button { coachPresented = true } label: {
                             Label("Ask coach", systemImage: "bubble.left.and.bubble.right.fill").font(.headline)
                         }
-                    } footer: { Text("Ask about weights, technique or swapping an exercise. Your coach can see this workout's progress.") }
+                    } footer: { Text("Swap exercises, change targets or skip planned work for today. Your recurring program stays unchanged.") }
                     if let timer = model.state.restTimer, timer.workoutID == workoutID {
                         Section { RestTimerCard(timer: timer).listRowInsets(EdgeInsets()).listRowBackground(Color.clear) }
                     }
@@ -56,6 +57,14 @@ struct ActiveWorkoutView: View {
                                         Spacer()
                                         Text("\(exercise.sets.count)").font(.headline.monospacedDigit()).foregroundStyle(GymaStyle.accent)
                                     }
+                                    if workout.nextExercise?.exerciseID == exercise.exerciseID {
+                                        Label("Up next", systemImage: "play.fill").font(.caption).foregroundStyle(GymaStyle.accent)
+                                    }
+                                    if exercise.skippedSetCount > 0 {
+                                        Text("\(exercise.skippedSetCount) planned sets skipped").font(.caption).foregroundStyle(.secondary)
+                                    } else if exercise.skippedRemainingAt != nil {
+                                        Text("Stopped for today").font(.caption).foregroundStyle(.secondary)
+                                    }
                                     if let target = exercise.target {
                                         Text("Target: \(target.sets) × \(target.repsMin)–\(target.repsMax) reps\(target.loadKg.map { " · \($0.gymaNumber) kg" } ?? "")")
                                             .font(.caption).foregroundStyle(.secondary)
@@ -66,11 +75,26 @@ struct ActiveWorkoutView: View {
                                 }
                                 .padding(.vertical, 7)
                             }
+                            .contextMenu {
+                                if !exercise.isTargetResolved {
+                                    Button("Do this exercise next", systemImage: "play.fill") {
+                                        model.update { try $0.selectExercise(exercise.exerciseID, workoutID: workoutID) }
+                                    }
+                                    Button("Replace for today", systemImage: "arrow.triangle.2.circlepath") { replacement = exercise }
+                                }
+                            }
+                        }
+                        .onMove { offsets, destination in
+                            var ids = workout.exercises.map(\.exerciseID)
+                            ids.move(fromOffsets: offsets, toOffset: destination)
+                            model.update { try $0.reorderExercises(ids, workoutID: workoutID) }
                         }
                         Button { pickerPresented = true } label: {
                             Label("Add exercise", systemImage: "plus.circle.fill").font(.headline).padding(.vertical, 7)
                         }
-                    } header: { Text("Exercises") }
+                    } header: { Text("Exercises") } footer: {
+                        Text("Open any exercise to train it, replace it or skip a set. Tap Edit to reorder today's exercises.")
+                    }
                     Section {
                         Button { finishPresented = true } label: {
                             Label("Finish workout", systemImage: "checkmark.circle.fill").frame(maxWidth: .infinity).font(.headline)
@@ -79,16 +103,17 @@ struct ActiveWorkoutView: View {
                     }
                 }
                 .navigationTitle(workout.title)
+                .toolbar { ToolbarItem(placement: .topBarTrailing) { EditButton() } }
             } else {
                 ContentUnavailableView("Session complete", systemImage: "checkmark.circle", description: Text("Your workout is saved in History."))
             }
         }
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $pickerPresented) { ExercisePickerView(workoutID: workoutID) }
+        .sheet(item: $replacement) { ExercisePickerView(workoutID: workoutID, replacingExerciseID: $0.exerciseID) }
         .sheet(isPresented: $coachPresented) {
             NavigationStack {
                 WorkoutCoachView(workoutID: workoutID)
-                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { coachPresented = false } } }
             }
         }
         .confirmationDialog("Finish this workout?", isPresented: $finishPresented, titleVisibility: .visible) {
@@ -152,6 +177,7 @@ struct ExercisePickerView: View {
     @EnvironmentObject private var model: GymaAppModel
     @Environment(\.dismiss) private var dismiss
     let workoutID: String
+    var replacingExerciseID: String? = nil
     @State private var search = ""
     @State private var muscle: Muscle?
     @State private var customPresented = false
@@ -168,6 +194,12 @@ struct ExercisePickerView: View {
     var body: some View {
         NavigationStack {
             List {
+                if let replacingExerciseID {
+                    Section {
+                        Text("Replace \(model.name(for: replacingExerciseID)) for this workout. Logged sets stay saved under the original exercise. The replacement starts without a suggested load.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }
                 Section {
                     Picker("Muscle group", selection: $muscle) {
                         Text("All muscles").tag(Muscle?.none)
@@ -177,7 +209,16 @@ struct ExercisePickerView: View {
                 Section {
                     ForEach(available) { exercise in
                         Button {
-                            if model.update({ try $0.addExercise(exercise.id, to: workoutID) }) { dismiss() }
+                            if model.update({ state in
+                                if let replacingExerciseID {
+                                    var target = state.activeWorkout?.exercises.first { $0.exerciseID == replacingExerciseID }?.target
+                                    if let original = state.activeWorkout?.exercises.first(where: { $0.exerciseID == replacingExerciseID }), target != nil {
+                                        target?.sets = max(1, original.remainingSetCount)
+                                    }
+                                    target?.loadKg = nil
+                                    try state.replaceExercise(replacingExerciseID, with: exercise.id, workoutID: workoutID, target: target)
+                                } else { try state.addExercise(exercise.id, to: workoutID) }
+                            }) { dismiss() }
                             else { error = model.errorMessage }
                         } label: {
                             HStack(spacing: 13) {
@@ -189,7 +230,7 @@ struct ExercisePickerView: View {
                                     Text(exercise.muscle.label).font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Image(systemName: "plus.circle").foregroundStyle(GymaStyle.accent)
+                                Image(systemName: replacingExerciseID == nil ? "plus.circle" : "arrow.triangle.2.circlepath").foregroundStyle(GymaStyle.accent)
                             }.padding(.vertical, 3)
                         }
                     }
@@ -199,9 +240,9 @@ struct ExercisePickerView: View {
                 if let error { Section { Text(error).foregroundStyle(.red) } }
             }
             .searchable(text: $search, prompt: "Find an exercise")
-            .navigationTitle("Add exercise").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(replacingExerciseID == nil ? "Add exercise" : "Replace for today").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
-            .sheet(isPresented: $customPresented) { CustomExerciseView(workoutID: workoutID) { dismiss() } }
+            .sheet(isPresented: $customPresented) { CustomExerciseView(workoutID: workoutID, replacingExerciseID: replacingExerciseID) { dismiss() } }
         }
     }
 }
@@ -210,6 +251,7 @@ private struct CustomExerciseView: View {
     @EnvironmentObject private var model: GymaAppModel
     @Environment(\.dismiss) private var dismiss
     let workoutID: String
+    var replacingExerciseID: String? = nil
     var onAdded: () -> Void
     @State private var name = ""
     @State private var muscle: Muscle = .chest
@@ -234,7 +276,14 @@ private struct CustomExerciseView: View {
                         let exercise = ExerciseDefinition(id: "custom_\(UUID().uuidString)", name: trimmed, muscle: muscle, custom: true)
                         if model.update({
                             try $0.addCustomExercise(exercise)
-                            try $0.addExercise(exercise.id, to: workoutID)
+                            if let replacingExerciseID {
+                                var target = $0.activeWorkout?.exercises.first { $0.exerciseID == replacingExerciseID }?.target
+                                if let original = $0.activeWorkout?.exercises.first(where: { $0.exerciseID == replacingExerciseID }), target != nil {
+                                    target?.sets = max(1, original.remainingSetCount)
+                                }
+                                target?.loadKg = nil
+                                try $0.replaceExercise(replacingExerciseID, with: exercise.id, workoutID: workoutID, target: target)
+                            } else { try $0.addExercise(exercise.id, to: workoutID) }
                         }) { dismiss(); onAdded() }
                         else { error = model.errorMessage }
                     }.bold()
@@ -252,12 +301,36 @@ struct ExerciseLogView: View {
     @State private var logPresented = false
     @State private var targetPresented = false
     @State private var removePresented = false
+    @State private var replacementPresented = false
+    @State private var skipPresented = false
+    @State private var stopPresented = false
 
     private var exercise: WorkoutExercise? { model.workout(workoutID)?.exercises.first { $0.exerciseID == exerciseID } }
 
     var body: some View {
         List {
             if let exercise {
+                Section {
+                    if !exercise.isTargetResolved {
+                        Button("Do this exercise next", systemImage: "play.fill") {
+                            model.update { try $0.selectExercise(exerciseID, workoutID: workoutID) }
+                        }
+                        Button("Replace for today", systemImage: "arrow.triangle.2.circlepath") { replacementPresented = true }
+                        if exercise.target != nil {
+                            Button("Skip a planned set", systemImage: "forward.end") { skipPresented = true }
+                        }
+                        Button("Stop this exercise", systemImage: "stop.circle") { stopPresented = true }
+                    }
+                    if exercise.skippedSetCount > 0 {
+                        Label("\(exercise.skippedSetCount) planned sets skipped", systemImage: "forward.end")
+                            .foregroundStyle(.secondary)
+                    }
+                    if exercise.skippedRemainingAt != nil {
+                        Text("Stopped for today. Your completed sets stay saved.").foregroundStyle(.secondary)
+                    }
+                } header: { Text("Change today") } footer: {
+                    Text("These changes apply only to this workout. Skipped sets add no reps or lifted volume.")
+                }
                 Section("Your target") {
                     if let target = exercise.target {
                         HStack {
@@ -298,7 +371,7 @@ struct ExerciseLogView: View {
                     Button { logPresented = true } label: {
                         Label("Log set", systemImage: "plus.circle.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 5)
                     }.buttonStyle(.borderedProminent)
-                        .disabled(model.state.restTimer != nil)
+                        .disabled(model.state.restTimer != nil || exercise.skippedRemainingAt != nil)
                 } header: { Text("Logged sets · \(exercise.sets.count)") }
                 Section {
                     Toggle("Automatic rest timer", isOn: Binding(get: { model.state.restEnabled }, set: { value in model.update { $0.setRestEnabled(value) } }))
@@ -311,18 +384,28 @@ struct ExerciseLogView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button("Remove exercise", systemImage: "trash", role: .destructive) { removePresented = true }
+                    if exercise?.sets.isEmpty == true && exercise?.skippedSetCount == 0 {
+                        Button("Remove exercise", systemImage: "trash", role: .destructive) { removePresented = true }
+                    }
                 } label: { Image(systemName: "ellipsis.circle") }
             }
         }
         .sheet(isPresented: $logPresented) { LogSetView(workoutID: workoutID, exerciseID: exerciseID, exercise: exercise) }
         .sheet(isPresented: $targetPresented) { TargetEditorView(workoutID: workoutID, exerciseID: exerciseID, target: exercise?.target) }
+        .sheet(isPresented: $replacementPresented) { ExercisePickerView(workoutID: workoutID, replacingExerciseID: exerciseID) }
+        .confirmationDialog("Skip one planned set?", isPresented: $skipPresented, titleVisibility: .visible) {
+            Button("Skip set") { model.update { try $0.skipSet(exerciseID: exerciseID, workoutID: workoutID) } }
+        } message: { Text("This set will be marked skipped, without adding reps or volume. Your completed sets stay saved.") }
+        .confirmationDialog("Stop this exercise for today?", isPresented: $stopPresented, titleVisibility: .visible) {
+            Button("Skip remaining sets") { model.update { try $0.skipExercise(exerciseID: exerciseID, workoutID: workoutID) } }
+        } message: { Text("All remaining planned sets will be marked skipped. Your completed sets stay saved, and you can choose another exercise.") }
         .confirmationDialog("Remove this exercise and its sets?", isPresented: $removePresented, titleVisibility: .visible) {
             Button("Remove exercise", role: .destructive) {
                 if model.update({ try $0.removeExercise(exerciseID, workoutID: workoutID) }) { dismiss() }
             }
         }
         .onChange(of: model.workout(workoutID)?.end) { _, end in if end != nil { dismiss() } }
+        .onChange(of: exercise == nil) { _, missing in if missing { dismiss() } }
     }
 }
 
@@ -338,6 +421,7 @@ private struct LogSetView: View {
     @State private var error: String?
     @State private var saved = false
     @State private var setID = UUID().uuidString
+    @State private var skipPresented = false
 
     init(workoutID: String, exerciseID: String, exercise: WorkoutExercise?) {
         self.workoutID = workoutID
@@ -377,9 +461,21 @@ private struct LogSetView: View {
                     } label: { Label("Save set", systemImage: "checkmark").font(.headline).frame(maxWidth: .infinity) }
                     .buttonStyle(.borderedProminent).disabled(saved).padding(.vertical, 5)
                 }
+                if let exercise = model.workout(workoutID)?.exercises.first(where: { $0.exerciseID == exerciseID }),
+                   exercise.target != nil, !exercise.isTargetResolved {
+                    Section {
+                        Button("Cancel this planned set", systemImage: "forward.end") { skipPresented = true }
+                    } footer: { Text("Use this if you stopped or did not perform the set. No reps or volume will be recorded.") }
+                }
             }
             .navigationTitle("Log set").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .confirmationDialog("Cancel this planned set?", isPresented: $skipPresented, titleVisibility: .visible) {
+                Button("Skip set") {
+                    if model.update({ try $0.skipSet(exerciseID: exerciseID, workoutID: workoutID) }) { dismiss() }
+                    else { error = model.errorMessage }
+                }
+            } message: { Text("Your entered weight and reps will not be saved. Completed sets stay in the workout.") }
         }
     }
 }
@@ -409,12 +505,14 @@ private struct TargetEditorView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Plan your working sets") {
+                Section {
                     Stepper("\(sets) sets", value: $sets, in: 1...10)
                     Stepper("Minimum reps: \(repsMin)", value: $repsMin, in: 1...50)
                     Stepper("Maximum reps: \(repsMax)", value: $repsMax, in: 1...50)
                     TextField("Target load in kg (optional)", text: $load).keyboardType(.decimalPad)
                     Stepper("Rest: \(rest) seconds", value: $rest, in: 15...600, step: 15)
+                } header: { Text("Plan your working sets") } footer: {
+                    Text("For this workout only. The set target includes working sets already logged and planned sets skipped. Increase it to add more work after stopping.")
                 }
                 Section { Button("Remove target", role: .destructive) { save(nil) } }
                 if let error { Section { Text(error).foregroundStyle(.red) } }

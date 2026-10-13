@@ -1,8 +1,10 @@
 import SwiftUI
+import UIKit
 import GymaCore
 
 struct WorkoutCoachView: View {
     @EnvironmentObject private var model: GymaAppModel
+    @Environment(\.dismiss) private var dismiss
     let workoutID: String
     @State private var message = ""
     @FocusState private var composerFocused: Bool
@@ -24,12 +26,12 @@ struct WorkoutCoachView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if let workout {
-                        sessionCard(workout)
+                        DisclosureGroup("Workout details") { sessionCard(workout) }
                         if !model.hasCoachAPIKey { keySetup }
                         if let messages = workout.coachConversation?.messages, !messages.isEmpty {
                             ForEach(messages) { chatMessage($0) }
                         } else {
-                            Text(workout.isActive ? "Ask about your technique, today's weights, how your sets compare with recent sessions, or an alternative exercise."
+                            Text(workout.isActive ? "Ask to swap an exercise for today, use another machine first, skip a set, or adjust today's weights and technique."
                                  : "Discuss what went well, why a target was missed, and what to consider next time. Add workout feedback so the coach can use your explanation.")
                                 .foregroundStyle(.secondary)
                         }
@@ -49,7 +51,6 @@ struct WorkoutCoachView: View {
                             .disabled(!model.hasCoachAPIKey || model.storageBlocked)
                         }
                         if workout.isActive, let proposal = workout.coachConversation?.proposal { proposalCard(proposal, workout: workout) }
-                        composer
                     } else {
                         ContentUnavailableView("Workout unavailable", systemImage: "figure.strengthtraining.traditional",
                                                description: Text("Return to your workouts to open a saved session."))
@@ -59,12 +60,38 @@ struct WorkoutCoachView: View {
                 .padding(20)
             }
             .background(GymaStyle.background)
+            .scrollDismissesKeyboard(.interactively)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if workout != nil {
+                    composer
+                        .padding(.horizontal, 16).padding(.vertical, 10)
+                        .background(.bar)
+                        .overlay(alignment: .top) { Divider() }
+                }
+            }
             .onChange(of: workout?.coachConversation?.messages.last?.id) { _, _ in
                 withAnimation { proxy.scrollTo("workout-coach-bottom", anchor: .bottom) }
             }
+            .onChange(of: inFlight) { _, _ in
+                withAnimation { proxy.scrollTo("workout-coach-bottom", anchor: .bottom) }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
+                if composerFocused { withAnimation { proxy.scrollTo("workout-coach-bottom", anchor: .bottom) } }
+            }
+            .onAppear { proxy.scrollTo("workout-coach-bottom", anchor: .bottom) }
         }
         .navigationTitle("Workout coach")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { composerFocused = false; dismiss() } label: { Label("Back", systemImage: "chevron.left") }
+            }
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { composerFocused = false }
+            }
+        }
         .onAppear { model.refreshCoachCredentials() }
     }
 
@@ -135,12 +162,26 @@ struct WorkoutCoachView: View {
             } else {
                 Text(model.name(for: change.exerciseID)).font(.title3.bold())
             }
-            if let target = original?.target {
-                targetSummary(target, heading: "Current target", completedSets: original?.workingSetCount ?? 0)
+            switch change.effectiveAction {
+            case .updateTarget:
+                if let target = original?.target {
+                    targetSummary(target, heading: "Current target", resolvedSets: original?.resolvedSetCount ?? 0)
+                }
+                targetSummary(change.target, heading: "Proposed target", resolvedSets: change.replacementExerciseID == nil ? (original?.resolvedSetCount ?? 0) : 0)
+            case .selectExercise:
+                Label("Do this exercise next", systemImage: "play.fill").font(.headline)
+                Text("Other exercises stay available for later.").font(.subheadline)
+            case .skipSet:
+                Label("Skip one planned set", systemImage: "forward.end").font(.headline)
+                Text("No reps or volume will be recorded for this set.").font(.subheadline)
+            case .skipExercise:
+                Label("Stop this exercise for today", systemImage: "stop.circle").font(.headline)
+                Text("Skip the remaining planned sets and continue with another exercise.").font(.subheadline)
             }
-            targetSummary(change.target, heading: "Proposed target", completedSets: original?.workingSetCount ?? 0)
             Text(change.reason).font(.subheadline).foregroundStyle(.secondary)
-            Text("Completed sets stay saved. New targets apply to upcoming sets; an active rest timer keeps its current duration.")
+            Text(change.effectiveAction == .updateTarget && change.replacementExerciseID == nil
+                 ? "For this workout only. Completed sets stay saved. Target changes apply to upcoming sets; an active rest timer keeps its current duration."
+                 : "For this workout only. Completed sets stay saved under the original exercise. Switching or skipping ends the relevant rest timer and saves the elapsed rest.")
                 .font(.caption).foregroundStyle(.secondary)
             if current {
                 Button {
@@ -162,7 +203,7 @@ struct WorkoutCoachView: View {
                 }
             }
             if workout.isActive {
-                Button("Keep current targets") { model.dismissWorkoutCoachChange(workoutID: workoutID) }
+                Button("Keep workout as it is") { model.dismissWorkoutCoachChange(workoutID: workoutID) }
                     .font(.subheadline)
                     .disabled(model.storageBlocked || inFlight)
             }
@@ -171,11 +212,11 @@ struct WorkoutCoachView: View {
         .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 24))
     }
 
-    private func targetSummary(_ target: ExerciseTarget, heading: String, completedSets: Int) -> some View {
+    private func targetSummary(_ target: ExerciseTarget, heading: String, resolvedSets: Int) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(heading).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             let reps = target.repsMin == target.repsMax ? "\(target.repsMin)" : "\(target.repsMin)–\(target.repsMax)"
-            Text("\(target.sets) total sets × \(reps) reps · \(max(0, target.sets - completedSets)) sets remaining")
+            Text("\(target.sets) total sets × \(reps) reps · \(max(0, target.sets - resolvedSets)) sets remaining")
                 .font(.subheadline.weight(.medium))
             Text("\(target.loadKg.map { "\($0.gymaNumber) kg" } ?? "Choose a comfortable load") · \(target.restSeconds)s rest")
                 .font(.subheadline)
@@ -186,11 +227,10 @@ struct WorkoutCoachView: View {
     }
 
     private var composer: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Ask your coach").font(.headline)
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .bottom, spacing: 10) {
-                TextField(workout?.isActive == true ? "Tips, different weights, another exercise…" : "What happened, what should I do next time…", text: $message, axis: .vertical)
-                    .lineLimit(2...6).focused($composerFocused)
+                TextField(workout?.isActive == true ? "Swap for today, skip a set, another machine first…" : "What happened, what should I do next time…", text: $message, axis: .vertical)
+                    .lineLimit(1...4).focused($composerFocused)
                     .disabled(inFlight || model.storageBlocked)
                 Button {
                     if model.sendWorkoutCoachMessage(message, workoutID: workoutID) {
@@ -201,10 +241,10 @@ struct WorkoutCoachView: View {
                     .disabled(!canSend)
             }
             .padding(14).background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 18))
-            Text(workout?.isActive == true
-                 ? "Messages, your profile, program, readiness, workout details and training summaries are sent to OpenAI. Suggested changes need your approval."
-                 : "Messages, your profile, program, workout feedback and training summaries are sent to OpenAI when you send a message.")
-                .font(.caption2).foregroundStyle(.secondary)
+            if !composerFocused {
+                Text("Messages and relevant training data are sent to OpenAI. Review suggested changes before applying.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
         }
     }
 }

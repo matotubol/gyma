@@ -585,6 +585,15 @@ private struct TrainingCalendarDayView: View {
     @State private var startingProgram = false
     @State private var activePresented = false
     @State private var activeWorkoutID: String?
+    @State private var workoutEditor: CalendarWorkoutDraft?
+
+    private struct CalendarWorkoutDraft: Identifiable {
+        let id = UUID()
+        let date: Date
+        let exercises: [WorkoutExercise]
+        let storeID: String
+        let revision: Int
+    }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -603,6 +612,16 @@ private struct TrainingCalendarDayView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         .sheet(isPresented: $movePresented) { TrainingCalendarMoveView(selection: selection) }
+        .sheet(item: $workoutEditor) { draft in
+            PlannedWorkoutEditor(title: "Edit this day's workout", exercises: draft.exercises) { exercises in
+                guard model.state.storeID == draft.storeID, model.state.revision == draft.revision else {
+                    throw GymaError.stale("Your training data changed. Reopen this day's workout before saving.")
+                }
+                guard model.update({ try $0.setCalendarWorkout(on: draft.date, exercises: exercises) }) else {
+                    throw GymaError.invalid(model.errorMessage ?? "The workout could not be saved.")
+                }
+            }
+        }
         .sheet(isPresented: $startingProgram) {
             ProgramWorkoutStartView { workoutID in
                 startingProgram = false
@@ -644,7 +663,26 @@ private struct TrainingCalendarDayView: View {
             }
         }
         if day.isTraining && day.workouts.isEmpty {
-            if let session = day.session { sessionPreview(session) }
+            if let session = day.session {
+                sessionPreview(session)
+                if calendarCanEdit(day, plan: plan, state: model.state, now: now) {
+                    Section {
+                        Button("Edit this day's workout", systemImage: "square.and.pencil") {
+                            workoutEditor = .init(date: day.date, exercises: session.exercises,
+                                                  storeID: model.state.storeID, revision: model.state.revision)
+                        }.disabled(model.storageBlocked || model.coachRequestInFlight)
+                        if plan.workoutOverride(on: day.date) != nil {
+                            Label("Custom exercises for this date", systemImage: "calendar.badge.checkmark")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button("Reset to program exercises") {
+                                model.update { try $0.setCalendarWorkout(on: day.date, exercises: nil) }
+                            }.disabled(model.storageBlocked || model.coachRequestInFlight)
+                        }
+                    } footer: {
+                        Text("Replace exercises, edit targets or change their order for this date only. You can also ask Coach to edit this date. Your recurring program stays unchanged.")
+                    }
+                }
+            }
             else if day.date < plan.calendar.startOfDay(for: now) {
                 Section("Training") {
                     Text("No workout recorded. This date does not add catch-up training.")
@@ -711,7 +749,7 @@ private struct TrainingCalendarDayView: View {
                 }.padding(.vertical, 3)
             }
         } header: { Text("Preview · \(session.title)") } footer: {
-            Text("These are your saved program's base targets. Loads, repetitions and readiness are reviewed when you prepare the session.")
+            Text("These are the targets planned for this date. Loads, repetitions and readiness are reviewed when you prepare the session.")
         }
     }
 }

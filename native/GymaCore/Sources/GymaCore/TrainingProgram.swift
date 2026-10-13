@@ -73,7 +73,8 @@ public struct TrainingProgram: Codable, Sendable, Identifiable, Equatable {
             }
             for exercise in session.exercises {
                 guard let definition = catalogByID[exercise.exerciseID], let target = exercise.target,
-                      exercise.sets.isEmpty, exercise.snapshotWorkingSetCount == nil else {
+                      exercise.sets.isEmpty, exercise.snapshotWorkingSetCount == nil,
+                      exercise.skippedSetCount == 0, exercise.skippedRemainingAt == nil else {
                     throw GymaError.invalid("Program exercises need catalog identities and targets without completed sets.")
                 }
                 guard definition.trainingMetadata?.measurement != .seconds else {

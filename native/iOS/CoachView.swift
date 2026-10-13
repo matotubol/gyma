@@ -1,10 +1,12 @@
 import SwiftUI
+import UIKit
 import GymaCore
 
 struct CoachView: View {
     @EnvironmentObject private var model: GymaAppModel
     @Environment(\.dismiss) private var dismiss
     var onAccepted: (() -> Void)? = nil
+    var onClose: (() -> Void)? = nil
     @State private var workoutStartPresented = false
     @State private var activePresented = false
     @State private var selectedWorkoutID: String?
@@ -60,7 +62,6 @@ struct CoachView: View {
                         if let proposals = conversation.proposedExercises, !proposals.isEmpty {
                             exerciseProposalsCard(proposals)
                         }
-                        composer
                     } else {
                         TimelineView(.periodic(from: .now, by: 30)) { context in introduction(at: context.date) }
                         if let previous = conversation {
@@ -80,12 +81,40 @@ struct CoachView: View {
                 .padding(20)
             }
             .background(GymaStyle.background)
+            .scrollDismissesKeyboard(.interactively)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if conversation?.startedWorkoutID == nil, conversation != nil {
+                    composer
+                        .padding(.horizontal, 16).padding(.vertical, 10)
+                        .background(.bar)
+                        .overlay(alignment: .top) { Divider() }
+                }
+            }
             .onChange(of: conversation?.messages.last?.id) { _, _ in
                 withAnimation { proxy.scrollTo("coach-bottom", anchor: .bottom) }
             }
+            .onChange(of: model.coachRequestInFlight) { _, _ in
+                withAnimation { proxy.scrollTo("coach-bottom", anchor: .bottom) }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
+                if composerFocused { withAnimation { proxy.scrollTo("coach-bottom", anchor: .bottom) } }
+            }
+            .onAppear { proxy.scrollTo("coach-bottom", anchor: .bottom) }
         }
         .navigationTitle("Coach")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    composerFocused = false
+                    if let onClose { onClose() } else { dismiss() }
+                } label: { Label("Back", systemImage: "chevron.left") }
+            }
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") { composerFocused = false }
+            }
             if conversation != nil {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("New conversation", systemImage: "plus") { replacePresented = true }
@@ -401,15 +430,10 @@ struct CoachView: View {
     }
 
     private var composer: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Talk it through").font(.headline)
-            Text("Ask to change your program, cycle, training days, exercises or sets, or review a specific date.")
-                .font(.caption).foregroundStyle(.secondary)
-            Text("You can describe unfamiliar machines in your own words. Your coach will ask for details when needed and show any new exercises for you to confirm.")
-                .font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .bottom, spacing: 10) {
                 TextField("What would you like to change?", text: $message, axis: .vertical)
-                    .lineLimit(2...6).focused($composerFocused)
+                    .lineLimit(1...4).focused($composerFocused)
                     .disabled(model.coachRequestInFlight || model.storageBlocked)
                 Button {
                     if model.sendCoachMessage(message) {
@@ -423,8 +447,10 @@ struct CoachView: View {
                 .disabled(!canSend)
             }
             .padding(14).background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 18))
-            Text("Messages and relevant app data are sent to OpenAI when you ask the coach, including older records it looks up. Review and apply proposed changes here. Unapplied app changes are cleared when the app restarts.")
-                .font(.caption2).foregroundStyle(.secondary)
+            if !composerFocused {
+                Text("Messages and relevant training data are sent to OpenAI. Review suggested changes before applying.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
         }
     }
 }

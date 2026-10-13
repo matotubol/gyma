@@ -81,6 +81,10 @@ public extension GymaState {
         try checkIn.validate()
         try validateAvailableIncrements(program)
         var exercises = program.nextExercises(history: workouts, now: now, catalog: catalog, priorPrograms: programHistory ?? [])
+        if let custom = trainingCalendar?.workoutOverride(on: now) {
+            // Explicit one-day targets take precedence over automatic progression.
+            exercises = custom.exercises
+        }
         // A local rule cannot assess a new pain report. Preserve the plan for discussion, with no increase.
         let latestSession = workouts.filter { $0.programID == program.id && $0.programSessionID == session.id && !$0.isActive }
             .sorted { ($0.end ?? $0.start) > ($1.end ?? $1.start) }.first

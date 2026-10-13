@@ -1,5 +1,9 @@
 import Foundation
 
+public enum WorkoutCoachAction: String, Codable, Sendable {
+    case updateTarget, selectExercise, skipSet, skipExercise
+}
+
 /// A proposed edit is bound to the training state that the coach actually saw.
 public struct WorkoutCoachChange: Codable, Sendable, Identifiable, Equatable {
     public var id: String
@@ -10,17 +14,22 @@ public struct WorkoutCoachChange: Codable, Sendable, Identifiable, Equatable {
     public var replacementExerciseID: String?
     public var target: ExerciseTarget
     public var reason: String
+    /// Missing on older saved proposals, which only adjusted targets or substituted exercises.
+    public var action: WorkoutCoachAction?
+    public var effectiveAction: WorkoutCoachAction { action ?? .updateTarget }
 
     public init(id: String = UUID().uuidString, storeID: String, workoutID: String, basedOnRevision: Int,
-                exerciseID: String, replacementExerciseID: String? = nil, target: ExerciseTarget, reason: String) {
+                exerciseID: String, replacementExerciseID: String? = nil, target: ExerciseTarget, reason: String,
+                action: WorkoutCoachAction? = nil) {
         self.id = id; self.storeID = storeID; self.workoutID = workoutID; self.basedOnRevision = basedOnRevision
         self.exerciseID = exerciseID; self.replacementExerciseID = replacementExerciseID
-        self.target = target; self.reason = reason
+        self.target = target; self.reason = reason; self.action = action
     }
 
     public func validate() throws {
         guard [id, storeID, workoutID, exerciseID].allSatisfy({ !$0.isEmpty && $0.count <= 200 }),
               replacementExerciseID.map({ !$0.isEmpty && $0.count <= 200 && $0 != exerciseID }) ?? true,
+              effectiveAction == .updateTarget || replacementExerciseID == nil,
               (0...1_000_000_000).contains(basedOnRevision),
               !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, reason.count <= 2000 else {
             throw GymaError.invalid("The coach suggested an invalid workout change.")
@@ -32,15 +41,20 @@ public struct WorkoutCoachChange: Codable, Sendable, Identifiable, Equatable {
         try validate()
         guard workout.isActive, workout.id == workoutID,
               let exercise = workout.exercises.first(where: { $0.exerciseID == exerciseID }),
-              !exercise.isTargetComplete, target.sets > exercise.workingSetCount else {
+              !exercise.isTargetResolved else {
             throw GymaError.stale("That exercise has changed or is complete. Ask the coach to review the current workout.")
         }
         guard catalog.contains(where: { $0.id == exerciseID }) else { throw GymaError.invalid("This exercise is no longer in your library.") }
         if let replacementExerciseID {
-            guard exercise.sets.isEmpty, catalog.contains(where: { $0.id == replacementExerciseID }),
+            guard catalog.contains(where: { $0.id == replacementExerciseID }),
                   !workout.exercises.contains(where: { $0.exerciseID == replacementExerciseID }) else {
-                throw GymaError.invalid("Only an exercise with no logged sets can be replaced with an unused exercise from your library.")
+                throw GymaError.invalid("Choose an unused exercise from your library. Logged sets stay with the original exercise.")
             }
+        } else if effectiveAction == .updateTarget, target.sets <= exercise.resolvedSetCount {
+            throw GymaError.invalid("The new target must leave room for upcoming sets. Use Skip set or Stop exercise to cancel planned work.")
+        }
+        if effectiveAction == .skipSet, exercise.target == nil {
+            throw GymaError.invalid("This exercise has no planned set to skip. Stop the exercise instead.")
         }
     }
 }
@@ -99,7 +113,9 @@ public extension GymaState {
                 throw GymaError.stale("The proposed change is based on an earlier workout. Ask again with your latest sets.")
             }
             try change.validate(for: workouts[index], catalog: catalog)
-            try CoachingConstraints.validate(exercises: [.init(exerciseID: change.replacementExerciseID ?? change.exerciseID, target: change.target)], profile: athleteProfile, catalog: catalog)
+            if change.effectiveAction == .updateTarget {
+                try CoachingConstraints.validate(exercises: [.init(exerciseID: change.replacementExerciseID ?? change.exerciseID, target: change.target)], profile: athleteProfile, catalog: catalog)
+            }
         }
         var conversation = expectedConversation
         conversation.messages.append(CoachMessage(role: .assistant, content: message))
@@ -115,15 +131,31 @@ public extension GymaState {
             throw GymaError.stale("Your workout changed after this suggestion. Ask the coach to update it before applying.")
         }
         try change.validate(for: workouts[index], catalog: catalog)
-        try CoachingConstraints.validate(exercises: [.init(exerciseID: change.replacementExerciseID ?? change.exerciseID, target: change.target)], profile: athleteProfile, catalog: catalog)
+        if change.effectiveAction == .updateTarget {
+            try CoachingConstraints.validate(exercises: [.init(exerciseID: change.replacementExerciseID ?? change.exerciseID, target: change.target)], profile: athleteProfile, catalog: catalog)
+        }
         guard let exerciseIndex = workouts[index].exercises.firstIndex(where: { $0.exerciseID == change.exerciseID }) else {
             throw GymaError.stale("This exercise is no longer in the workout.")
         }
-        // Completed sets, completed rests and the currently running rest stay intact.
-        if let replacement = change.replacementExerciseID { workouts[index].exercises[exerciseIndex].exerciseID = replacement }
-        workouts[index].exercises[exerciseIndex].target = change.target
-        workouts[index].coachConversation?.proposal = nil
-        revision += 1
+        var next = self
+        switch change.effectiveAction {
+        case .updateTarget:
+            if let replacement = change.replacementExerciseID {
+                try next.replaceExercise(change.exerciseID, with: replacement, workoutID: workoutID, target: change.target)
+            } else {
+                // A target adjustment does not shorten a rest already in progress.
+                next.workouts[index].exercises[exerciseIndex].target = change.target
+                next.revision += 1
+            }
+        case .selectExercise:
+            try next.selectExercise(change.exerciseID, workoutID: workoutID)
+        case .skipSet:
+            try next.skipSet(exerciseID: change.exerciseID, workoutID: workoutID)
+        case .skipExercise:
+            try next.skipExercise(exerciseID: change.exerciseID, workoutID: workoutID)
+        }
+        next.workouts[index].coachConversation?.proposal = nil
+        self = next
     }
 
     mutating func dismissWorkoutCoachChange(workoutID: String) throws {

@@ -4,6 +4,7 @@ import Foundation
 public struct CoachAppChange: Codable, Sendable, Equatable {
     public enum Kind: String, Codable, Sendable, CaseIterable {
         case replaceProgram, deleteProgram, configureCalendar, setTrainingDay, moveTrainingDay
+        case setCalendarWorkout, resetCalendarWorkout
         case setActivity, completeActivity, upsertExercise, deleteExercise, updateProfile, clearProfile
         case renameWorkout, deleteWorkout, restoreWorkout, correctSet, removeSet
         case setWorkoutTarget, addWorkoutExercise, removeWorkoutExercise, setRestEnabled
@@ -25,18 +26,20 @@ public struct CoachAppChange: Codable, Sendable, Equatable {
     public var set: WorkSet?
     public var setID: String?
     public var target: ExerciseTarget?
+    public var exercises: [WorkoutExercise]?
 
     public init(kind: Kind, program: TrainingProgram? = nil, programID: String? = nil,
                 calendar: TrainingCalendarPlan? = nil, date: Date? = nil, destinationDate: Date? = nil,
                 enabled: Bool? = nil, activityKind: CalendarActivityKind? = nil, durationMinutes: Int? = nil,
                 exercise: ExerciseDefinition? = nil, exerciseID: String? = nil, profile: AthleteProfile? = nil,
                 workoutID: String? = nil, name: String? = nil, set: WorkSet? = nil,
-                setID: String? = nil, target: ExerciseTarget? = nil) {
+                setID: String? = nil, target: ExerciseTarget? = nil, exercises: [WorkoutExercise]? = nil) {
         self.kind = kind; self.program = program; self.programID = programID; self.calendar = calendar
         self.date = date; self.destinationDate = destinationDate; self.enabled = enabled
         self.activityKind = activityKind; self.durationMinutes = durationMinutes
         self.exercise = exercise; self.exerciseID = exerciseID; self.profile = profile
         self.workoutID = workoutID; self.name = name; self.set = set; self.setID = setID; self.target = target
+        self.exercises = exercises
     }
 
     /// Reject unused payloads so the review cannot describe only part of a requested operation.
@@ -49,7 +52,7 @@ public struct CoachAppChange: Codable, Sendable, Equatable {
             exercise == nil ? nil : "exercise", exerciseID == nil ? nil : "exerciseID",
             profile == nil ? nil : "profile", workoutID == nil ? nil : "workoutID",
             name == nil ? nil : "name", set == nil ? nil : "set", setID == nil ? nil : "setID",
-            target == nil ? nil : "target"
+            target == nil ? nil : "target", exercises == nil ? nil : "exercises"
         ].compactMap { $0 })
         let required: Set<String>
         var optional: Set<String> = []
@@ -59,6 +62,8 @@ public struct CoachAppChange: Codable, Sendable, Equatable {
         case .configureCalendar: required = ["calendar"]
         case .setTrainingDay: required = ["date", "enabled"]
         case .moveTrainingDay: required = ["date", "destinationDate"]
+        case .setCalendarWorkout: required = ["date", "exercises"]
+        case .resetCalendarWorkout: required = ["date"]
         case .setActivity: required = ["date", "activityKind", "enabled"]; optional = ["durationMinutes"]
         case .completeActivity: required = ["date", "activityKind", "enabled"]
         case .upsertExercise: required = ["exercise"]
@@ -200,7 +205,7 @@ private extension GymaState {
             trainingProgram = nil
             return "Remove current program ‘\(program.title)’. Its saved version and completed workouts remain in history."
         case .configureCalendar:
-            let plan = change.calendar!
+            var plan = change.calendar!
             if let previous = trainingCalendar, plan.startDate < previous.reviewDate {
                 let preserved = try previous.reconfigured(startDate: plan.startDate, cycleAnchorDate: plan.cycleAnchorDate,
                                                           trainingCycleDays: plan.trainingCycleDays, prefersUpperLower: plan.prefersUpperLower)
@@ -208,6 +213,8 @@ private extension GymaState {
                       preserved.dayOverrides == plan.dayOverrides, preserved.activities == plan.activities else {
                     throw GymaError.invalid("Calendar setup must preserve saved individual dates and activities. Use training-day and activity changes to edit those entries explicitly.")
                 }
+                // Calendar setup cannot silently replace one-day prescriptions.
+                plan.workoutOverrides = preserved.workoutOverrides
             }
             try saveTrainingCalendar(plan, now: now)
             let overrides = plan.dayOverrides.map {
@@ -223,6 +230,15 @@ private extension GymaState {
         case .moveTrainingDay:
             try moveCalendarTrainingDay(from: change.date!, to: change.destinationDate!, now: now)
             return "Move training from \(coachDate(change.date!)) to \(coachDate(change.destinationDate!))."
+        case .setCalendarWorkout:
+            try setCalendarWorkout(on: change.date!, exercises: change.exercises!, now: now)
+            let details = change.exercises!.enumerated().map { index, entry in
+                "\(index + 1). \(exercise(entry.exerciseID).name): \(coachTargetDescription(entry.target))"
+            }.joined(separator: "\n")
+            return "Change exercises only on \(coachDate(change.date!)):\n\(details)\nThe recurring program is unchanged."
+        case .resetCalendarWorkout:
+            try setCalendarWorkout(on: change.date!, exercises: nil, now: now)
+            return "Use the recurring program's exercises again on \(coachDate(change.date!))."
         case .setActivity:
             try setCalendarActivity(on: change.date!, kind: change.activityKind!, isPlanned: change.enabled!, durationMinutes: change.durationMinutes, now: now)
             let duration = trainingCalendar?.activities(on: change.date!).first(where: { $0.kind == change.activityKind })?.durationMinutes

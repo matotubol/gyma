@@ -3,6 +3,9 @@ import Foundation
 public enum WatchAction: Codable, Sendable, Equatable {
     case startAcceptedPlan(planID: String, readiness: WorkoutReadiness)
     case logSet(exerciseID: String, set: WorkSet)
+    case selectExercise(exerciseID: String)
+    case skipSet(exerciseID: String)
+    case skipExercise(exerciseID: String)
     case skipRest(timerID: String)
     case extendRest(timerID: String, seconds: Int)
     case finishWorkout
@@ -53,11 +56,16 @@ public struct CompanionSnapshot: Codable, Sendable, Equatable {
         if var current = workout {
             // Sync only the active session and a bounded recent set window. Phone keeps full history.
             isTruncated = current.exercises.count > 12 || current.exercises.contains { $0.sets.count > 20 }
-            current.exercises = Array(current.exercises.prefix(12)).map { item in
+            var visibleExercises = Array(current.exercises.prefix(12))
+            if let selected = current.nextExercise, !visibleExercises.contains(where: { $0.exerciseID == selected.exerciseID }) {
+                visibleExercises[visibleExercises.count - 1] = selected
+            }
+            current.exercises = visibleExercises.map { item in
                 var item = item; item.snapshotWorkingSetCount = item.workingSetCount; item.sets = Array(item.sets.suffix(20))
                 if var target = item.target { target.reason = String(target.reason.prefix(200)); item.target = target }
                 return item
             }
+            if !current.exercises.contains(where: { $0.exerciseID == current.selectedExerciseID }) { current.selectedExerciseID = nil }
             current.planTitle = current.planTitle.map { String($0.prefix(160)) }
             // Notes and other sensitive history are not needed for watch controls.
             current.checkIn = nil; current.coachConversation = nil
@@ -81,6 +89,7 @@ public struct CompanionSnapshot: Codable, Sendable, Equatable {
                 current.exercises[index].sets.removeFirst()
             } else {
                 current.exercises.removeLast(); catalog.removeLast()
+                if !current.exercises.contains(where: { $0.exerciseID == current.selectedExerciseID }) { current.selectedExerciseID = nil }
             }
             if let rest = current.restHistory?.last,
                !current.exercises.contains(where: { $0.exerciseID == rest.exerciseID && $0.sets.contains(where: { $0.id == rest.sourceSetID }) }) { current.restHistory = nil }
@@ -117,6 +126,11 @@ public enum GymaReducer {
             let age = now.timeIntervalSince(command.createdAt)
             guard age.isFinite, age >= -300, age <= 86400 else { throw GymaError.stale("This command is too old or the watch clock differs significantly. Refresh before trying again.") }
             switch command.action {
+            case .selectExercise, .skipSet, .skipExercise:
+                guard command.basedOnRevision != nil else { throw GymaError.stale("Refresh this workout before changing its remaining sets.") }
+            default: break
+            }
+            switch command.action {
             case .startAcceptedPlan(let planID, let readiness):
                 guard command.workoutID == planID else { throw GymaError.invalid("The start command does not match its accepted plan.") }
                 guard age <= 300, state.planningCalendar(fallback: calendar).isDate(command.createdAt, inSameDayAs: now),
@@ -132,6 +146,12 @@ public enum GymaReducer {
             case .logSet(let exerciseID, let set):
                 // Queued delivery must not restart a rest interval that already elapsed on watch.
                 try next.addSet(set, exerciseID: exerciseID, workoutID: command.workoutID, now: min(command.createdAt, now))
+            case .selectExercise(let exerciseID):
+                try next.selectExercise(exerciseID, workoutID: command.workoutID, now: min(command.createdAt, now))
+            case .skipSet(let exerciseID):
+                try next.skipSet(exerciseID: exerciseID, workoutID: command.workoutID, now: min(command.createdAt, now))
+            case .skipExercise(let exerciseID):
+                try next.skipExercise(exerciseID: exerciseID, workoutID: command.workoutID, now: min(command.createdAt, now))
             case .skipRest(let timerID): try next.skipRest(timerID: timerID, now: min(command.createdAt, now))
             case .extendRest(let timerID, let seconds): try next.extendRest(timerID: timerID, seconds: seconds, now: now)
             case .finishWorkout: try next.finishWorkout(command.workoutID, at: min(command.createdAt, now))

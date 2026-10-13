@@ -48,7 +48,8 @@ public struct WorkoutPlan: Codable, Sendable, Identifiable, Equatable {
         }
         let catalogIDs = Set(catalog.map(\.id))
         for exercise in exercises {
-            guard catalogIDs.contains(exercise.exerciseID), exercise.sets.isEmpty, exercise.snapshotWorkingSetCount == nil, let target = exercise.target else {
+            guard catalogIDs.contains(exercise.exerciseID), exercise.sets.isEmpty, exercise.snapshotWorkingSetCount == nil,
+                  exercise.skippedSetCount == 0, exercise.skippedRemainingAt == nil, let target = exercise.target else {
                 throw GymaError.invalid("Every planned exercise needs a known exercise and a target, with no completed sets.")
             }
             try target.validate()

@@ -93,10 +93,23 @@ public struct WorkSet: Codable, Sendable, Identifiable, Equatable {
     }
 }
 
+/// A decision not to perform a planned set. Never counted as completed training.
+public struct SkippedSet: Codable, Sendable, Identifiable, Equatable {
+    public var id: String
+    public var skippedAt: Date
+    public init(id: String = UUID().uuidString, skippedAt: Date = Date()) {
+        self.id = id; self.skippedAt = skippedAt
+    }
+}
+
 public struct WorkoutExercise: Codable, Sendable, Identifiable, Equatable {
     public var exerciseID: String
     public var sets: [WorkSet]
     public var target: ExerciseTarget?
+    /// Optional so saved workouts from before skipping was supported still decode.
+    public var skippedSets: [SkippedSet]?
+    /// Also allows an unplanned exercise with no set target to be left unfinished explicitly.
+    public var skippedRemainingAt: Date?
     /// Watch snapshots contain only a recent set window; this preserves progress from the full session.
     public var snapshotWorkingSetCount: Int?
     public var id: String { exerciseID }
@@ -108,6 +121,11 @@ public struct WorkoutExercise: Codable, Sendable, Identifiable, Equatable {
     public var topKg: Double { sets.map(\.kg).max() ?? 0 }
     public var best1rm: Double { sets.map(\.oneRepMax).max() ?? 0 }
     public var workingSetCount: Int { snapshotWorkingSetCount ?? sets.filter { $0.isWarmup == false }.count }
+    public var skippedSetCount: Int { skippedSets?.count ?? 0 }
+    public var resolvedSetCount: Int { workingSetCount + skippedSetCount }
+    public var remainingSetCount: Int { max(0, (target?.sets ?? 0) - resolvedSetCount) }
+    public var isTargetResolved: Bool { skippedRemainingAt != nil || (target.map { resolvedSetCount >= $0.sets } ?? false) }
+    /// Completion reflects actual work; skipped sets only resolve navigation.
     public var isTargetComplete: Bool { target.map { workingSetCount >= $0.sets } ?? false }
 }
 
@@ -124,6 +142,7 @@ public struct Workout: Codable, Sendable, Identifiable, Equatable {
     public var acceptedPlanID: String?
     public var planAcceptedAt: Date?
     public var exercises: [WorkoutExercise]
+    public var selectedExerciseID: String?
     public var restHistory: [CompletedRest]?
     public var programID: String?
     public var programSessionID: String?
@@ -135,7 +154,12 @@ public struct Workout: Codable, Sendable, Identifiable, Equatable {
     public var totalSets: Int { exercises.reduce(0) { $0 + $1.sets.count } }
     public var totalReps: Int { exercises.reduce(0) { $0 + $1.reps } }
     public var volume: Double { exercises.reduce(0) { $0 + $1.volume } }
-    public var nextExercise: WorkoutExercise? { exercises.first { !$0.isTargetComplete } }
+    public var nextExercise: WorkoutExercise? {
+        if let selectedExerciseID, let selected = exercises.first(where: { $0.exerciseID == selectedExerciseID && !$0.isTargetResolved }) {
+            return selected
+        }
+        return exercises.first { !$0.isTargetResolved }
+    }
     public func duration(at now: Date = Date()) -> TimeInterval { max(0, (end ?? now).timeIntervalSince(start)) }
     public func validate() throws {
         let supportedDates = -2_208_988_800.0...4_102_444_800.0 // 1900 through 2100; also safe for UI duration arithmetic.
@@ -157,10 +181,26 @@ public struct Workout: Codable, Sendable, Identifiable, Equatable {
         }
         try coachConversation?.validate()
         if Set(exercises.map(\.exerciseID)).count != exercises.count { throw GymaError.invalid("A workout cannot contain duplicate exercises.") }
+        if let selectedExerciseID, !exercises.contains(where: { $0.exerciseID == selectedExerciseID }) {
+            throw GymaError.invalid("The selected exercise is no longer in the workout.")
+        }
         var setIDs = Set<String>()
+        var skippedIDs = Set<String>()
         for exercise in exercises {
             guard !exercise.exerciseID.isEmpty, exercise.exerciseID.count <= 200 else { throw GymaError.invalid("Missing or invalid exercise identity.") }
             try exercise.target?.validate()
+            guard exercise.skippedSetCount <= 10 else { throw GymaError.invalid("Too many skipped sets for an exercise.") }
+            if let skippedAt = exercise.skippedRemainingAt {
+                guard supportedDates.contains(skippedAt.timeIntervalSince1970), skippedAt >= start,
+                      end.map({ skippedAt <= $0 }) ?? true else { throw GymaError.invalid("Invalid skipped exercise date.") }
+            }
+            for skipped in exercise.skippedSets ?? [] {
+                guard !skipped.id.isEmpty, skipped.id.count <= 200, skippedIDs.insert(skipped.id).inserted,
+                      supportedDates.contains(skipped.skippedAt.timeIntervalSince1970), skipped.skippedAt >= start,
+                      end.map({ skipped.skippedAt <= $0 }) ?? true else {
+                    throw GymaError.invalid("Invalid skipped set.")
+                }
+            }
             if let count = exercise.snapshotWorkingSetCount {
                 guard (0...1_000_000).contains(count), count >= exercise.sets.filter({ $0.isWarmup == false }).count else { throw GymaError.invalid("Invalid snapshot set count.") }
             }

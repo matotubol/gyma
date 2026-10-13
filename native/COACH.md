@@ -1,5 +1,15 @@
 # AI coach and guided Watch workouts
 
+## Change a single workout and train in any order
+
+Calendar → select a training date → Day details → **Edit this day's workout** opens the exercise list. Replace movements, edit targets, add/remove exercises, or drag to reorder. Saving affects only that date, survives backup/restore, and follows the workout if you move its training date. **Reset to program exercises** removes the date's customization. Coach can propose the same date-specific changes through an Apply changes card; it reads the projected session through `calendarDays` rather than replacing the recurring program. Readiness and available time are still checked when starting. Rotation follows actual completed training; the saved exercise prescription belongs to the date.
+
+The pre-start review also has **Edit exercises and order** for temporary adjustments. In an active iPhone workout, use **Edit order** or an exercise's options to replace it, do it next, skip a planned set, or stop its remaining sets. Replacing a partially completed exercise keeps its recorded sets and inserts the replacement for the remaining work. The saved recurring program stays unchanged.
+
+Watch active workouts now open an **Exercises** menu. Choose any unfinished exercise when a machine is occupied, and use the list button to return and choose another. The options menu offers **Cancel set** for an unsaved attempt, **Skip this set**, and **Stop this exercise**. Canceling records no set. Skips are stored separately from completed working sets, so they contribute no reps, load, volume or successful progression. The menu and history distinguish completed and skipped work. Selection and skips use the existing durable phone receipt flow; changing exercise ends the previous rest. A set already sent to the phone must finish syncing before another action.
+
+Both coach conversations include a visible **Back** control and a keyboard-aware message composer. The keyboard's Done button and an interactive scroll dismiss it; long messages remain scrollable above the composer.
+
 ## Eight-week shift calendar
 
 Overview → Your calendar opens one complete month, initially the current month with today selected. Previous/next controls browse earlier and later months, including dates outside the active eight-week block. Today returns to the current month. Selecting a date shows its saved schedule, optional activities and recorded training below the month grid. Previous blocks and workouts outside a saved block remain accessible through the same month view; a day without a saved schedule is not labelled a recovery day. Block details and the key are available below the calendar.

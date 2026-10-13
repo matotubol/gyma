@@ -4,6 +4,7 @@ public extension GymaState {
     /// The calendar schedules opportunities to train. Only completed workouts advance the program.
     mutating func saveTrainingCalendar(_ plan: TrainingCalendarPlan, now: Date = Date()) throws {
         try plan.validate()
+        try plan.validateWorkoutOverrides(catalog: catalog)
         try validateCalendarEditDate(now)
         guard trainingCalendar != plan else { return }
         let today = plan.calendar.startOfDay(for: now)
@@ -15,7 +16,8 @@ public extension GymaState {
                   plan.dates.filter({ $0 < today }).allSatisfy({ date in
                       previous.cycleDay(on: date) == plan.cycleDay(on: date) &&
                       previous.isTrainingDay(on: date) == plan.isTrainingDay(on: date) &&
-                      previous.activities(on: date) == plan.activities(on: date)
+                      previous.activities(on: date) == plan.activities(on: date) &&
+                      previous.workoutOverride(on: date) == plan.workoutOverride(on: date)
                   }) else {
                 throw GymaError.invalid("Earlier calendar days cannot be changed. Start a new block today or later, or move individual upcoming sessions.")
             }
@@ -36,7 +38,8 @@ public extension GymaState {
             }
             for workout in workouts where plan.dayOffset(for: workout.start) != nil && previous.dayOffset(for: workout.start) != nil {
                 guard previous.cycleDay(on: workout.start) == plan.cycleDay(on: workout.start),
-                      previous.isTrainingDay(on: workout.start) == plan.isTrainingDay(on: workout.start) else {
+                      previous.isTrainingDay(on: workout.start) == plan.isTrainingDay(on: workout.start),
+                      previous.workoutOverride(on: workout.start) == plan.workoutOverride(on: workout.start) else {
                     throw GymaError.invalid("A day with a recorded workout cannot be rescheduled.")
                 }
             }

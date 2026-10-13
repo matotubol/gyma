@@ -79,10 +79,14 @@ public struct GymaState: Codable, Sendable, Equatable {
         try athleteProfile?.validate()
         try trainingProgram?.validate(catalog: catalog)
         try trainingCalendar?.validate()
+        try trainingCalendar?.validateWorkoutOverrides(catalog: catalog)
         guard (trainingCalendarHistory?.count ?? 0) <= 100 else {
             throw GymaError.invalid("Calendar history can contain at most 100 saved blocks.")
         }
-        for plan in trainingCalendarHistory ?? [] { try plan.validate() }
+        for plan in trainingCalendarHistory ?? [] {
+            try plan.validate()
+            try plan.validateWorkoutOverrides(catalog: catalog)
+        }
         for program in programHistory ?? [] { try program.validate(catalog: catalog) }
         guard (programHistory?.count ?? 0) <= 100,
               Set((workoutReviews ?? []).map(\.workoutID)).count == (workoutReviews?.count ?? 0) else {
@@ -227,6 +231,7 @@ public struct GymaState: Codable, Sendable, Equatable {
         try workout.validate()
         guard workout.isActive, !workouts.contains(where: { $0.id == workout.id }), !deletedWorkouts.contains(where: { $0.id == workout.id }),
               workout.exercises.allSatisfy({ $0.sets.isEmpty }),
+              workout.exercises.allSatisfy({ $0.skippedSetCount == 0 && $0.skippedRemainingAt == nil }),
               workout.exercises.allSatisfy({ $0.snapshotWorkingSetCount == nil }), workout.restHistory?.isEmpty ?? true,
               Set(workout.exercises.map(\.exerciseID)).count == workout.exercises.count else { throw GymaError.invalid("A new workout needs unique exercises and no completed sets.") }
         for entry in workout.exercises where !catalog.contains(where: { $0.id == entry.exerciseID }) { throw GymaError.invalid("Unknown exercise in workout.") }
@@ -273,6 +278,7 @@ public struct GymaState: Codable, Sendable, Equatable {
     public mutating func removeExercise(_ exerciseID: String, workoutID: String) throws {
         let wi = try activeIndex(workoutID); let ei = try exerciseIndex(exerciseID, in: wi)
         workouts[wi].exercises.remove(at: ei)
+        if workouts[wi].selectedExerciseID == exerciseID { workouts[wi].selectedExerciseID = nil }
         workouts[wi].restHistory?.removeAll { $0.exerciseID == exerciseID }
         if restTimer?.exerciseID == exerciseID { restTimer = nil }
         revision += 1
@@ -281,7 +287,43 @@ public struct GymaState: Codable, Sendable, Equatable {
         try target?.validate()
         let wi = try activeIndex(workoutID); let ei = try exerciseIndex(exerciseID, in: wi)
         workouts[wi].exercises[ei].target = target
+        workouts[wi].exercises[ei].skippedRemainingAt = nil
         if restTimer?.exerciseID == exerciseID, target == nil || !canRest(workout: workouts[wi], entry: workouts[wi].exercises[ei]) { restTimer = nil }
+        revision += 1
+    }
+    /// Changes only today's next exercise; earlier unfinished exercises remain available.
+    public mutating func selectExercise(_ exerciseID: String, workoutID: String, now: Date = Date()) throws {
+        let wi = try activeIndex(workoutID); let ei = try exerciseIndex(exerciseID, in: wi)
+        try validateEventDate(now, workoutIndex: wi)
+        guard !workouts[wi].exercises[ei].isTargetResolved else {
+            throw GymaError.stale("That exercise has no remaining sets. Choose another exercise.")
+        }
+        try completeRest(at: now)
+        workouts[wi].selectedExerciseID = exerciseID
+        revision += 1
+    }
+    public mutating func skipSet(exerciseID: String, workoutID: String, now: Date = Date()) throws {
+        let wi = try activeIndex(workoutID); let ei = try exerciseIndex(exerciseID, in: wi)
+        try validateEventDate(now, workoutIndex: wi)
+        guard !workouts[wi].exercises[ei].isTargetResolved, workouts[wi].exercises[ei].remainingSetCount > 0 else {
+            throw GymaError.stale("That exercise has no remaining planned sets to skip.")
+        }
+        try completeRest(at: now)
+        if workouts[wi].exercises[ei].skippedSets == nil { workouts[wi].exercises[ei].skippedSets = [] }
+        workouts[wi].exercises[ei].skippedSets?.append(.init(skippedAt: now))
+        revision += 1
+    }
+    public mutating func skipExercise(exerciseID: String, workoutID: String, now: Date = Date()) throws {
+        let wi = try activeIndex(workoutID); let ei = try exerciseIndex(exerciseID, in: wi)
+        try validateEventDate(now, workoutIndex: wi)
+        let entry = workouts[wi].exercises[ei]
+        guard !entry.isTargetResolved else { throw GymaError.stale("That exercise has no remaining sets to skip.") }
+        try completeRest(at: now)
+        if entry.remainingSetCount > 0 {
+            if workouts[wi].exercises[ei].skippedSets == nil { workouts[wi].exercises[ei].skippedSets = [] }
+            workouts[wi].exercises[ei].skippedSets?.append(contentsOf: (0..<entry.remainingSetCount).map { _ in SkippedSet(skippedAt: now) })
+        }
+        workouts[wi].exercises[ei].skippedRemainingAt = now
         revision += 1
     }
     public mutating func updateCheckIn(_ checkIn: SessionCheckIn, workoutID: String) throws {
@@ -327,6 +369,10 @@ public struct GymaState: Codable, Sendable, Equatable {
     }
     private func validateEventDate(_ date: Date, workoutIndex: Int) throws {
         guard (-2_208_988_800.0...4_102_444_800.0).contains(date.timeIntervalSince1970), date >= workouts[workoutIndex].start,
+              workouts[workoutIndex].exercises.allSatisfy({ exercise in
+                  (exercise.skippedRemainingAt.map({ $0 <= date }) ?? true) &&
+                  (exercise.skippedSets?.allSatisfy({ $0.skippedAt <= date }) ?? true)
+              }),
               workouts[workoutIndex].restHistory?.allSatisfy({ $0.endedAt <= date }) ?? true else {
             throw GymaError.invalid("Workout events must occur after the session started.")
         }
@@ -356,6 +402,6 @@ public struct GymaState: Codable, Sendable, Equatable {
     private func canRest(workout: Workout, entry: WorkoutExercise) -> Bool {
         restEnabled && workout.isActive && entry.sets.last?.isWarmup == false &&
         (workout.acceptedPlanID != nil || (workout.checkIn?.painNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)) &&
-        (entry.target.map { entry.workingSetCount < $0.sets } ?? true)
+        !entry.isTargetResolved
     }
 }

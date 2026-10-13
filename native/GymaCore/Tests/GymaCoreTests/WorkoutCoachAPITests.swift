@@ -40,7 +40,7 @@ final class WorkoutCoachAPITests: XCTestCase {
 
     func testMalformedIncompleteRefusedAndUnsafeChangesAreRejected() throws {
         var unknown = change; unknown["exerciseID"] = "unknown"
-        var overwrite = change; overwrite["replacementExerciseID"] = "squat"
+        var overwrite = change; overwrite["replacementExerciseID"] = "bench_press"
         var invalidRange = change; invalidRange["repsMax"] = 2
         var belowCompleted = change; belowCompleted["sets"] = 1
         var invalidRest = change; invalidRest["restSeconds"] = 0
@@ -80,6 +80,26 @@ final class WorkoutCoachAPITests: XCTestCase {
         let format = try XCTUnwrap((body["text"] as? [String: Any])?["format"] as? [String: Any])
         XCTAssertEqual(format["strict"] as? Bool, true)
         XCTAssertEqual(format["type"] as? String, "json_schema")
+        let schema = try XCTUnwrap(format["schema"] as? [String: Any])
+        let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+        let changeSchema = try XCTUnwrap(properties["change"] as? [String: Any])
+        let alternatives = try XCTUnwrap(changeSchema["anyOf"] as? [[String: Any]])
+        XCTAssertTrue((alternatives[0]["required"] as? [String])?.contains("action") == true)
+    }
+
+    func testActionRepliesAllowSkippingAndReplacingStartedExerciseButRejectUnknownActions() throws {
+        for action in ["selectExercise", "skipSet", "skipExercise"] {
+            var item = change; item["action"] = action
+            let reply = try WorkoutCoachAPI.parseResponse(response(item), workout: workout, storeID: "store", revision: 7, catalog: catalog)
+            XCTAssertEqual(reply.change?.effectiveAction.rawValue, action)
+        }
+        var replacement = change; replacement["action"] = "updateTarget"; replacement["replacementExerciseID"] = "squat"; replacement["sets"] = 2
+        let reply = try WorkoutCoachAPI.parseResponse(response(replacement), workout: workout, storeID: "store", revision: 7, catalog: catalog)
+        XCTAssertEqual(reply.change?.replacementExerciseID, "squat")
+        var invalid = change; invalid["action"] = "deleteHistory"
+        XCTAssertThrowsError(try WorkoutCoachAPI.parseResponse(response(invalid), workout: workout, storeID: "store", revision: 7, catalog: catalog))
+        invalid = replacement; invalid["action"] = "skipSet"
+        XCTAssertThrowsError(try WorkoutCoachAPI.parseResponse(response(invalid), workout: workout, storeID: "store", revision: 7, catalog: catalog))
     }
 
     func testPlanningHistoryIncludesActualReadinessWithoutInventingLegacyReadiness() throws {

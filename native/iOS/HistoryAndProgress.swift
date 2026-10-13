@@ -98,6 +98,12 @@ struct WorkoutDetailView: View {
                                 }
                             }
                             if exercise.sets.isEmpty { Text("No sets logged").foregroundStyle(.secondary) }
+                            if exercise.skippedSetCount > 0 {
+                                Label("\(exercise.skippedSetCount) planned sets skipped · no reps or volume", systemImage: "forward.end")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            } else if exercise.skippedRemainingAt != nil {
+                                Text("Stopped for this session").font(.caption).foregroundStyle(.secondary)
+                            }
                             ForEach(Array(exercise.sets.enumerated()), id: \.element.id) { index, set in
                                 HStack {
                                     Text("\(index + 1)").font(.subheadline.monospacedDigit()).foregroundStyle(.secondary).frame(width: 25)

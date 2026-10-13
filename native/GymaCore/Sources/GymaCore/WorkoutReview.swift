@@ -43,6 +43,8 @@ public struct WorkoutReview: Codable, Sendable, Identifiable, Equatable {
             var summary = "\(sets.count) working sets recorded"
             if let target = entry.target { summary += " of \(target.sets) planned, targeting \(target.repsMin)–\(target.repsMax) reps" }
             summary += "."
+            if entry.skippedSetCount > 0 { summary += " \(entry.skippedSetCount) planned sets skipped; no reps or volume recorded for them." }
+            else if entry.skippedRemainingAt != nil { summary += " Remaining exercise skipped." }
             if unknown > 0 { summary += " \(unknown) unclassified sets excluded." }
             if missingEffort > 0 { summary += " Effort missing for \(missingEffort) working sets." }
             return ExerciseWorkoutReview(exerciseID: entry.exerciseID, exerciseName: name, target: entry.target,
@@ -57,6 +59,8 @@ public struct WorkoutReview: Codable, Sendable, Identifiable, Equatable {
         let unknownCount = entries.reduce(0) { $0 + $1.unclassifiedSets }
         let missingCount = entries.reduce(0) { $0 + $1.missingEffortSets }
         var summary = "Completed \(workingCount) classified working sets across \(entries.filter { $0.actualWorkingSets > 0 }.count) exercises."
+        let skippedCount = workout.exercises.reduce(0) { $0 + $1.skippedSetCount }
+        if skippedCount > 0 { summary += " \(skippedCount) planned sets were skipped and excluded from completed work." }
         if unknownCount > 0 { summary += " \(unknownCount) unclassified sets were excluded from training volume." }
         if missingCount > 0 { summary += " Effort is unknown for \(missingCount) working sets; no effort was assumed." }
         if recommendations.contains(where: { $0.action == .increaseLoad }) { summary += " A load increase is proposed for the next comparable session; review the targets before accepting." }

@@ -19,6 +19,8 @@ struct ProgramWorkoutStartView: View {
     @State private var error: String?
     @State private var coachPresented = false
     @State private var discussionFirstMessageID: String?
+    @State private var editingExercises = false
+    @State private var manuallyAdjusted = false
 
     private struct PreparedSession {
         let plan: WorkoutPlan
@@ -55,12 +57,23 @@ struct ProgramWorkoutStartView: View {
             }
             .sheet(isPresented: $coachPresented) {
                 NavigationStack {
-                    AnyView(CoachView(onAccepted: acceptCoachAdjustment))
-                        .toolbar {
-                            ToolbarItem(placement: .cancellationAction) {
-                                Button("Close") { coachPresented = false }
-                            }
+                    AnyView(CoachView(onAccepted: acceptCoachAdjustment, onClose: { coachPresented = false }))
+                }
+            }
+            .sheet(isPresented: $editingExercises) {
+                if let original = preview {
+                    PlannedWorkoutEditor(title: "Edit today's workout", exercises: original.plan.exercises) { exercises in
+                        guard original.storeID == model.state.storeID, original.revision == model.state.revision,
+                              model.state.activeWorkout == nil else {
+                            throw GymaError.stale("Your training data changed. Review today's workout again.")
                         }
+                        var plan = original.plan
+                        plan.id = UUID().uuidString; plan.acceptedAt = nil; plan.exercises = exercises
+                        try plan.validate(catalog: model.state.catalog)
+                        try CoachingConstraints.validate(exercises: exercises, profile: model.state.athleteProfile, catalog: model.state.catalog)
+                        preview = PreparedSession(plan: plan, readiness: original.readiness, storeID: original.storeID, revision: original.revision)
+                        discussionFirstMessageID = nil; manuallyAdjusted = true; error = nil
+                    }
                 }
             }
             .onAppear {
@@ -160,6 +173,8 @@ struct ProgramWorkoutStartView: View {
                     }
                 }.padding(.vertical, 4)
             }
+            Button("Edit exercises and order", systemImage: "square.and.pencil") { editingExercises = true }
+                .disabled(unavailable || !current || continuingDiscussion)
         }
         if !current {
             Section {
@@ -171,7 +186,7 @@ struct ProgramWorkoutStartView: View {
                         .foregroundStyle(.orange)
                 }
                 if canConfirmReadiness(preview, at: now) {
-                    Text("Your coach-adjusted targets are kept. Review the check-in above and confirm it still describes how you feel now, or edit it if anything changed.")
+                    Text("Your adjusted targets are kept. Review the check-in above and confirm it still describes how you feel now, or edit it if anything changed.")
                         .font(.caption).foregroundStyle(.secondary)
                     Button("Confirm check-in still current") { confirmReadiness(preview) }
                         .disabled(unavailable)
@@ -281,7 +296,7 @@ struct ProgramWorkoutStartView: View {
     }
 
     private func canConfirmReadiness(_ preview: PreparedSession, at now: Date) -> Bool {
-        preview.plan.acceptedAt != nil && model.state.coachConversation?.plan == preview.plan
+        (manuallyAdjusted || (preview.plan.acceptedAt != nil && model.state.coachConversation?.plan == preview.plan))
             && preview.storeID == model.state.storeID && preview.revision == model.state.revision
             && model.state.dailyTrainingStatus(now: now).allowsWorkoutStart
             && preview.plan.isScheduledForToday(at: now, calendar: model.state.planningCalendar())
@@ -297,7 +312,11 @@ struct ProgramWorkoutStartView: View {
         }
         // Only this explicit confirmation renews the timestamp; accepting AI targets does not.
         let readiness = WorkoutReadiness(energy: previous.readiness.energy, soreness: previous.readiness.soreness, recordedAt: now)
-        preview = PreparedSession(plan: previous.plan, readiness: readiness, storeID: previous.storeID, revision: previous.revision)
+        var plan = previous.plan
+        plan.createdAt = now
+        if plan.acceptedAt != nil { plan.acceptedAt = now }
+        preview = PreparedSession(plan: plan, readiness: readiness, storeID: previous.storeID, revision: previous.revision)
+        discussionFirstMessageID = nil; manuallyAdjusted = true
         error = nil
     }
 
@@ -309,6 +328,7 @@ struct ProgramWorkoutStartView: View {
             return
         }
         discussionFirstMessageID = nil
+        manuallyAdjusted = false
         let hours = sleep.trimmingCharacters(in: .whitespacesAndNewlines)
         let value = Double(hours.replacingOccurrences(of: ",", with: "."))
         guard hours.isEmpty || value.map({ $0.isFinite && (0...24).contains($0) }) == true else {

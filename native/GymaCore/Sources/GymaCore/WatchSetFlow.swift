@@ -11,7 +11,10 @@ public enum WatchSetReviewStep: String, Codable, Sendable {
 /// The most recent logged set also changes after a warm-up, unlike workingSetCount.
 public struct WatchSetPosition: Codable, Sendable, Equatable {
     public var lastSetID: String?
-    public init(lastSetID: String?) { self.lastSetID = lastSetID }
+    public var skippedSetCount: Int?
+    public init(lastSetID: String?, skippedSetCount: Int? = nil) {
+        self.lastSetID = lastSetID; self.skippedSetCount = skippedSetCount
+    }
 }
 
 /// A local set is tied to a position in the confirmed workout, not a revision.
@@ -46,7 +49,7 @@ public struct WatchSetDraft: Codable, Sendable, Equatable {
         storeID = snapshot.storeID; workoutID = workout.id; exerciseID = exercise.exerciseID
         workingSetCount = exercise.workingSetCount
         isWarmup = false
-        position = WatchSetPosition(lastSetID: exercise.sets.last?.id)
+        position = WatchSetPosition(lastSetID: exercise.sets.last?.id, skippedSetCount: exercise.skippedSetCount)
         let recent = exercise.sets.last { $0.isWarmup == false }
         self.kg = min(1000, max(0, kg ?? recent?.kg ?? exercise.target?.loadKg ?? 0))
         self.expectedReps = min(100, max(1, expectedReps ?? exercise.target?.repsMin ?? recent?.reps ?? 8))
@@ -58,7 +61,8 @@ public struct WatchSetDraft: Codable, Sendable, Equatable {
         guard snapshot.storeID == storeID, let workout = snapshot.activeWorkout, workout.id == workoutID,
               let next = workout.nextExercise else { return false }
         return next.exerciseID == exerciseID && next.workingSetCount == workingSetCount &&
-            (position.map { $0.lastSetID == next.sets.last?.id } ?? true)
+            (position.map { $0.lastSetID == next.sets.last?.id } ?? true) &&
+            (position?.skippedSetCount.map { $0 == next.skippedSetCount } ?? (next.skippedSetCount == 0))
     }
 }
 
@@ -68,6 +72,8 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
     public private(set) var draft: WatchSetDraft?
     public private(set) var resumeRestTimer: RestTimer?
     public private(set) var resumeCommandID: String?
+    /// Durable intent needed when a receipt arrives before its updated snapshot.
+    public private(set) var pendingWorkoutChange: WatchCommand?
 
     public init() {}
 
@@ -77,6 +83,7 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
                   (0...1_000_000).contains(draft.workingSetCount),
                   draft.completionRevision.map({ (0...1_000_000_000).contains($0) }) ?? true,
                   draft.position?.lastSetID.map({ !$0.isEmpty && $0.count <= 200 }) ?? true,
+                  draft.position?.skippedSetCount.map({ (0...10).contains($0) }) ?? true,
                   [draft.setID, draft.commandID].allSatisfy({ $0.map { !$0.isEmpty && $0.count <= 200 } ?? true }) else {
                 throw GymaError.invalid("Saved Watch set identity is invalid.")
             }
@@ -87,11 +94,33 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
         if resumeCommandID != nil && resumeRestTimer == nil {
             throw GymaError.invalid("Saved Watch rest is incomplete.")
         }
+        if let command = pendingWorkoutChange {
+            guard command.action.isWorkoutChange, !command.id.isEmpty, command.id.count <= 200,
+                  command.storeID.map({ !$0.isEmpty && $0.count <= 200 }) ?? false,
+                  !command.workoutID.isEmpty, command.workoutID.count <= 200,
+                  command.basedOnRevision.map({ (0...1_000_000_000).contains($0) }) ?? false else {
+                throw GymaError.invalid("Saved Watch exercise change is invalid.")
+            }
+        }
     }
 
     public mutating func reconcile(snapshot: CompanionSnapshot?, pending: WatchCommand?,
                                    acknowledgement: CommandAcknowledgement?) {
         guard let snapshot else { return }
+
+        if let pending, pending.storeID == snapshot.storeID, pending.action.isWorkoutChange {
+            pendingWorkoutChange = pending
+        }
+        if let command = pendingWorkoutChange, pending?.id != command.id,
+           let acknowledgement, acknowledgement.commandID == command.id {
+            if !acknowledgement.wasApplied {
+                // Rejection must retain a performing or reviewed set exactly as entered.
+                pendingWorkoutChange = nil
+            } else if snapshot.storeID == command.storeID, snapshot.revision >= acknowledgement.revision {
+                pendingWorkoutChange = nil
+                useCurrentWorkout(snapshot)
+            }
+        }
 
         // A crash between the connectivity journal write and our next write is
         // recovered from the durable command, including the exact completed set.
@@ -169,14 +198,14 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
     }
 
     public mutating func start(snapshot: CompanionSnapshot) throws {
-        guard draft?.phase == .prepared, draft?.matches(snapshot) == true, snapshot.restTimer == nil else {
+        guard pendingWorkoutChange == nil, draft?.phase == .prepared, draft?.matches(snapshot) == true, snapshot.restTimer == nil else {
             throw GymaError.stale("Review the current exercise before starting this set.")
         }
         draft?.phase = .performing
     }
 
     public mutating func done(snapshot: CompanionSnapshot) throws {
-        guard draft?.phase == .performing, draft?.matches(snapshot) == true, snapshot.restTimer == nil else {
+        guard pendingWorkoutChange == nil, draft?.phase == .performing, draft?.matches(snapshot) == true, snapshot.restTimer == nil else {
             throw GymaError.stale("The workout changed. Your set details are still saved on this Watch.")
         }
         draft?.phase = .review; draft?.reviewStep = .reps
@@ -233,7 +262,7 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
     /// Capture the CURRENT revision only after checking the original set position.
     /// Persist the result before submitting; retries keep one completed-set ID.
     public mutating func prepareSubmission(snapshot: CompanionSnapshot) throws -> WorkSet {
-        guard let current = draft, current.phase == .review, current.matches(snapshot), snapshot.restTimer == nil else {
+        guard pendingWorkoutChange == nil, let current = draft, current.phase == .review, current.matches(snapshot), snapshot.restTimer == nil else {
             throw GymaError.stale("The workout advanced. Review your saved set before continuing.")
         }
         guard current.isWarmupSet ? current.currentReviewStep == .weight :
@@ -273,10 +302,25 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
 
     public mutating func restSubmissionFailed() { resumeRestTimer = nil; resumeCommandID = nil }
 
+    /// Cancelling an unsent set records no work and does not skip its planned slot.
+    public mutating func cancelSet(snapshot: CompanionSnapshot) throws {
+        guard pendingWorkoutChange == nil, draft?.phase != .submitting, resumeCommandID == nil else {
+            throw GymaError.stale("Wait for the pending workout change before cancelling this set.")
+        }
+        useCurrentWorkout(snapshot)
+    }
+
+    public mutating func markWorkoutChangeSubmitted(_ command: WatchCommand) {
+        guard command.action.isWorkoutChange else { return }
+        pendingWorkoutChange = command
+        // Changing exercises ends rest without starting a set automatically.
+        resumeRestTimer = nil; resumeCommandID = nil
+    }
+
     /// Only invoke after an explicit user action when an unsent draft no longer
     /// matches the phone's session. Reconciliation never discards that draft.
     public mutating func useCurrentWorkout(_ snapshot: CompanionSnapshot) {
-        draft = nil; resumeRestTimer = nil; resumeCommandID = nil
+        draft = nil; resumeRestTimer = nil; resumeCommandID = nil; pendingWorkoutChange = nil
         advance(snapshot)
     }
 
@@ -312,7 +356,7 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
         // For a migrated draft with no source target, retain user-entered values
         // while establishing a baseline for subsequent explicit target changes.
         if !current.isWarmupSet { draft?.sourceTarget = exercise.target }
-        if current.position == nil { draft?.position = WatchSetPosition(lastSetID: exercise.sets.last?.id) }
+        if current.position == nil { draft?.position = WatchSetPosition(lastSetID: exercise.sets.last?.id, skippedSetCount: exercise.skippedSetCount) }
     }
 
     private mutating func recoverSubmittedValues(_ set: WorkSet) {
@@ -338,6 +382,15 @@ public struct WatchSetFlow: Codable, Sendable, Equatable {
     private func validateValues(kg: Double, reps: Int) throws {
         guard kg.isFinite, (0...1000).contains(kg), (1...100).contains(reps) else {
             throw GymaError.invalid("Choose a load from 0–1000 kg and 1–100 reps.")
+        }
+    }
+}
+
+private extension WatchAction {
+    var isWorkoutChange: Bool {
+        switch self {
+        case .selectExercise, .skipSet, .skipExercise: return true
+        default: return false
         }
     }
 }

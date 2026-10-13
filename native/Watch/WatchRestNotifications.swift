@@ -53,7 +53,7 @@ final class WatchRestNotifications: NSObject, ObservableObject {
         pending = command
         if let command {
             switch command.action {
-            case .skipRest, .finishWorkout: stopHapticPreview()
+            case .skipRest, .finishWorkout, .selectExercise, .skipSet, .skipExercise: stopHapticPreview()
             default: break
             }
         }
@@ -194,7 +194,7 @@ final class WatchRestNotifications: NSObject, ObservableObject {
         guard let restKey else {
             if let pending {
                 switch pending.action {
-                case .skipRest, .finishWorkout: return false
+                case .skipRest, .finishWorkout, .selectExercise, .skipSet, .skipExercise: return false
                 default: break
                 }
             }

@@ -14,7 +14,7 @@ public enum RestAlertPolicy {
         guard let pending, pending.storeID == storeID, pending.workoutID == timer.workoutID else { return false }
         switch pending.action {
         case .skipRest(let id): return id == timer.id
-        case .finishWorkout: return true
+        case .finishWorkout, .selectExercise, .skipSet, .skipExercise: return true
         default: return false
         }
     }

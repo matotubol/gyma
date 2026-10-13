@@ -133,7 +133,9 @@ public extension GymaState {
         } else if workouts.contains(where: { $0.start <= now && calendar.isDate($0.start, inSameDayAs: now) }) {
             return nil
         }
-        let ready = ReadyWorkoutPlan(program: program, session: session, stateRevision: revision, now: now, calendar: calendar)
+        var preparedSession = session
+        if let custom = trainingCalendar?.workoutOverride(on: now) { preparedSession.exercises = custom.exercises }
+        let ready = ReadyWorkoutPlan(program: program, session: preparedSession, stateRevision: revision, now: now, calendar: calendar)
         return (try? ready.validate()) != nil ? ready : nil
     }
 }

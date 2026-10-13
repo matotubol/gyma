@@ -27,7 +27,7 @@ private struct RootView: View {
             NavigationStack { OverviewView() }
                 .tabItem { Label("Overview", systemImage: "square.grid.2x2") }
                 .tag("overview")
-            NavigationStack { CoachView(onAccepted: { selectedTab = "overview" }) }
+            NavigationStack { CoachView(onAccepted: { selectedTab = "overview" }, onClose: { selectedTab = "overview" }) }
                 .tabItem { Label("Coach", systemImage: "bubble.left.and.bubble.right") }
                 .tag("coach")
             NavigationStack { HistoryView() }
