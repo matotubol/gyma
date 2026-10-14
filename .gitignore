@@ -8,7 +8,7 @@ Payload/
 __pycache__/
 
 # Local tooling caches
-.dart_tool/
+/.local/
 .idea/
 .vscode/
 .DS_Store
