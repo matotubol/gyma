@@ -1,11 +1,6 @@
 name: iLoader 2.3.6 Watch build
 
 on:
-  push:
-    branches: [swift, main]
-    paths:
-      - 'native/tools/iloader-watch/**'
-      - '.github/workflows/iloader-watch.yml'
   workflow_dispatch:
 
 permissions:
