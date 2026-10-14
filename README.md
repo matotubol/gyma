@@ -28,7 +28,15 @@ Push changes under `apple/` or `tools/apple/` to `swift` to run **Swift iPhone +
 gh workflow run swift.yml --ref swift
 ```
 
-The macOS 26 job uses the runner's latest stable Xcode, runs shared Swift tests, generates the project with XcodeGen, and archives the iPhone app with its embedded Watch app. Download `gyma-swift-ios-watch-<run number>` for `gyma-swift-unsigned.ipa`. Compiler/test logs and SDK versions are recorded, including on failures. The unsigned build needs no signing credentials.
+The macOS 26 job uses the runner's latest stable Xcode, runs shared Swift tests and Python packaging checks, generates the project with XcodeGen, archives both device apps, and verifies the iPhone IPA with its embedded Watch app. Download `gyma-swift-ios-watch-<run number>` for `gyma-swift-unsigned.ipa`. Compiler/test logs and SDK versions are recorded, including on failures. The unsigned build needs no signing credentials.
+
+The separate Watch simulator build and three visible-content launch checks run **only when manually requested**. Pushes, pull requests, and ordinary manual dispatches skip them so the IPA is available sooner. To include them, enable **Build the Watch simulator app and run launch checks** in GitHub's Run workflow form, or run:
+
+```sh
+gh workflow run swift.yml --ref main -f watch_smoke=true
+```
+
+The optional checks cover fresh launch, a restored workout with a pending finish command, and an idle snapshot with a stale set draft. A normal successful build verifies compilation and packaging, but does not establish that these simulator launch scenarios pass. Shared tests and IPA validation remain enabled in both modes.
 
 Sign both bundles with compatible provisioning before installing: `com.mato.gyma` and `com.mato.gyma.watchkitapp`. If a signing tool changes the phone bundle identifier, update the Watch prefix and `WKCompanionAppBundleIdentifier` to match. Connectivity needs a physical paired iPhone and Watch for validation.
 
