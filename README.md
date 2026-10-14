@@ -8,7 +8,7 @@ On iPhone, add your OpenAI API key in Settings, then check in with the GPT-6.1 S
 
 The Watch opens the current exercise with weight and expected-rep controls. **Start Set → Finish Set → Confirm Reps → Confirm Weight → rest → Dismiss** guides each set. Reps and kilograms have separate review screens, with − / reps / + controls and a Digital Crown weight wheel in half-kilogram steps. Actual rest is tracked. Rest vibration defaults on with six full notification-haptic pulses spaced over ten seconds, stopping on Dismiss; enable Watch Silent Mode to mute system tones. Allow workout access for a native Watch workout session that keeps running with your wrist down and provides the system return-to-app icon. The Watch can request a start only for today's accepted plan and waits for phone confirmation. Pending or rejected changes remain visible when action is needed.
 
-The coach uses OpenAI's Responses API with `gpt-6.1-sol`. The personal API key stays in the iPhone Keychain; workout backups and Watch snapshots never contain it. See [coach setup and device checks](native/COACH.md). The Watch uses HealthKit for active workout runtime but does not save a duplicate Health workout. A body-photo journal and heart-rate tracking are not included.
+The coach uses OpenAI's Responses API with `gpt-6.1-sol`. The personal API key stays in the iPhone Keychain; workout backups and Watch snapshots never contain it. See [coach setup and device checks](docs/COACH.md). The Watch uses HealthKit for active workout runtime but does not save a duplicate Health workout. A body-photo journal and heart-rate tracking are not included.
 
 Overview opens a calendar showing **one complete month at a time**, with today selected and previous/next month controls. Every date is visible, including dates outside the current training block. Select a day to see its saved schedule, optional activities and recorded workouts; past months include earlier blocks and workout history. **Today** returns to the current month. Block details and the calendar key sit below the month view.
 
@@ -22,7 +22,7 @@ The eight-week review never deletes workout logs. **History** keeps recorded ses
 
 ## Build through GitHub Actions
 
-Push native changes to `swift` to run **Swift iPhone + Watch build**. Native changes on `main` and pull requests also run it. Manual dispatch:
+Push changes under `apple/` or `tools/apple/` to `swift` to run **Swift iPhone + Watch build**. These changes on `main` and pull requests also run it. Manual dispatch:
 
 ```sh
 gh workflow run swift.yml --ref swift
@@ -36,24 +36,49 @@ Sign both bundles with compatible provisioning before installing: `com.mato.gyma
 
 | Path | Responsibility |
 | --- | --- |
-| `native/iOS` | SwiftUI iPhone screens, authoritative store, rest notifications |
-| `native/Watch` | SwiftUI Watch screens and rest notifications |
-| `native/Shared` | WCSession lifecycle, snapshots, durable Watch command outbox |
-| `native/GymaCore` | Foundation models, workout rules, native persistence, command validation and tests |
-| `native/project.yml` | App targets, bundle relationship and schemes |
+| `apple/iOS` | iPhone app wiring in `App`, screens and presentation grouped under `Features`, device services in `Services`, shared phone UI in `UI` |
+| `apple/watchOS` | Watch app wiring in `App`, wrist features under `Features`, HealthKit/runtime and notifications in `Services`, reusable Watch controls in `UI` |
+| `apple/Shared/Connectivity` | WCSession lifecycle, snapshots, durable Watch command outbox, compiled by both app targets |
+| `apple/Packages/GymaCore` | Swift package containing Foundation models, workout rules, persistence, command validation and tests |
+| `apple/Resources` | Resources shared by the app targets |
+| `apple/project.yml` | Both app targets, Watch embedding, bundle relationship and schemes |
+| `tools/apple` | IPA checks, simulator launch checks, and Windows device helpers |
+| `tools/iloader` | Windows iLoader patches, local build and diagnostic scripts |
+| `docs` | [Coach behavior](docs/COACH.md) and [phone/Watch synchronization](docs/CONNECTIVITY.md) |
 | `.github/workflows/swift.yml` | macOS tests, archive and unsigned IPA artifact |
+
+The iPhone and Watch are sibling app targets in one XcodeGen project. Both use `GymaCore` and the shared connectivity service. The phone owns saved workout state; the Watch displays confirmed snapshots and submits durable commands for phone validation. Neither target includes the other target's screens. `GymaCore` stays independent of SwiftUI, WatchConnectivity, HealthKit and device credentials.
+
+Within each app, keep related screens and presentation helpers together under a feature, such as `Features/Calendar` or `Features/Workout`. `App` assembles the services and owns the app lifecycle. `Services` holds platform integrations, and `UI` holds small components used across features. A shared folder does not create a separate module: connectivity is intentionally compiled into both apps, while `GymaCore` is the independently tested package.
 
 Local development on a Mac:
 
 ```sh
 brew install xcodegen
-cd native
-swift test --package-path GymaCore
-xcodegen generate
-open Gyma.xcodeproj
+swift test --package-path apple/Packages/GymaCore --scratch-path build/apple/GymaCore
+xcodegen generate --spec apple/project.yml --project apple
+open apple/Gyma.xcodeproj
 ```
 
-Select the same signing team for both targets. `Gyma` builds both apps; `GymaWatch` runs the companion. Edit `project.yml`; generated Xcode files are ignored. Swift 6 tooling runs in Swift 5 language mode with concurrency checking enabled.
+Select the same signing team for both targets. `Gyma` builds both apps; `GymaWatch` runs the companion. Edit `apple/project.yml`; generated Xcode files are ignored. Swift 6 tooling runs in Swift 5 language mode with concurrency checking enabled.
+
+### Local outputs and reusable tools
+
+All paths below are Git-ignored. Keep generated output under the single root `build/` directory; keep reusable dependencies and device state under `.local/`.
+
+| Path | Contents |
+| --- | --- |
+| `build/apple` | Swift tests, simulator products, archive, unsigned IPA and build logs |
+| `build/apple/runs/<run-number>` | Downloaded GitHub build artifacts, grouped by run |
+| `build/apple/latest` | Current IPA for local signing and installation |
+| `build/iloader/<run>` | Locally built iLoader installers, checksums, provenance and licenses |
+| `build/iloader-ci` | Output from the explicitly requested GitHub iLoader fallback |
+| `build/archive` | Optional historical build downloads and investigation files |
+| `.local/iloader` | Reused Cargo/Bun caches, retained upstream source checkouts, native helper and opt-in diagnostic sessions |
+| `.local/device-tools` | Python environment, device pairing records and existing portable device tools |
+| `.local/tools` | Downloaded development utilities such as actionlint |
+
+For example, download an app build with `gh run download <run-id> -n gyma-swift-ios-watch-<run-number> -D build/apple/runs/<run-number>`. Promote its verified IPA to `build/apple/latest` when ready to use it. Avoid new feature-named output directories. Old downloads in `build/archive` can be reviewed and removed independently of reusable caches; never blanket-delete `.local`, which also contains pairing records and retained source edits.
 
 ## Connection and persistence
 
@@ -74,15 +99,15 @@ Development-signed apps also require Developer Mode on the physical Watch. [Appl
 Connect the paired iPhone to Windows by USB, unlock both devices, and keep them nearby. Apple's USB driver/service must be installed. From the repository root in PowerShell:
 
 ```powershell
-python -m venv native/build/device-tools/venv
-native/build/device-tools/venv/Scripts/python.exe -m pip install -r native/tools/requirements-device-tools.txt
-native/build/device-tools/venv/Scripts/python.exe native/tools/watch_developer_mode.py --inspect
-native/build/device-tools/venv/Scripts/python.exe native/tools/watch_developer_mode.py --reveal
+python -m venv .local/device-tools/venv
+.local/device-tools/venv/Scripts/python.exe -m pip install -r tools/apple/requirements-device-tools.txt
+.local/device-tools/venv/Scripts/python.exe tools/apple/watch_developer_mode.py --inspect
+.local/device-tools/venv/Scripts/python.exe tools/apple/watch_developer_mode.py --reveal
 ```
 
-Accept the Trust prompt **on the Watch**. After it confirms the reveal request, open the Watch's Settings > Privacy & Security > Developer Mode, enable it, restart, and confirm Turn On/Trust. Run `--inspect` again to verify that Developer Mode is enabled. The helper verifies the connected Watch's identity, refuses ambiguous device selections, and sends only the reveal request; it does not enable Developer Mode, restart devices, or change passcodes. Pairing records stay in the Git-ignored `native/build/device-tools/pairing/` directory. This reveal request succeeded against a physical iPhone on iOS 26.6.1 and Watch on watchOS 26.0.2; other combinations still need testing.
+Accept the Trust prompt **on the Watch**. After it confirms the reveal request, open the Watch's Settings > Privacy & Security > Developer Mode, enable it, restart, and confirm Turn On/Trust. Run `--inspect` again to verify that Developer Mode is enabled. The helper verifies the connected Watch's identity, refuses ambiguous device selections, and sends only the reveal request; it does not enable Developer Mode, restart devices, or change passcodes. Pairing records stay in the Git-ignored `.local/device-tools/pairing/` directory. This reveal request succeeded against a physical iPhone on iOS 26.6.1 and Watch on watchOS 26.0.2; other combinations still need testing.
 
-For Watch provisioning and direct installation on Windows, this repository builds an [unofficial iLoader 2.3.6 with Watch support](native/tools/iloader-watch/README.md), adapted from the [iLoader Watch companion project](https://github.com/Rzbck/iloader-watch-companion). **Future iLoader builds run locally on Windows** using its build script; the GitHub Actions workflow is available only as a manual fallback. The custom tool rewrites the companion identifiers together, provisions and signs the Watch separately, and installs through the paired iPhone. An ordinary installed Watch app is updated in place; only an explicitly identified placeholder is removed. Sign in inside the desktop tool, select the iPhone's USB connection, and choose the combined Gyma IPA. Free-account installation and app launch still need physical verification. Official iLoader 2.3.6 does not contain these Watch changes. Normal Gyma app changes still use the Swift macOS workflow and do not rebuild iLoader.
+For Watch provisioning and direct installation on Windows, this repository builds an [unofficial iLoader 2.3.6 with Watch support](tools/iloader/README.md), adapted from the [iLoader Watch companion project](https://github.com/Rzbck/iloader-watch-companion). **Future iLoader builds run locally on Windows** using its build script; the GitHub Actions workflow is available only as a manual fallback. The custom tool rewrites the companion identifiers together, provisions and signs the Watch separately, and installs through the paired iPhone. An ordinary installed Watch app is updated in place; only an explicitly identified placeholder is removed. Sign in inside the desktop tool, select the iPhone's USB connection, and choose the combined Gyma IPA. Free-account installation and app launch still need physical verification. Official iLoader 2.3.6 does not contain these Watch changes. Normal Gyma app changes still use the Swift macOS workflow and do not rebuild iLoader.
 
 ## Device checks
 

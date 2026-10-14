@@ -4,13 +4,13 @@ on:
   push:
     branches: [swift, main]
     paths:
-      - 'native/**'
-      - '!native/tools/iloader-watch/**'
+      - 'apple/**'
+      - 'tools/apple/**'
       - '.github/workflows/swift.yml'
   pull_request:
     paths:
-      - 'native/**'
-      - '!native/tools/iloader-watch/**'
+      - 'apple/**'
+      - 'tools/apple/**'
       - '.github/workflows/swift.yml'
   workflow_dispatch:
 
@@ -28,7 +28,6 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: native
     steps:
       - uses: actions/checkout@v6
 
@@ -43,64 +42,64 @@ jobs:
           swift --version
 
       - name: Test IPA packaging validation
-        run: python3 -m unittest discover -s tools -p 'test_*.py'
+        run: python3 -m unittest discover -s tools/apple -p 'test_*.py'
 
       - name: Test shared models, persistence and Watch commands
         run: |
           set -o pipefail
-          mkdir -p build
-          swift test --package-path GymaCore 2>&1 | tee build/core-tests.log
+          mkdir -p build/apple
+          swift test --package-path apple/Packages/GymaCore --scratch-path build/apple/GymaCore 2>&1 | tee build/apple/core-tests.log
 
       - name: Generate native Xcode project
         run: |
           brew install xcodegen
           xcodegen --version
-          xcodegen generate --spec project.yml
+          xcodegen generate --spec apple/project.yml --project apple
 
       - name: Build Watch app for simulator launch checks
         run: |
           set -o pipefail
           xcodebuild \
-            -project Gyma.xcodeproj \
+            -project apple/Gyma.xcodeproj \
             -scheme GymaWatch \
             -configuration Release \
             -destination 'generic/platform=watchOS Simulator' \
-            -derivedDataPath build/WatchSimulator \
+            -derivedDataPath build/apple/WatchSimulator \
             CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            build 2>&1 | tee build/watch-simulator-build.log
+            build 2>&1 | tee build/apple/watch-simulator-build.log
 
       - name: Check Watch startup and visible workout content
         timeout-minutes: 10
-        run: python3 tools/watch_launch_smoke.py build/WatchSimulator/Build/Products/Release-watchsimulator/GymaWatch.app
+        run: python3 tools/apple/watch_launch_smoke.py build/apple/WatchSimulator/Build/Products/Release-watchsimulator/GymaWatch.app
 
       - name: Build iPhone and embedded Watch app
         run: |
           set -o pipefail
           xcodebuild \
-            -project Gyma.xcodeproj \
+            -project apple/Gyma.xcodeproj \
             -scheme Gyma \
             -configuration Release \
             -destination 'generic/platform=iOS' \
-            -derivedDataPath build/DerivedData \
-            -archivePath build/Gyma.xcarchive \
+            -derivedDataPath build/apple/DerivedData \
+            -archivePath build/apple/Gyma.xcarchive \
             CURRENT_PROJECT_VERSION="${GITHUB_RUN_NUMBER}" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            archive 2>&1 | tee build/xcodebuild.log
+            archive 2>&1 | tee build/apple/xcodebuild.log
 
       - name: Package and verify unsigned IPA
         run: |
-          mkdir -p build/Payload
-          ditto build/Gyma.xcarchive/Products/Applications/Gyma.app build/Payload/Gyma.app
-          ditto -c -k --keepParent build/Payload build/gyma-swift-unsigned.ipa
-          python3 tools/verify_ipa.py build/gyma-swift-unsigned.ipa --expected-build-version "${GITHUB_RUN_NUMBER}"
+          mkdir -p build/apple/Payload
+          ditto build/apple/Gyma.xcarchive/Products/Applications/Gyma.app build/apple/Payload/Gyma.app
+          ditto -c -k --keepParent build/apple/Payload build/apple/gyma-swift-unsigned.ipa
+          python3 tools/apple/verify_ipa.py build/apple/gyma-swift-unsigned.ipa --expected-build-version "${GITHUB_RUN_NUMBER}"
 
       - uses: actions/upload-artifact@v6
         with:
           name: gyma-swift-ios-watch-${{ github.run_number }}
-          path: native/build/gyma-swift-unsigned.ipa
+          path: build/apple/gyma-swift-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
 
@@ -110,8 +109,8 @@ jobs:
         with:
           name: gyma-swift-logs-${{ github.run_number }}
           path: |
-            native/build/*.log
-            native/build/watch-smoke/**
+            build/apple/*.log
+            build/apple/watch-smoke/**
           if-no-files-found: ignore
           retention-days: 7
 
@@ -120,6 +119,6 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: gyma-swift-symbols-${{ github.run_number }}
-          path: native/build/Gyma.xcarchive/dSYMs
+          path: build/apple/Gyma.xcarchive/dSYMs
           if-no-files-found: ignore
           retention-days: 14
