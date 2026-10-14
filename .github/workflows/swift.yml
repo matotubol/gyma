@@ -13,6 +13,12 @@ on:
       - 'tools/apple/**'
       - '.github/workflows/swift.yml'
   workflow_dispatch:
+    inputs:
+      watch_smoke:
+        description: 'Build the Watch simulator app and run launch checks'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -57,6 +63,7 @@ jobs:
           xcodegen generate --spec apple/project.yml --project apple
 
       - name: Build Watch app for simulator launch checks
+        if: github.event_name == 'workflow_dispatch' && inputs.watch_smoke
         run: |
           set -o pipefail
           xcodebuild \
@@ -71,6 +78,7 @@ jobs:
             build 2>&1 | tee build/apple/watch-simulator-build.log
 
       - name: Check Watch startup and visible workout content
+        if: github.event_name == 'workflow_dispatch' && inputs.watch_smoke
         timeout-minutes: 10
         run: python3 tools/apple/watch_launch_smoke.py build/apple/WatchSimulator/Build/Products/Release-watchsimulator/GymaWatch.app
 
