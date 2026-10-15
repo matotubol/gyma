@@ -29,7 +29,7 @@ struct WorkoutCoachView: View {
                         DisclosureGroup("Workout details") { sessionCard(workout) }
                         if !model.hasCoachAPIKey { keySetup }
                         if let messages = workout.coachConversation?.messages, !messages.isEmpty {
-                            ForEach(messages) { chatMessage($0) }
+                            ForEach(messages) { CoachMessageRow(message: $0) }
                         } else {
                             Text(workout.isActive ? "Ask to swap an exercise for today, use another machine first, skip a set, or adjust today's weights and technique."
                                  : "Discuss what went well, why a target was missed, and what to consider next time. Add workout feedback so the coach can use your explanation.")
@@ -137,18 +137,6 @@ struct WorkoutCoachView: View {
         }
         .padding(18).frame(maxWidth: .infinity, alignment: .leading)
         .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 20))
-    }
-
-    private func chatMessage(_ message: CoachMessage) -> some View {
-        let isCoach = message.role == .assistant
-        return VStack(alignment: .leading, spacing: 7) {
-            Text(isCoach ? "GPT-6.1 Sol" : "You")
-                .font(.caption.weight(.semibold)).foregroundStyle(isCoach ? GymaStyle.accent : .secondary)
-            Text(message.content).font(.body).textSelection(.enabled)
-        }
-        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-        .background(isCoach ? GymaStyle.card : GymaStyle.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 20))
-        .padding(isCoach ? .trailing : .leading, 18)
     }
 
     private func proposalCard(_ change: WorkoutCoachChange, workout: Workout) -> some View {

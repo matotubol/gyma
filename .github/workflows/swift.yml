@@ -47,7 +47,10 @@ jobs:
           xcodebuild -showsdks
           swift --version
 
-      - name: Test IPA packaging validation
+      - name: Check architecture boundaries
+        run: python3 tools/apple/check_architecture.py
+
+      - name: Test Apple development tools
         run: python3 -m unittest discover -s tools/apple -p 'test_*.py'
 
       - name: Test shared models, persistence and Watch commands

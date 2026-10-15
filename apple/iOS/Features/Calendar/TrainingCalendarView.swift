@@ -158,7 +158,7 @@ struct TrainingCalendarView: View {
                             .foregroundStyle(GymaStyle.accent)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(workout.title).font(.subheadline.bold())
-                            Text("\(workout.loggedSets) sets · \(workout.liftedVolume.gymaNumber) kg · \(workout.minutes()) min")
+                            Text("\(workout.totalSets) sets · \(workout.volume.gymaNumber) kg · \(workout.minutes()) min")
                                 .font(.caption).foregroundStyle(.secondary)
                             Text(workout.isActive ? "Resume workout" : "View recorded weights and reps")
                                 .font(.caption).foregroundStyle(GymaStyle.accent)

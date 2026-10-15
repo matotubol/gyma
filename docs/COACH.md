@@ -42,7 +42,7 @@ Settings → Exercise library supports custom lifts outside workouts and adds ca
 
 Metadata distinguishes direct/secondary muscles, equipment and load meaning. Use separate identities for different machines/setups. Once a custom lift has been used, changing its equipment or load convention requires a new variant; muscle-tag/name corrections apply to historical entries. Unclassified sets and warm-ups are excluded from muscle working-set counts. Indirect involvement is displayed separately, not treated as measured stimulus. Estimated 1RM is shown only for eligible classified sets with known high effort and a suitable load convention, never as a tested maximum.
 
-Training principles and their limits are recorded in `apple/Packages/GymaCore/Sources/GymaCore/CoachContext.swift`, with links to ACSM 2026, a repetition/load progression trial and an effort/failure trial. Numeric progression thresholds and the 28-day reassessment trigger are configurable/product heuristics, not claims of an individually optimal physiological prescription. Health history and wearable recovery scores are not required or collected.
+Training principles and their limits are recorded in `apple/Packages/GymaCore/Sources/GymaCore/Coach/CoachContext.swift`, with links to ACSM 2026, a repetition/load progression trial and an effort/failure trial. Numeric progression thresholds and the 28-day reassessment trigger are configurable/product heuristics, not claims of an individually optimal physiological prescription. Health history and wearable recovery scores are not required or collected.
 
 ## Use the app
 

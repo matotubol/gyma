@@ -28,7 +28,7 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
     private var activationFailed = false
     private var journal = WatchJournal()
     private var journalUnavailable = false
-    private let journalURL: URL
+    private let journalStore: WatchJournalStore
 
     var canSubmit: Bool {
         canQueueCommand && snapshot?.activeWorkout != nil
@@ -49,23 +49,15 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
 
     private override init() {
         session = WCSession.isSupported() ? WCSession.default : nil
-        journalURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        journalStore = WatchJournalStore(url: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("GymaConnectivity", isDirectory: true)
-            .appendingPathComponent("watch-journal.json")
+            .appendingPathComponent("watch-journal.json"))
         super.init()
         #if os(watchOS)
         do {
-            if FileManager.default.fileExists(atPath: journalURL.path) {
-                let data = try Data(contentsOf: journalURL)
-                guard data.count <= 256 * 1024 else { throw ConnectivityError.invalidJournal }
-                journal = try JSONDecoder().decode(WatchJournal.self, from: data)
-                if let savedSnapshot = journal.snapshot { try validateSnapshot(savedSnapshot) }
-            }
-            snapshot = journal.snapshot
-            pendingCommand = journal.pending
-            lastAcknowledgement = journal.acknowledgement
-            quarantinedCommand = journal.quarantined
-            rejectedCommand = journal.rejected
+            let savedJournal = try journalStore.load()
+            if let savedSnapshot = savedJournal.snapshot { try validateSnapshot(savedSnapshot) }
+            applyJournal(savedJournal)
         } catch {
             // Never overwrite a journal we could not read: it may contain an
             // unacknowledged set. Keep logging disabled until storage recovers.
@@ -116,14 +108,14 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
         #else
         sendPendingCommand()
         if session.isReachable {
-            session.sendMessage(Wire.request, replyHandler: { [weak self] reply in
+            session.sendMessage(ConnectivityWire.request, replyHandler: { [weak self] reply in
                 let packet = SessionPacket(reply)
                 Task { @MainActor in await self?.receive(packet.dictionary) }
             }, errorHandler: { [weak self] _ in
                 Task { @MainActor in self?.updateConnectionState() }
             })
         } else {
-            queueOnce(Wire.request, key: "request")
+            queueOnce(ConnectivityWire.request, key: "request")
         }
         #endif
     }
@@ -133,7 +125,7 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
         snapshot = value
         guard canTransfer, let session else { return }
         do {
-            let packet = try Wire.encode(value, kind: .snapshot)
+            let packet = try ConnectivityWire.encode(value, kind: .snapshot)
             try session.updateApplicationContext(packet)
             if session.isReachable {
                 session.sendMessage(packet, replyHandler: { _ in }, errorHandler: { _ in
@@ -166,7 +158,7 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
         if let basedOnRevision, basedOnRevision != snapshot.revision { throw ConnectivityError.workoutChanged }
         let command = WatchCommand(storeID: snapshot.storeID, workoutID: workoutID,
                                    basedOnRevision: snapshot.revision, action: action)
-        _ = try Wire.encode(command, kind: .command)
+        _ = try ConnectivityWire.encode(command, kind: .command)
         var updated = journal
         updated.pending = command
         updated.acknowledgement = nil
@@ -249,7 +241,7 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
     private func sendPendingCommand() {
         guard let command = pendingCommand, canTransfer, let session else { return }
         do {
-            let packet = try Wire.encode(command, kind: .command)
+            let packet = try ConnectivityWire.encode(command, kind: .command)
             queueOnce(packet, key: "command:\(command.id)")
             guard session.isReachable, interactiveCommandID != command.id else { return }
             interactiveCommandID = command.id
@@ -273,21 +265,21 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
         receivingCount += 1
         defer { receivingCount -= 1 }
         do {
-            let kind = try Wire.kind(packet)
+            let kind = try ConnectivityWire.kind(packet)
             switch kind {
             case .request:
                 #if os(iOS)
                 guard let value = snapshotProvider?() else { throw ConnectivityError.phoneNotReady }
                 publishSnapshot()
-                reply?(try Wire.encode(value, kind: .snapshot))
+                reply?(try ConnectivityWire.encode(value, kind: .snapshot))
                 #else
                 throw ConnectivityError.unsupportedMessage
                 #endif
             case .command:
                 #if os(iOS)
-                let command: WatchCommand = try Wire.decode(packet)
+                let command: WatchCommand = try ConnectivityWire.decode(packet)
                 let result = try await processOnPhone(command)
-                let response = try Wire.encode(result, kind: .acknowledgement)
+                let response = try ConnectivityWire.encode(result, kind: .acknowledgement)
                 queueOnce(response, key: "ack:\(command.id)")
                 publishSnapshot()
                 reply?(response)
@@ -296,25 +288,25 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
                 #endif
             case .snapshot:
                 #if os(watchOS)
-                let value: CompanionSnapshot = try Wire.decode(packet)
+                let value: CompanionSnapshot = try ConnectivityWire.decode(packet)
                 try acceptSnapshot(value)
                 #endif
-                reply?(Wire.received)
+                reply?(ConnectivityWire.received)
             case .acknowledgement:
                 #if os(watchOS)
-                let result: AcknowledgedState = try Wire.decode(packet)
+                let result: AcknowledgedState = try ConnectivityWire.decode(packet)
                 try acceptAcknowledgement(result)
                 #endif
-                reply?(Wire.received)
+                reply?(ConnectivityWire.received)
             case .error:
                 lastError = (packet["message"] as? String).map { String($0.prefix(300)) } ?? "Sync could not finish. Retry when your iPhone is available."
-                reply?(Wire.received)
+                reply?(ConnectivityWire.received)
             case .received:
                 break
             }
         } catch {
             lastError = error.localizedDescription
-            reply?(Wire.failure(error.localizedDescription))
+            reply?(ConnectivityWire.failure(error.localizedDescription))
         }
     }
 
@@ -354,12 +346,7 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
         let value = newerSnapshot(incoming)
         let updated = journalUpdatingSnapshot(value)
         try saveJournal(updated)
-        journal = updated
-        snapshot = value
-        pendingCommand = updated.pending
-        lastAcknowledgement = updated.acknowledgement
-        quarantinedCommand = updated.quarantined
-        rejectedCommand = updated.rejected
+        applyJournal(updated)
         snapshotObserver?(value)
     }
 
@@ -379,12 +366,7 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
             updated.acknowledgement = acknowledgement
         }
         try saveJournal(updated)
-        journal = updated
-        snapshot = value
-        pendingCommand = updated.pending
-        lastAcknowledgement = updated.acknowledgement
-        quarantinedCommand = updated.quarantined
-        rejectedCommand = updated.rejected
+        applyJournal(updated)
         if matchesPending {
             pendingCommand = nil
             lastAcknowledgement = acknowledgement
@@ -415,10 +397,17 @@ final class WorkoutConnectivity: NSObject, ObservableObject {
 
     private func saveJournal(_ updated: WatchJournal) throws {
         guard !journalUnavailable else { throw ConnectivityError.invalidJournal }
-        try FileManager.default.createDirectory(at: journalURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let data = try JSONEncoder().encode(updated)
-        guard data.count <= 256 * 1024 else { throw ConnectivityError.payloadTooLarge }
-        try data.write(to: journalURL, options: .atomic)
+        try journalStore.save(updated)
+    }
+
+    /// Publish the same committed journal fields for restoration and both receipt paths.
+    private func applyJournal(_ updated: WatchJournal) {
+        journal = updated
+        snapshot = updated.snapshot
+        pendingCommand = updated.pending
+        lastAcknowledgement = updated.acknowledgement
+        quarantinedCommand = updated.quarantined
+        rejectedCommand = updated.rejected
     }
 }
 
@@ -481,111 +470,4 @@ extension WorkoutConnectivity: WCSessionDelegate {
         Task { @MainActor in self.refresh() }
     }
     #endif
-}
-
-private struct WatchJournal: Codable {
-    var snapshot: CompanionSnapshot?
-    var pending: WatchCommand?
-    var acknowledgement: CommandAcknowledgement?
-    var quarantined: WatchCommand?
-    var rejected: WatchCommand?
-    var retiredStoreIDs: [String] = []
-}
-
-private struct AcknowledgedState: Codable {
-    let acknowledgement: CommandAcknowledgement
-    let snapshot: CompanionSnapshot
-}
-
-/// Copy only the protocol's immutable, Sendable values at the Objective-C
-/// delegate boundary. No heterogeneous dictionary crosses into the main actor.
-private struct SessionPacket: Sendable {
-    let version: Int?
-    let kind: String?
-    let payload: Data?
-    let message: String?
-
-    init(_ dictionary: [String: Any]) {
-        version = dictionary["version"] as? Int
-        kind = dictionary["kind"] as? String
-        payload = dictionary["payload"] as? Data
-        message = dictionary["message"] as? String
-    }
-
-    var dictionary: [String: Any] {
-        var value: [String: Any] = [:]
-        if let version { value["version"] = version }
-        if let kind { value["kind"] = kind }
-        if let payload { value["payload"] = payload }
-        if let message { value["message"] = message }
-        return value
-    }
-}
-
-/// WCSession supplies an escaping reply callback for asynchronous responses.
-/// The SDK callback lacks a Sendable annotation; this narrow bridge transfers
-/// it to the processing actor and uses a lock to guarantee exactly one call.
-/// Every mutable field is protected, and the outgoing dictionary is constructed
-/// at invocation rather than shared across threads.
-private final class SessionReply: @unchecked Sendable {
-    private let lock = NSLock()
-    private var callback: (([String: Any]) -> Void)?
-
-    init(_ callback: @escaping ([String: Any]) -> Void) {
-        self.callback = callback
-    }
-
-    func send(_ packet: SessionPacket) {
-        lock.lock()
-        let reply = callback
-        callback = nil
-        lock.unlock()
-        reply?(packet.dictionary)
-    }
-}
-
-private enum Wire {
-    enum Kind: String { case request, snapshot, command, acknowledgement, error, received }
-    static var request: [String: Any] { ["version": 1, "kind": "request"] }
-    static var received: [String: Any] { ["version": 1, "kind": "received"] }
-
-    static func kind(_ packet: [String: Any]) throws -> Kind {
-        guard packet["version"] as? Int == 1, let name = packet["kind"] as? String,
-              let kind = Kind(rawValue: name) else { throw ConnectivityError.unsupportedMessage }
-        return kind
-    }
-
-    static func encode<T: Encodable>(_ value: T, kind: Kind) throws -> [String: Any] {
-        let data = try JSONEncoder().encode(value)
-        let limit = kind == .command ? 8 * 1024 : 60 * 1024
-        guard data.count <= limit else { throw ConnectivityError.payloadTooLarge }
-        return ["version": 1, "kind": kind.rawValue, "payload": data]
-    }
-
-    static func decode<T: Decodable>(_ packet: [String: Any]) throws -> T {
-        let kind = try kind(packet)
-        let limit = kind == .command ? 8 * 1024 : 60 * 1024
-        guard let data = packet["payload"] as? Data, data.count <= limit else { throw ConnectivityError.invalidPayload }
-        return try JSONDecoder().decode(T.self, from: data)
-    }
-
-    static func failure(_ message: String) -> [String: Any] {
-        ["version": 1, "kind": "error", "message": String(message.prefix(300))]
-    }
-}
-
-private enum ConnectivityError: LocalizedError {
-    case invalidJournal, waitForPhone, phoneNotReady, unsupportedMessage, invalidPayload, payloadTooLarge, workoutChanged, planUnavailable
-    var errorDescription: String? {
-        switch self {
-        case .invalidJournal: return "Watch storage is unavailable. Your pending change is being preserved. Reopen the app to retry."
-        case .waitForPhone: return "Wait for the current change to be confirmed by your iPhone."
-        case .phoneNotReady: return "Open Gyma on your iPhone to finish syncing."
-        case .unsupportedMessage: return "Update Gyma on both devices to sync."
-        case .invalidPayload: return "The received workout could not be read. Refresh from your iPhone."
-        case .payloadTooLarge: return "This workout is too large to sync to Apple Watch. Continue on your iPhone."
-        case .workoutChanged: return "The workout changed on your iPhone. Review the latest workout and try again."
-        case .planUnavailable: return "This accepted plan is no longer available for today. Review your workout in Gyma on iPhone."
-        }
-    }
 }

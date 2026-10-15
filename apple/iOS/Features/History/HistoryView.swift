@@ -61,8 +61,8 @@ struct WorkoutDetailView: View {
                     Section {
                         Text(workout.start, format: .dateTime.weekday(.wide).day().month(.wide).year()).font(.headline)
                         HStack(spacing: 12) {
-                            StatTile(value: "\(workout.loggedSets)", label: "sets")
-                            StatTile(value: workout.liftedVolume.gymaNumber, label: "kg lifted")
+                            StatTile(value: "\(workout.totalSets)", label: "sets")
+                            StatTile(value: workout.volume.gymaNumber, label: "kg lifted")
                             StatTile(value: "\(workout.minutes())", label: "minutes")
                         }.listRowInsets(EdgeInsets())
                     }

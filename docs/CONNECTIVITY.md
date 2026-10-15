@@ -1,6 +1,6 @@
 # Paired workout synchronization
 
-Both app targets compile `apple/Shared/Connectivity/WorkoutConnectivity.swift` and link the local `apple/Packages/GymaCore` package. Only the Watch target compiles `apple/watchOS/`; only the phone target compiles `apple/iOS/`. Create one `WorkoutConnectivity.shared` owner in each process.
+Both app targets compile `apple/Shared/Connectivity` and link the local `apple/Packages/GymaCore` package. `WorkoutConnectivity.swift` owns session orchestration; `ConnectivityWire.swift` owns packet encoding, `SessionBridge.swift` the delegate concurrency boundary, and `WatchJournalStore.swift` journal file I/O. Core protocol types and the reducer live in the package's `Connectivity` domain. Only the Watch target compiles `apple/watchOS/`; only the phone target compiles `apple/iOS/`. Create one `WorkoutConnectivity.shared` owner in each process.
 
 The iPhone configures `configurePhone(snapshotProvider:commandHandler:)` at app initialization. Its command handler copies the state, applies `GymaReducer`, writes the changed state **and** command receipt atomically, then assigns the published state and returns the acknowledgment. A failed write throws. The shared service serializes incoming commands, so interactive and background deliveries cannot race the transaction. `publishSnapshot()` must also run after every successful phone edit.
 

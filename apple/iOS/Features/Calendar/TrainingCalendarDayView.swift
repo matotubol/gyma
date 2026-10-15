@@ -90,7 +90,7 @@ struct TrainingCalendarDayView: View {
                         VStack(alignment: .leading, spacing: 5) {
                             Label(workout.title, systemImage: workout.isActive ? "record.circle" : "checkmark.circle.fill")
                                 .font(.headline)
-                            Text("\(workout.loggedSets) sets · \(workout.liftedVolume.gymaNumber) kg · \(workout.minutes()) min")
+                            Text("\(workout.totalSets) sets · \(workout.volume.gymaNumber) kg · \(workout.minutes()) min")
                                 .font(.caption).foregroundStyle(.secondary)
                             Text(workout.isActive ? "In progress" : "Completed").font(.caption).foregroundStyle(GymaStyle.accent)
                         }

@@ -40,7 +40,7 @@ struct OverviewView: View {
                 }.foregroundStyle(.primary)
                 HStack(spacing: 12) {
                     StatTile(value: "\(thisWeek.count)", label: "Workouts this week", symbol: "calendar")
-                    StatTile(value: thisWeek.reduce(0) { $0 + $1.liftedVolume }.gymaNumber,
+                    StatTile(value: thisWeek.reduce(0) { $0 + $1.volume }.gymaNumber,
                              label: "Kilograms this week", symbol: "dumbbell")
                 }
                 if let timer = model.state.restTimer {
@@ -115,7 +115,7 @@ struct OverviewView: View {
                 .font(.system(.largeTitle, design: .rounded, weight: .bold))
                 .fixedSize(horizontal: false, vertical: true)
             if let workout = model.state.activeWorkout {
-                Text("\(workout.loggedSets) sets logged · Started \(workout.start.formatted(date: .omitted, time: .shortened))")
+                Text("\(workout.totalSets) sets logged · Started \(workout.start.formatted(date: .omitted, time: .shortened))")
                     .font(.subheadline)
             } else if !today.status.allowsWorkoutStart {
                 Text(today.message).font(.subheadline)

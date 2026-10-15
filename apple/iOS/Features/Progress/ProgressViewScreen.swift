@@ -20,7 +20,7 @@ struct ProgressViewScreen: View {
 
     private var volumeDays: [VolumeDay] {
         let grouped = Dictionary(grouping: recent) { Calendar.current.startOfDay(for: $0.start) }
-        return grouped.map { VolumeDay(day: $0.key, volume: $0.value.reduce(0) { $0 + $1.liftedVolume }) }.sorted { $0.day < $1.day }
+        return grouped.map { VolumeDay(day: $0.key, volume: $0.value.reduce(0) { $0 + $1.volume }) }.sorted { $0.day < $1.day }
     }
 
     var body: some View {
@@ -32,12 +32,12 @@ struct ProgressViewScreen: View {
                 SectionHeading(title: "The work adds up", subtitle: "Your last 30 days of completed sessions.")
                 HStack(spacing: 12) {
                     StatTile(value: "\(recent.count)", label: "workouts", symbol: "figure.strengthtraining.traditional")
-                    StatTile(value: "\(recent.reduce(0) { $0 + $1.loggedSets })", label: "sets logged", symbol: "checkmark.circle")
+                    StatTile(value: "\(recent.reduce(0) { $0 + $1.totalSets })", label: "sets logged", symbol: "checkmark.circle")
                 }
                 if !recent.isEmpty {
                     VStack(alignment: .leading, spacing: 18) {
                         Text("Volume over time").font(.headline)
-                        Text("\(recent.reduce(0) { $0 + $1.liftedVolume }.gymaNumber) kg lifted").font(.title2.bold())
+                        Text("\(recent.reduce(0) { $0 + $1.volume }.gymaNumber) kg lifted").font(.title2.bold())
                         Chart(volumeDays) { day in
                             BarMark(x: .value("Day", day.day, unit: .day), y: .value("Volume (kg)", day.volume))
                                 .foregroundStyle(GymaStyle.accent.gradient).cornerRadius(4)
