@@ -1,5 +1,5 @@
 diff --git a/isideload/Cargo.toml b/isideload/Cargo.toml
-index cc3a8c5..87b63ed 100644
+index 6503398..0284900 100644
 --- a/isideload/Cargo.toml
 +++ b/isideload/Cargo.toml
 @@ -23,7 +23,7 @@ fs-storage = []
@@ -20,6 +20,1349 @@ index cc3a8c5..87b63ed 100644
  keyring = { version = "3.6.3", features = ["apple-native", "linux-native-sync-persistent", "windows-native"], optional = true }
  rcgen = { version = "0.14.7", default-features = false, features = ["ring", "pem"] }
  p12-keystore = { version = "0.3.0-rc4", package = "isideload-p12-keystore" }
+diff --git a/isideload/src/anisette/mod.rs b/isideload/src/anisette/mod.rs
+index fa12a32..5d17534 100644
+--- a/isideload/src/anisette/mod.rs
++++ b/isideload/src/anisette/mod.rs
+@@ -28,31 +28,36 @@ pub struct AnisetteData {
+     generated_at: SystemTime,
+ }
+ 
+-// Some headers don't seem to be required. I guess not including them is technically more efficient soooo
++fn native_identity_enabled() -> bool {
++    #[cfg(not(feature = "wasm"))]
++    {
++        std::env::var("GYMA_AUTH_EXPERIMENT").as_deref() == Ok("windows-native-identity")
++    }
++    #[cfg(feature = "wasm")]
++    false
++}
++
+ impl AnisetteData {
+     pub fn get_headers(&self) -> HashMap<String, String> {
+-        //let dt: DateTime<Utc> = Utc::now().round_subsecs(0);
++        let mut headers = self.baseline_headers();
++        #[cfg(not(feature = "wasm"))]
++        if native_identity_enabled() {
++            headers.extend(
++                self.metadata_headers(std::time::SystemTime::now())
++                    .map(|(key, value)| (key.to_string(), value)),
++            );
++        }
++        headers
++    }
+ 
++    fn baseline_headers(&self) -> HashMap<String, String> {
+         HashMap::from_iter([
+-            // (
+-            //     "X-Apple-I-Client-Time".to_string(),
+-            //     dt.format("%+").to_string().replace("+00:00", "Z"),
+-            // ),
+-            // ("X-Apple-I-SRL-NO".to_string(), serial),
+-            // ("X-Apple-I-TimeZone".to_string(), "UTC".to_string()),
+-            // ("X-Apple-Locale".to_string(), "en_US".to_string()),
+-            // ("X-Apple-I-MD-RINFO".to_string(), self.routing_info.clone()),
+-            // ("X-Apple-I-MD-LU".to_string(), self.local_user_id.clone()),
+             (
+                 "X-Mme-Device-Id".to_string(),
+                 self.device_unique_identifier.clone(),
+             ),
+             ("X-Apple-I-MD".to_string(), self.one_time_password.clone()),
+             ("X-Apple-I-MD-M".to_string(), self.machine_id.clone()),
+-            // (
+-            //     "X-Mme-Client-Info".to_string(),
+-            //     self.device_description.clone(),
+-            // ),
+         ])
+     }
+ 
+@@ -71,7 +76,72 @@ impl AnisetteData {
+     }
+ 
+     pub fn get_client_provided_data(&self) -> Dictionary {
+-        let headers = self.get_headers();
++        #[cfg(not(feature = "wasm"))]
++        {
++            let experiment = std::env::var("GYMA_AUTH_EXPERIMENT").ok();
++            self.client_provided_data_for_experiment(
++                experiment.as_deref(),
++                std::time::SystemTime::now(),
++            )
++        }
++        #[cfg(feature = "wasm")]
++        self.client_provided_data_with_flags(false)
++    }
++
++    #[cfg(not(feature = "wasm"))]
++    fn client_provided_data_for_experiment(
++        &self,
++        experiment: Option<&str>,
++        now: std::time::SystemTime,
++    ) -> Dictionary {
++        let use_boolean_flags = matches!(
++            experiment,
++            Some("cpd-booleans" | "cpd-metadata" | "windows-native-identity")
++        );
++        let mut cpd = self.client_provided_data_with_flags(use_boolean_flags);
++        if matches!(experiment, Some("cpd-metadata" | "windows-native-identity")) {
++            self.add_cpd_metadata(&mut cpd, now);
++        }
++        if experiment == Some("windows-native-identity")
++            && let Ok(routing_info) = self.routing_info.parse::<u64>()
++        {
++            // AltServer's native Windows CPD uses an unsigned plist integer;
++            // the corresponding HTTP header remains its decimal string.
++            cpd.insert(
++                "X-Apple-I-MD-RINFO".to_string(),
++                plist::Value::Integer(routing_info.into()),
++            );
++        }
++        cpd
++    }
++
++    #[cfg(not(feature = "wasm"))]
++    fn metadata_headers(&self, now: std::time::SystemTime) -> [(&'static str, String); 5] {
++        let seconds = now
++            .duration_since(std::time::UNIX_EPOCH)
++            .unwrap_or_default()
++            .as_secs();
++        let timestamp =
++            plist::Date::from(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
++                .to_xml_format();
++        [
++            ("X-Apple-I-MD-LU", self._local_user_id.clone()),
++            ("X-Apple-I-MD-RINFO", self.routing_info.clone()),
++            ("X-Apple-I-Client-Time", timestamp),
++            ("X-Apple-I-TimeZone", "UTC".to_string()),
++            ("X-Apple-Locale", "en_US".to_string()),
++        ]
++    }
++
++    #[cfg(not(feature = "wasm"))]
++    fn add_cpd_metadata(&self, cpd: &mut Dictionary, now: std::time::SystemTime) {
++        for (key, value) in self.metadata_headers(now) {
++            cpd.insert(key.to_string(), plist::Value::String(value));
++        }
++    }
++
++    fn client_provided_data_with_flags(&self, use_boolean_flags: bool) -> Dictionary {
++        let headers = self.baseline_headers();
+ 
+         let mut cpd = plist!(dict {
+             "bootstrap": "true",
+@@ -82,6 +152,19 @@ impl AnisetteData {
+             "svct": "iCloud"
+         });
+ 
++        // This opt-in experiment changes only the four plist flag types. The
++        // default preserves upstream behavior for a comparable baseline.
++        if use_boolean_flags {
++            for (key, value) in [
++                ("bootstrap", true),
++                ("icscrec", true),
++                ("pbe", false),
++                ("prkgen", true),
++            ] {
++                cpd.insert(key.to_string(), plist::Value::Boolean(value));
++            }
++        }
++
+         for (key, value) in headers {
+             cpd.insert(key.to_string(), plist::Value::String(value));
+         }
+@@ -101,6 +184,132 @@ impl AnisetteData {
+     }
+ }
+ 
++#[cfg(test)]
++mod diagnostic_experiment_tests {
++    use super::*;
++
++    #[cfg(not(feature = "wasm"))]
++    #[test]
++    fn native_identity_cpd_uses_boolean_flags_integer_routing_and_matching_headers() {
++        let data = AnisetteData {
++            machine_id: "test-native-mid".into(),
++            one_time_password: "test-native-otp".into(),
++            routing_info: "84215040".into(),
++            _device_description: "test-native-client".into(),
++            device_unique_identifier: "test-native-device".into(),
++            _local_user_id: "test-native-local-user".into(),
++            generated_at: SystemTime::now(),
++        };
++        let now = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_700_000_000_123);
++        let cpd = data.client_provided_data_for_experiment(Some("windows-native-identity"), now);
++        for (key, expected) in [
++            ("bootstrap", true),
++            ("icscrec", true),
++            ("pbe", false),
++            ("prkgen", true),
++        ] {
++            assert_eq!(cpd.get(key), Some(&plist::Value::Boolean(expected)));
++        }
++        assert_eq!(
++            cpd.get("X-Apple-I-MD-RINFO")
++                .and_then(plist::Value::as_unsigned_integer),
++            Some(84215040)
++        );
++        for (key, value) in data.metadata_headers(now) {
++            if key != "X-Apple-I-MD-RINFO" {
++                assert_eq!(cpd.get(key), Some(&plist::Value::String(value)));
++            } else {
++                assert_eq!(value, "84215040");
++            }
++        }
++        assert_eq!(data.baseline_headers().len(), 3);
++        for profile in [
++            None,
++            Some("baseline"),
++            Some("windows-native-anisette"),
++            Some("authkit-user-agent"),
++        ] {
++            let baseline = data.client_provided_data_for_experiment(profile, now);
++            assert_eq!(
++                baseline.get("bootstrap"),
++                Some(&plist::Value::String("true".into()))
++            );
++            assert!(!baseline.contains_key("X-Apple-I-MD-LU"));
++            assert!(!baseline.contains_key("X-Apple-I-MD-RINFO"));
++        }
++        let metadata = data.client_provided_data_for_experiment(Some("cpd-metadata"), now);
++        assert_eq!(
++            metadata.get("X-Apple-I-MD-RINFO"),
++            Some(&plist::Value::String("84215040".into()))
++        );
++    }
++
++    #[cfg(not(feature = "wasm"))]
++    #[test]
++    fn metadata_experiment_preserves_existing_data_and_uses_whole_second_utc() {
++        let data = AnisetteData {
++            machine_id: "test-machine".to_string(),
++            one_time_password: "test-otp".to_string(),
++            routing_info: "17106176".to_string(),
++            _device_description: "test-description".to_string(),
++            device_unique_identifier: "test-device".to_string(),
++            _local_user_id: "test-local-user".to_string(),
++            generated_at: SystemTime::now(),
++        };
++        let baseline = data.client_provided_data_with_flags(true);
++        let mut metadata = baseline.clone();
++        data.add_cpd_metadata(
++            &mut metadata,
++            std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_700_000_000_123),
++        );
++        for (key, expected) in [
++            ("X-Apple-I-MD-LU", "test-local-user"),
++            ("X-Apple-I-MD-RINFO", "17106176"),
++            ("X-Apple-I-Client-Time", "2023-11-14T22:13:20Z"),
++            ("X-Apple-I-TimeZone", "UTC"),
++            ("X-Apple-Locale", "en_US"),
++        ] {
++            assert_eq!(
++                metadata.remove(key),
++                Some(plist::Value::String(expected.to_string()))
++            );
++        }
++        assert_eq!(metadata, baseline);
++    }
++
++    #[test]
++    fn boolean_experiment_changes_only_four_flag_types() {
++        let data = AnisetteData {
++            machine_id: "test-machine".to_string(),
++            one_time_password: "test-otp".to_string(),
++            routing_info: "test-routing".to_string(),
++            _device_description: "test-description".to_string(),
++            device_unique_identifier: "test-device".to_string(),
++            _local_user_id: "test-user".to_string(),
++            generated_at: SystemTime::now(),
++        };
++        let mut baseline = data.client_provided_data_with_flags(false);
++        let mut experiment = data.client_provided_data_with_flags(true);
++        for (key, expected) in [
++            ("bootstrap", true),
++            ("icscrec", true),
++            ("pbe", false),
++            ("prkgen", true),
++        ] {
++            assert_eq!(
++                baseline.remove(key),
++                Some(plist::Value::String(expected.to_string()))
++            );
++            assert_eq!(
++                experiment.remove(key),
++                Some(plist::Value::Boolean(expected))
++            );
++        }
++        assert_eq!(baseline, experiment);
++    }
++}
++
++
+ #[derive(Debug, Clone)]
+ pub enum AnisetteDataResponse {
+     Data(AnisetteData),
+@@ -140,7 +349,8 @@ impl AnisetteDataGenerator {
+         &mut self,
+         gs: Arc<GrandSlam>,
+     ) -> Result<Arc<AnisetteData>, Report> {
+-        if let Some(data) = &self.data
++        if !native_identity_enabled()
++            && let Some(data) = &self.data
+             && !data.needs_refresh()
+         {
+             return Ok(data.clone());
+diff --git a/isideload/src/anisette/remote_v3/mod.rs b/isideload/src/anisette/remote_v3/mod.rs
+index ea51b3e..e50b16d 100644
+--- a/isideload/src/anisette/remote_v3/mod.rs
++++ b/isideload/src/anisette/remote_v3/mod.rs
+@@ -1,3 +1,4 @@
++mod native_windows;
+ mod state;
+ mod websocket;
+ 
+@@ -29,6 +30,139 @@ use crate::util::storage::{SideloadingStorage, new_storage};
+ pub const DEFAULT_ANISETTE_V3_URL: &str = "https://ani.jkcoxson.com";
+ pub const ANISETTE_STATE_KEY: &str = "anisette_state";
+ 
++pub(crate) const AUTHKIT_EXPERIMENT_USER_AGENT: &str =
++    "AuthKit/1 (Macintosh; OS X 26.5.2) (com.apple.dt.Xcode/26.0)";
++const NATIVE_IDENTITY_USER_AGENT: &str = "akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0";
++
++pub(crate) fn client_info_for_experiment(
++    mut baseline: AnisetteClientInfo,
++    experiment: Option<&str>,
++) -> AnisetteClientInfo {
++    // The server owns the current client identity. Old diagnostic profiles must
++    // never pin the normal path to a stale hardcoded Mac identity.
++    if experiment == Some("authkit-user-agent") {
++        baseline.user_agent = AUTHKIT_EXPERIMENT_USER_AGENT.to_string();
++    }
++    baseline
++}
++
++fn decode_existing_native_state(saved: &[u8]) -> Result<AnisetteState, Report> {
++    const INVALID: &str =
++        "Native anisette comparison requires valid baseline provisioning; launch baseline first";
++    // Validate before the upstream typed decoder, whose fixed-size conversion
++    // panics and prints the original bytes when the identifier length is wrong.
++    let dictionary: plist::Dictionary = plist::from_bytes(saved).map_err(|_| report!(INVALID))?;
++    let keychain_identifier = dictionary
++        .get("keychain_identifier")
++        .and_then(plist::Value::as_data)
++        .and_then(|data| <[u8; 16]>::try_from(data).ok())
++        .ok_or_else(|| report!(INVALID))?;
++    let adi_pb = dictionary
++        .get("adi_pb")
++        .and_then(plist::Value::as_data)
++        .filter(|data| !data.is_empty())
++        .ok_or_else(|| report!(INVALID))?
++        .to_vec();
++    // Do not reparse the original bytes: duplicate XML keys could otherwise
++    // select a different value in the upstream typed decoder.
++    Ok(AnisetteState {
++        keychain_identifier,
++        adi_pb: Some(adi_pb),
++    })
++}
++
++fn native_identity_data(native: native_windows::NativeHeaders) -> Result<AnisetteData, Report> {
++    let identity = native.identity.ok_or_else(|| {
++        report!("Native anisette helper did not return a complete Windows identity")
++    })?;
++    if identity.routing_info.parse::<u64>().is_err() {
++        bail!("Native anisette helper returned invalid routing metadata");
++    }
++    Ok(AnisetteData {
++        machine_id: native.machine_id,
++        one_time_password: native.one_time_password,
++        routing_info: identity.routing_info,
++        _device_description: identity.client_info,
++        device_unique_identifier: identity.device_id,
++        _local_user_id: identity.local_user_id,
++        generated_at: SystemTime::now(),
++    })
++}
++
++#[cfg(test)]
++mod native_state_tests {
++    use super::*;
++
++    #[test]
++    fn native_data_uses_only_its_own_identity_and_requires_metadata() {
++        let data = native_identity_data(native_windows::NativeHeaders {
++            machine_id: "test-native-mid".into(),
++            one_time_password: "test-native-otp".into(),
++            identity: Some(native_windows::NativeIdentity {
++                client_info: "test-native-client".into(),
++                device_id: "test-native-device".into(),
++                local_user_id: "test-native-local-user".into(),
++                routing_info: "84215040".into(),
++            }),
++        })
++        .unwrap();
++        assert_eq!(data.machine_id, "test-native-mid");
++        assert_eq!(data.one_time_password, "test-native-otp");
++        assert_eq!(data._device_description, "test-native-client");
++        assert_eq!(data.device_unique_identifier, "test-native-device");
++        assert_eq!(data._local_user_id, "test-native-local-user");
++        assert_eq!(data.routing_info, "84215040");
++        assert!(
++            native_identity_data(native_windows::NativeHeaders {
++                machine_id: "test-native-mid".into(),
++                one_time_password: "test-native-otp".into(),
++                identity: None,
++            })
++            .is_err()
++        );
++    }
++
++    #[test]
++    fn duplicate_state_keys_cannot_reach_upstream_panicking_decoder() {
++        let xml = br#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
++            <key>keychain_identifier</key><data>AA==</data>
++            <key>keychain_identifier</key><data>AAAAAAAAAAAAAAAAAAAAAA==</data>
++            <key>adi_pb</key><data>AQ==</data>
++            </dict></plist>"#;
++        let decoded = decode_existing_native_state(xml).unwrap();
++        assert_eq!(decoded.keychain_identifier, [0; 16]);
++        assert_eq!(decoded.adi_pb, Some(vec![1]));
++    }
++
++    #[test]
++    fn rejects_malformed_native_comparison_state_without_panicking_or_data_in_errors() {
++        for (identifier, provisioning) in [(vec![99; 15], vec![88]), (vec![99; 16], vec![])] {
++            let mut state = plist::Dictionary::new();
++            state.insert("keychain_identifier".into(), plist::Value::Data(identifier));
++            state.insert("adi_pb".into(), plist::Value::Data(provisioning));
++            let mut bytes = Vec::new();
++            plist::to_writer_xml(&mut bytes, &state).unwrap();
++            let error = decode_existing_native_state(&bytes).err().unwrap();
++            let message = error.to_string();
++            assert!(message.contains("requires valid baseline provisioning"));
++            assert!(!message.contains("99"));
++            assert!(!message.contains("88"));
++        }
++        let state = AnisetteState {
++            keychain_identifier: [0; 16],
++            adi_pb: Some(vec![1]),
++        };
++        let mut bytes = Vec::new();
++        plist::to_writer_xml(&mut bytes, &state).unwrap();
++        assert!(
++            decode_existing_native_state(&bytes)
++                .unwrap()
++                .is_provisioned()
++        );
++    }
++}
++
++
+ pub struct RemoteV3AnisetteProvider {
+     pub state: Option<AnisetteState>,
+     url: String,
+@@ -112,15 +246,36 @@ impl RemoteV3AnisetteProvider {
+ #[cfg_attr(not(feature = "wasm"), async_trait::async_trait)]
+ impl AnisetteProvider for RemoteV3AnisetteProvider {
+     async fn get_anisette_data(&self) -> Result<AnisetteDataResponse, Report> {
++        if native_windows::identity_enabled() {
++            // Native OTP and identity stay together, without a remote fallback.
++            return Ok(AnisetteDataResponse::Data(native_identity_data(
++                native_windows::generate().await?,
++            )?));
++        }
+         self.fetch_headers(None).await
+     }
+ 
+     async fn resync(&self, sim: &str) -> Result<AnisetteDataResponse, Report> {
++        if native_windows::enabled() {
++            // A server SIM must not be sent with an unrelated native identity.
++            bail!("Native anisette comparisons do not support server resync; sign in with baseline authentication");
++        }
+         self.fetch_headers(Some(sim)).await
+     }
+ 
+     // Can be hardcoded, but apple is changing things so much nowadays it makes more sense to just get it from the server
+     async fn get_client_info(&self) -> Result<AnisetteClientInfo, Report> {
++        if native_windows::identity_enabled() {
++            // This OTP is discarded; login obtains a fresh OTP with its identity.
++            let native = native_windows::generate().await?;
++            let identity = native.identity.ok_or_else(|| {
++                report!("Native anisette helper did not return a complete Windows identity")
++            })?;
++            return Ok(AnisetteClientInfo {
++                client_info: identity.client_info,
++                user_agent: NATIVE_IDENTITY_USER_AGENT.to_string(),
++            });
++        }
+         let info = self
+             .client
+             .get(format!("{}/v3/client_info", self.url))
+@@ -139,10 +294,16 @@ impl AnisetteProvider for RemoteV3AnisetteProvider {
+         //             .to_string(),
+         //     user_agent: "akd/1.0 CFNetwork/808.1.4".to_string(),
+         // };
+-        Ok(info)
++        Ok(client_info_for_experiment(
++            info,
++            std::env::var("GYMA_AUTH_EXPERIMENT").ok().as_deref(),
++        ))
+     }
+ 
+     async fn provision(&mut self, gs: &Arc<GrandSlam>, force_reset: bool) -> Result<(), Report> {
++        if native_windows::identity_enabled() {
++            return native_windows::ensure_supported();
++        }
+         self.get_client_info().await?;
+         self.get_state(gs, force_reset).await?;
+         Ok(())
+@@ -187,15 +348,25 @@ impl RemoteV3AnisetteProvider {
+                 machine_id,
+                 one_time_password,
+                 routing_info,
+-            } => Ok(AnisetteDataResponse::Data(AnisetteData {
+-                machine_id,
+-                one_time_password,
+-                routing_info,
+-                _device_description: client_info.client_info.clone(),
+-                device_unique_identifier: state.get_device_id(),
+-                _local_user_id: hex::encode(state.get_md_lu()),
+-                generated_at: SystemTime::now(),
+-            })),
++            } => {
++                // The hybrid comparison changes only MID/OTP. Generate after the
++                // remote response so the native OTP does not age during its request.
++                let (machine_id, one_time_password) = if native_windows::enabled() {
++                    let native = native_windows::generate().await?;
++                    (native.machine_id, native.one_time_password)
++                } else {
++                    (machine_id, one_time_password)
++                };
++                Ok(AnisetteDataResponse::Data(AnisetteData {
++                    machine_id,
++                    one_time_password,
++                    routing_info,
++                    _device_description: client_info.client_info.clone(),
++                    device_unique_identifier: state.get_device_id(),
++                    _local_user_id: hex::encode(state.get_md_lu()),
++                    generated_at: SystemTime::now(),
++                }))
++            },
+             AnisetteHeaders::GetHeadersError { message } => {
+                 if message.contains("-45061") {
+                     warn!("Server says anisette not provisioned");
+@@ -211,6 +382,19 @@ impl RemoteV3AnisetteProvider {
+         gs: &Arc<GrandSlam>,
+         force_reset: bool,
+     ) -> Result<&mut AnisetteState, Report> {
++        if native_windows::enabled() {
++            native_windows::ensure_supported()?;
++            if force_reset {
++                bail!("Native anisette comparison requires fresh baseline provisioning; sign in with baseline authentication");
++            }
++            if self.state.is_none() {
++                let saved = self.storage.retrieve_data(ANISETTE_STATE_KEY).ok().flatten()
++                    .ok_or_else(|| report!("Native anisette comparison requires existing baseline provisioning; launch baseline first"))?;
++                self.state = Some(decode_existing_native_state(&saved)?);
++            }
++            return self.state.as_mut().filter(|state| state.is_provisioned())
++                .ok_or_else(|| report!("Native anisette comparison requires valid baseline provisioning; launch baseline first"));
++        }
+         if force_reset {
+             warn!("Resetting anisette state");
+             self.state = Some(AnisetteState::new());
+diff --git a/isideload/src/anisette/remote_v3/native_windows.rs b/isideload/src/anisette/remote_v3/native_windows.rs
+new file mode 100644
+index 0000000..d1273a2
+--- /dev/null
++++ b/isideload/src/anisette/remote_v3/native_windows.rs
+@@ -0,0 +1,393 @@
++//! Opt-in Windows anisette comparisons, including a coherent native identity.
++//! Helper output is authentication material and must never reach logs or errors.
++
++use base64::prelude::*;
++use rootcause::prelude::*;
++use serde::Deserialize;
++
++const MAX_OUTPUT: usize = 24 * 1024;
++const MAX_FIELD: usize = 8192;
++
++pub(super) struct NativeHeaders {
++    pub machine_id: String,
++    pub one_time_password: String,
++    pub identity: Option<NativeIdentity>,
++}
++
++pub(super) struct NativeIdentity {
++    pub client_info: String,
++    pub device_id: String,
++    pub local_user_id: String,
++    pub routing_info: String,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum HelperError {
++    Configuration,
++    Spawn,
++    Read,
++    TooLarge,
++    Timeout,
++    Exit,
++    InvalidResponse,
++    GenerationFailed,
++}
++
++impl HelperError {
++    fn message(self) -> &'static str {
++        match self {
++            Self::Configuration => "Native anisette helper requires an absolute executable path",
++            Self::Spawn => "Native anisette helper could not start",
++            Self::Read => "Native anisette helper pipe could not be read",
++            Self::TooLarge => "Native anisette helper output exceeded the size limit",
++            Self::Timeout => "Native anisette helper timed out",
++            Self::Exit => "Native anisette helper exited unsuccessfully",
++            Self::InvalidResponse => "Native anisette helper returned an invalid response",
++            Self::GenerationFailed => "Native anisette helper could not generate headers",
++        }
++    }
++}
++
++fn experiment_enabled(experiment: Option<&str>) -> bool {
++    matches!(
++        experiment,
++        Some("windows-native-anisette" | "windows-native-identity")
++    )
++}
++
++pub(super) fn enabled() -> bool {
++    experiment_enabled(std::env::var("GYMA_AUTH_EXPERIMENT").ok().as_deref())
++}
++
++pub(super) fn identity_enabled() -> bool {
++    std::env::var("GYMA_AUTH_EXPERIMENT").as_deref() == Ok("windows-native-identity")
++}
++
++pub(super) fn ensure_supported() -> Result<(), Report> {
++    if !cfg!(windows) {
++        bail!("Native anisette comparison is only available on Windows");
++    }
++    Ok(())
++}
++
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct HelperResponse {
++    success: bool,
++    machine_id: Option<String>,
++    one_time_password: Option<String>,
++    client_info: Option<String>,
++    device_id: Option<String>,
++    local_user_id: Option<String>,
++    routing_info: Option<String>,
++}
++
++fn valid_field(value: &str) -> bool {
++    if value.is_empty() || value.len() > MAX_FIELD {
++        return false;
++    }
++    match BASE64_STANDARD.decode(value) {
++        Ok(mut decoded) => {
++            let valid = !decoded.is_empty();
++            decoded.fill(0);
++            valid
++        }
++        Err(_) => false,
++    }
++}
++
++fn valid_header(value: &str, maximum: usize) -> bool {
++    !value.is_empty() && value.len() <= maximum && value.bytes().all(|b| (32..=126).contains(&b))
++}
++
++fn parse_output(bytes: &[u8], native_identity: bool) -> Result<NativeHeaders, HelperError> {
++    if bytes.len() > MAX_OUTPUT {
++        return Err(HelperError::TooLarge);
++    }
++    let response: HelperResponse =
++        serde_json::from_slice(bytes).map_err(|_| HelperError::InvalidResponse)?;
++    if !response.success {
++        return Err(HelperError::GenerationFailed);
++    }
++    let machine_id = response.machine_id.ok_or(HelperError::InvalidResponse)?;
++    let one_time_password = response
++        .one_time_password
++        .ok_or(HelperError::InvalidResponse)?;
++    if !valid_field(&machine_id) || !valid_field(&one_time_password) {
++        return Err(HelperError::InvalidResponse);
++    }
++    let identity = match (
++        native_identity,
++        response.client_info,
++        response.device_id,
++        response.local_user_id,
++        response.routing_info,
++    ) {
++        (true, Some(client_info), Some(device_id), Some(local_user_id), Some(routing_info))
++            if valid_header(&client_info, 2048)
++                && valid_header(&device_id, 256)
++                && !device_id.bytes().any(|b| b.is_ascii_whitespace())
++                && valid_field(&local_user_id)
++                && routing_info == "84215040" =>
++        {
++            Some(NativeIdentity {
++                client_info,
++                device_id,
++                local_user_id,
++                routing_info,
++            })
++        }
++        (false, None, None, None, None) => None,
++        _ => return Err(HelperError::InvalidResponse),
++    };
++    Ok(NativeHeaders {
++        machine_id,
++        one_time_password,
++        identity,
++    })
++}
++
++fn read_bounded(mut pipe: impl std::io::Read) -> Result<Vec<u8>, HelperError> {
++    let mut bytes = Vec::new();
++    let mut chunk = [0_u8; 4096];
++    loop {
++        let count = match pipe.read(&mut chunk) {
++            Ok(count) => count,
++            Err(_) => {
++                bytes.fill(0);
++                chunk.fill(0);
++                return Err(HelperError::Read);
++            }
++        };
++        if count == 0 {
++            return Ok(bytes);
++        }
++        if bytes.len() + count > MAX_OUTPUT {
++            bytes.fill(0);
++            chunk.fill(0);
++            return Err(HelperError::TooLarge);
++        }
++        bytes.extend_from_slice(&chunk[..count]);
++        chunk.fill(0);
++    }
++}
++
++#[cfg(windows)]
++fn run_helper(
++    path: std::path::PathBuf,
++    native_identity: bool,
++) -> Result<NativeHeaders, HelperError> {
++    use std::os::windows::process::CommandExt;
++    use std::process::{Command, Stdio};
++    use std::sync::mpsc;
++    use std::time::{Duration, Instant};
++
++    if !path.is_absolute()
++        || !path.is_file()
++        || path.extension().and_then(|e| e.to_str()) != Some("exe")
++    {
++        return Err(HelperError::Configuration);
++    }
++    // Reserve up to one second for termination. All waiting is bounded.
++    let deadline = Instant::now() + Duration::from_secs(14);
++    let mut command = Command::new(path);
++    if native_identity {
++        command.arg("--native-identity");
++    }
++    let mut child = command
++        .stdin(Stdio::null())
++        .stdout(Stdio::piped())
++        .stderr(Stdio::null())
++        .creation_flags(0x08000000) // CREATE_NO_WINDOW
++        .spawn()
++        .map_err(|_| HelperError::Spawn)?;
++    let pipe = match child.stdout.take() {
++        Some(pipe) => pipe,
++        None => {
++            let _ = child.kill();
++            return Err(HelperError::Read);
++        }
++    };
++    let (sender, receiver) = mpsc::sync_channel(1);
++    let reader = std::thread::Builder::new()
++        .name("native-anisette-pipe".into())
++        .spawn(move || {
++            let result = read_bounded(pipe);
++            // Dropped receiver means timeout/cancellation. Wipe captured bytes.
++            if let Err(mpsc::SendError(Ok(mut bytes))) = sender.send(result) {
++                bytes.fill(0);
++            }
++        });
++    if reader.is_err() {
++        let _ = child.kill();
++        return Err(HelperError::Read);
++    }
++    let result = (|| {
++        let mut output = None;
++        loop {
++            if output.is_none() {
++                match receiver.try_recv() {
++                    Ok(result) => output = Some(result?),
++                    Err(mpsc::TryRecvError::Disconnected) => return Err(HelperError::Read),
++                    Err(mpsc::TryRecvError::Empty) => {}
++                }
++            }
++            match child.try_wait().map_err(|_| HelperError::Exit)? {
++                Some(status) => {
++                    if !status.success() {
++                        if let Some(mut bytes) = output.take() {
++                            bytes.fill(0);
++                        }
++                        return Err(HelperError::Exit);
++                    }
++                    if let Some(mut bytes) = output.take() {
++                        let parsed = parse_output(&bytes, native_identity);
++                        bytes.fill(0);
++                        return parsed;
++                    }
++                }
++                None => {}
++            }
++            if Instant::now() >= deadline {
++                if let Some(mut bytes) = output.take() {
++                    bytes.fill(0);
++                }
++                return Err(HelperError::Timeout);
++            }
++            std::thread::sleep(Duration::from_millis(10));
++        }
++    })();
++    if result.is_err() {
++        let _ = child.kill();
++        let cleanup_deadline = Instant::now() + Duration::from_secs(1);
++        while Instant::now() < cleanup_deadline {
++            if !matches!(child.try_wait(), Ok(None)) {
++                break;
++            }
++            std::thread::sleep(Duration::from_millis(10));
++        }
++    }
++    // Do not join a possibly blocked reader after timeout. Child termination
++    // normally closes its pipe; the detached reader then drops its private data.
++    result
++}
++
++pub(super) async fn generate() -> Result<NativeHeaders, Report> {
++    ensure_supported()?;
++    #[cfg(windows)]
++    {
++        let path = std::env::var_os("GYMA_NATIVE_ANISETTE_HELPER")
++            .map(std::path::PathBuf::from)
++            .ok_or_else(|| report!(HelperError::Configuration.message()))?;
++        let (sender, receiver) = futures::channel::oneshot::channel();
++        let native_identity = identity_enabled();
++        std::thread::Builder::new()
++            .name("native-anisette-helper".into())
++            .spawn(move || {
++                let _ = sender.send(run_helper(path, native_identity));
++            })
++            .map_err(|_| report!(HelperError::Spawn.message()))?;
++        return Ok(receiver
++            .await
++            .map_err(|_| report!(HelperError::Exit.message()))?
++            .map_err(|error| report!(error.message()))?);
++    }
++    #[cfg(not(windows))]
++    bail!("Native anisette comparison is only available on Windows");
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn parser_accepts_only_bounded_success_with_two_base64_fields() {
++        let headers = parse_output(
++            br#"{"success":true,"machine_id":"YWJj","one_time_password":"ZGVm"}"#,
++            false,
++        )
++        .unwrap();
++        assert_eq!(headers.machine_id, "YWJj");
++        assert_eq!(headers.one_time_password, "ZGVm");
++        for input in [
++            br#"{"success":false,"machine_id":null,"one_time_password":null}"#.as_slice(),
++            br#"{"success":true,"machine_id":"SECRET_MARKER!","one_time_password":"ZGVm"}"#.as_slice(),
++            br#"{"success":true,"machine_id":"YWJj","one_time_password":"ZGVm","secret":"SECRET_MARKER"}"#.as_slice(),
++            b"SECRET_MARKER invalid JSON".as_slice(),
++        ] {
++            let error = parse_output(input, false).err().unwrap();
++            assert!(!error.message().contains("SECRET_MARKER"));
++        }
++        assert_eq!(
++            parse_output(&vec![b'x'; MAX_OUTPUT + 1], false).err(),
++            Some(HelperError::TooLarge)
++        );
++        assert!(!valid_field(&"A".repeat(MAX_FIELD + 4)));
++        assert!(!valid_field(""));
++    }
++
++    #[test]
++    fn identity_profile_requires_complete_safe_native_metadata() {
++        let input = serde_json::json!({
++            "success": true, "machine_id": "YWJj", "one_time_password": "ZGVm",
++            "client_info": "<Windows> <com.apple.iCloud>",
++            "device_id": "00000000-0000-0000-0000-000000000000",
++            "local_user_id": "YWJj", "routing_info": "84215040",
++        });
++        let bytes = serde_json::to_vec(&input).unwrap();
++        let headers = parse_output(&bytes, true).unwrap();
++        assert_eq!(headers.identity.unwrap().routing_info, "84215040");
++        assert_eq!(
++            parse_output(&bytes, false).err(),
++            Some(HelperError::InvalidResponse)
++        );
++        for key in ["client_info", "device_id", "local_user_id", "routing_info"] {
++            let mut missing = input.clone();
++            missing.as_object_mut().unwrap().remove(key);
++            assert_eq!(
++                parse_output(&serde_json::to_vec(&missing).unwrap(), true).err(),
++                Some(HelperError::InvalidResponse)
++            );
++        }
++        for (key, value) in [
++            ("client_info", "x\r\nInjected: SECRET"),
++            ("device_id", "a b"),
++            ("routing_info", "17106176"),
++            ("local_user_id", "SECRET!"),
++        ] {
++            let mut invalid = input.clone();
++            invalid[key] = serde_json::json!(value);
++            assert_eq!(
++                parse_output(&serde_json::to_vec(&invalid).unwrap(), true).err(),
++                Some(HelperError::InvalidResponse)
++            );
++        }
++        assert_eq!(
++            parse_output(
++                br#"{"success":true,"machine_id":"YWJj","one_time_password":"ZGVm"}"#,
++                true
++            )
++            .err(),
++            Some(HelperError::InvalidResponse)
++        );
++    }
++
++    #[test]
++    fn pipe_reader_enforces_cap_and_profile_is_exact() {
++        assert_eq!(
++            read_bounded(std::io::Cursor::new(vec![0; MAX_OUTPUT + 1])).err(),
++            Some(HelperError::TooLarge)
++        );
++        assert!(experiment_enabled(Some("windows-native-anisette")));
++        assert!(experiment_enabled(Some("windows-native-identity")));
++        for label in [
++            None,
++            Some("baseline"),
++            Some("cpd-booleans"),
++            Some("cpd-metadata"),
++            Some("authkit-user-agent"),
++        ] {
++            assert!(!experiment_enabled(label));
++        }
++    }
++}
+diff --git a/isideload/src/auth/grandslam.rs b/isideload/src/auth/grandslam.rs
+index 3beea9f..f401fe4 100644
+--- a/isideload/src/auth/grandslam.rs
++++ b/isideload/src/auth/grandslam.rs
+@@ -149,6 +149,11 @@ impl GrandSlam {
+         additional_headers: Option<HeaderMap>,
+         retry_limit: Option<u32>,
+     ) -> Result<Dictionary, Report> {
++        let diagnostic =
++            AuthDiagnostic::new(url, body, &self.client_info, additional_headers.as_ref());
++        if let Some(diagnostic) = &diagnostic {
++            diagnostic.emit("request", serde_json::json!({}));
++        }
+         let result = self
+             .post(url)?
+             .headers(
+@@ -159,8 +164,20 @@ impl GrandSlam {
+             .body(plist_to_xml_string(body))
+             .send()
+             .await
++            .inspect_err(|_| {
++                if let Some(diagnostic) = &diagnostic {
++                    diagnostic.emit("transport_error", serde_json::json!({}));
++                }
++            })
+             .context("Failed to send grandslam request")?;
+ 
++        if let Some(diagnostic) = &diagnostic {
++            diagnostic.emit(
++                "http_response",
++                serde_json::json!({"status": result.status().as_u16()}),
++            );
++        }
++
+         if let Some(retries) = retry_limit
+             && result.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+         {
+@@ -186,9 +203,19 @@ impl GrandSlam {
+             .context("Received error response from grandslam")?
+             .text()
+             .await
++            .inspect_err(|_| {
++                if let Some(diagnostic) = &diagnostic {
++                    diagnostic.emit("body_read_error", serde_json::json!({}));
++                }
++            })
+             .context("Failed to read grandslam response as text")?;
+ 
+         let dict: Dictionary = plist::from_bytes(resp.as_bytes())
++            .inspect_err(|_| {
++                if let Some(diagnostic) = &diagnostic {
++                    diagnostic.emit("plist_parse_error", serde_json::json!({}));
++                }
++            })
+             .context("Failed to parse grandslam response plist")
+             .attach_with(|| resp.clone())?;
+ 
+@@ -197,10 +224,17 @@ impl GrandSlam {
+             .and_then(|v| v.as_dictionary())
+             .cloned()
+             .ok_or_else(|| {
++                if let Some(diagnostic) = &diagnostic {
++                    diagnostic.emit("missing_response", serde_json::json!({}));
++                }
+                 report!("grandslam response missing 'Response'")
+                     .attach(pretty_print_dictionary(&dict))
+             })?;
+ 
++        if let Some(diagnostic) = &diagnostic {
++            diagnostic.emit("apple_response", diagnostic_response(&response_plist));
++        }
++
+         Ok(response_plist)
+     }
+ 
+@@ -274,6 +308,316 @@ impl GrandSlam {
+     }
+ }
+ 
++// Deliberately separate from verbose tracing: authentication values and arbitrary
++// error strings must never reach this opt-in diagnostic file.
++struct AuthDiagnostic {
++    path: std::path::PathBuf,
++    context: serde_json::Value,
++}
++
++impl AuthDiagnostic {
++    fn new(
++        url: &str,
++        body: &Dictionary,
++        client_info: &AnisetteClientInfo,
++        additional_headers: Option<&HeaderMap>,
++    ) -> Option<Self> {
++        #[cfg(feature = "wasm")]
++        return None;
++        #[cfg(not(feature = "wasm"))]
++        {
++            let path = std::path::PathBuf::from(std::env::var_os("GYMA_AUTH_DIAGNOSTICS_PATH")?);
++            if !path.is_absolute() {
++                return None;
++            }
++            Some(Self {
++                path,
++                context: diagnostic_request(url, body, client_info, additional_headers),
++            })
++        }
++    }
++
++    fn emit(&self, event: &str, detail: serde_json::Value) {
++        use std::io::Write;
++        static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
++        let Ok(_guard) = WRITE_LOCK.lock() else {
++            return;
++        };
++        let Ok(mut file) = std::fs::OpenOptions::new()
++            .create(true)
++            .append(true)
++            .open(&self.path)
++        else {
++            return;
++        };
++        // Keep diagnostics bounded even if the caller leaves the option enabled.
++        if file
++            .metadata()
++            .map(|m| m.len() >= 4 * 1024 * 1024)
++            .unwrap_or(true)
++        {
++            return;
++        }
++        let timestamp_ms = std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .map(|d| d.as_millis())
++            .unwrap_or(0);
++        let record = serde_json::json!({
++            "schema": 1, "timestamp_ms": timestamp_ms, "event": event,
++            "request": self.context, "detail": detail,
++        });
++        if let Ok(mut line) = serde_json::to_vec(&record) {
++            line.push(b'\n');
++            let _ = file.write_all(&line);
++        }
++    }
++}
++
++fn diagnostic_type(value: &plist::Value) -> &'static str {
++    match value {
++        plist::Value::Array(_) => "array",
++        plist::Value::Dictionary(_) => "dictionary",
++        plist::Value::Boolean(_) => "boolean",
++        plist::Value::Data(_) => "data",
++        plist::Value::Date(_) => "date",
++        plist::Value::Real(_) => "real",
++        plist::Value::Integer(_) => "integer",
++        plist::Value::String(_) => "string",
++        plist::Value::Uid(_) => "uid",
++        _ => "other",
++    }
++}
++
++fn diagnostic_fields(dict: Option<&Dictionary>, allowed: &[&str]) -> serde_json::Value {
++    let mut fields = serde_json::Map::new();
++    if let Some(dict) = dict {
++        for key in allowed {
++            if let Some(value) = dict.get(*key) {
++                fields.insert(
++                    (*key).to_string(),
++                    serde_json::json!(diagnostic_type(value)),
++                );
++            }
++        }
++    }
++    serde_json::Value::Object(fields)
++}
++
++fn diagnostic_request(
++    url: &str,
++    body: &Dictionary,
++    client_info: &AnisetteClientInfo,
++    additional_headers: Option<&HeaderMap>,
++) -> serde_json::Value {
++    use std::sync::atomic::{AtomicU64, Ordering};
++    static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(1);
++    let request = body.get("Request").and_then(plist::Value::as_dictionary);
++    let operation = match request
++        .and_then(|r| r.get("o"))
++        .and_then(plist::Value::as_string)
++    {
++        Some("init") => "init",
++        Some("complete") => "complete",
++        Some("apptokens") => "apptokens",
++        _ => "other",
++    };
++    let endpoint = reqwest::Url::parse(url)
++        .ok()
++        .and_then(|u| {
++            (u.scheme() == "https"
++                && u.host_str() == Some("gsa.apple.com")
++                && u.path() == "/grandslam/GsService2")
++                .then_some("https://gsa.apple.com/grandslam/GsService2")
++        })
++        .unwrap_or("other");
++    let mut headers = GrandSlam::base_headers(client_info, false).unwrap_or_default();
++    if let Some(additional) = additional_headers {
++        for (key, value) in additional {
++            headers.insert(key.clone(), value.clone());
++        }
++    }
++    let public_headers = [
++        ("content-type", "text/x-xml-plist"),
++        ("accept", "text/x-xml-plist"),
++        ("user-agent", "akd/1.0 CFNetwork/808.1.4"),
++        (
++            "x-mme-client-info",
++            "<Mac15,7> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.akd/1.0)>",
++        ),
++        ("x-xcode-version", "27.0 (27A5218g)"),
++        ("x-apple-app-info", "com.apple.gs.xcode.auth"),
++        ("connection", "close"),
++    ];
++    let mut header_summary = serde_json::Map::new();
++    for (name, known_value) in public_headers {
++        let value = match headers.get(name).and_then(|v| v.to_str().ok()) {
++            Some(value) if value == known_value => known_value,
++            Some(crate::anisette::remote_v3::AUTHKIT_EXPERIMENT_USER_AGENT)
++                if name == "user-agent" =>
++            {
++                crate::anisette::remote_v3::AUTHKIT_EXPERIMENT_USER_AGENT
++            }
++            Some(_) => "other",
++            None => "absent",
++        };
++        header_summary.insert(name.to_string(), serde_json::json!(value));
++    }
++    serde_json::json!({
++        "attempt": NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed),
++        "experiment": match std::env::var("GYMA_AUTH_EXPERIMENT").as_deref() {
++            Ok("cpd-booleans") => "cpd-booleans",
++            Ok("cpd-metadata") => "cpd-metadata",
++            Ok("windows-native-anisette") => "windows-native-anisette",
++            Ok("windows-native-identity") => "windows-native-identity",
++            Ok("authkit-user-agent") => "authkit-user-agent",
++            _ => "baseline",
++        },
++        "operation": operation,
++        "anisette_source": match std::env::var("GYMA_AUTH_EXPERIMENT").as_deref() {
++            Ok("windows-native-anisette") => "windows-native-mid-otp-with-remote-metadata",
++            Ok("windows-native-identity") => "windows-native-identity",
++            _ => "remote-v3",
++        },
++        "endpoint": endpoint,
++        "headers": header_summary,
++        "fields": diagnostic_fields(request, &["A2k", "cpd", "ps", "o", "u", "c", "M1", "app", "checksum", "t"]),
++        "cpd_fields": diagnostic_fields(request.and_then(|r| r.get("cpd")).and_then(plist::Value::as_dictionary), &[
++            "bootstrap", "icscrec", "pbe", "prkgen", "svct", "loc", "X-Apple-Locale",
++            "X-Apple-I-MD", "X-Apple-I-MD-M", "X-Mme-Device-Id", "X-Apple-I-MD-LU",
++            "X-Apple-I-MD-RINFO", "X-Apple-I-SRL-NO", "X-Apple-I-Client-Time", "X-Apple-I-TimeZone",
++        ]),
++    })
++}
++
++fn diagnostic_response(response: &Dictionary) -> serde_json::Value {
++    let status = response
++        .get("Status")
++        .and_then(plist::Value::as_dictionary)
++        .unwrap_or(response);
++    let code = status.get("ec").and_then(plist::Value::as_signed_integer);
++    serde_json::json!({
++        "apple_error_code": code,
++        "fields": diagnostic_fields(Some(response), &["Status", "c", "s", "i", "B", "sp", "M2", "spd", "et"]),
++    })
++}
++
++#[cfg(test)]
++mod diagnostic_tests {
++    use super::*;
++
++    #[test]
++    fn authkit_experiment_changes_only_user_agent_header() {
++        use crate::anisette::remote_v3::{
++            AUTHKIT_EXPERIMENT_USER_AGENT, client_info_for_experiment,
++        };
++        let upstream = AnisetteClientInfo {
++            client_info: "server-supplied-current-identity".into(),
++            user_agent: "server-supplied-current-agent".into(),
++        };
++        let baseline = client_info_for_experiment(upstream.clone(), None);
++        let experiment = client_info_for_experiment(upstream.clone(), Some("authkit-user-agent"));
++        assert_eq!(baseline.client_info, experiment.client_info);
++        assert_eq!(baseline.user_agent, upstream.user_agent);
++        assert_eq!(baseline.client_info, upstream.client_info);
++        assert_eq!(experiment.user_agent, AUTHKIT_EXPERIMENT_USER_AGENT);
++        for label in ["baseline", "cpd-booleans", "unknown"] {
++            assert_eq!(
++                client_info_for_experiment(upstream.clone(), Some(label)).user_agent,
++                baseline.user_agent
++            );
++        }
++        let mut baseline_headers = GrandSlam::base_headers(&baseline, false).unwrap();
++        let mut experiment_headers = GrandSlam::base_headers(&experiment, false).unwrap();
++        assert_eq!(
++            baseline_headers.remove("user-agent").unwrap(),
++            baseline.user_agent
++        );
++        assert_eq!(
++            experiment_headers.remove("user-agent").unwrap(),
++            experiment.user_agent
++        );
++        assert_eq!(baseline_headers, experiment_headers);
++        let summary = diagnostic_request(
++            "https://gsa.apple.com/grandslam/GsService2",
++            &Dictionary::new(),
++            &experiment,
++            None,
++        );
++        assert_eq!(
++            summary["headers"]["user-agent"],
++            AUTHKIT_EXPERIMENT_USER_AGENT
++        );
++    }
++
++    #[test]
++    fn diagnostic_summary_never_contains_authentication_values() {
++        let secret = "SECRET_MARKER_NEVER_LOG";
++        let mut cpd = Dictionary::new();
++        cpd.insert("bootstrap".into(), plist::Value::String("true".into()));
++        cpd.insert("pbe".into(), plist::Value::Boolean(false));
++        cpd.insert("X-Apple-I-MD".into(), plist::Value::String(secret.into()));
++        cpd.insert(secret.into(), plist::Value::String(secret.into()));
++        let mut request = Dictionary::new();
++        request.insert("o".into(), plist::Value::String("init".into()));
++        request.insert("u".into(), plist::Value::String(secret.into()));
++        request.insert("cpd".into(), plist::Value::Dictionary(cpd));
++        let mut body = Dictionary::new();
++        body.insert("Request".into(), plist::Value::Dictionary(request));
++        let client = AnisetteClientInfo {
++            client_info: secret.into(),
++            user_agent: secret.into(),
++        };
++        let mut additional = HeaderMap::new();
++        additional.insert(
++            "authorization",
++            HeaderValue::from_static("SECRET_MARKER_NEVER_LOG"),
++        );
++        let summary = diagnostic_request(
++            "https://gsa.apple.com/grandslam/GsService2?token=SECRET_MARKER_NEVER_LOG",
++            &body,
++            &client,
++            Some(&additional),
++        );
++        assert!(!summary.to_string().contains(secret));
++        assert_eq!(summary["cpd_fields"]["bootstrap"], "string");
++        assert_eq!(summary["cpd_fields"]["pbe"], "boolean");
++        assert_eq!(summary["fields"]["u"], "string");
++        assert_eq!(summary["operation"], "init");
++        assert_eq!(summary["headers"]["user-agent"], "other");
++        assert_eq!(
++            diagnostic_request(
++                "https://example.com/SECRET_MARKER_NEVER_LOG",
++                &body,
++                &client,
++                None
++            )["endpoint"],
++            "other"
++        );
++    }
++
++    #[test]
++    fn diagnostic_response_keeps_only_error_code_and_protocol_field_types() {
++        let secret = "SECRET_MARKER_NEVER_LOG";
++        let mut status = Dictionary::new();
++        status.insert("ec".into(), plist::Value::Integer((-80045_i64).into()));
++        status.insert("em".into(), plist::Value::String(secret.into()));
++        let mut response = Dictionary::new();
++        response.insert("Status".into(), plist::Value::Dictionary(status));
++        response.insert("spd".into(), plist::Value::Data(secret.as_bytes().into()));
++        response.insert(secret.into(), plist::Value::String(secret.into()));
++        let summary = diagnostic_response(&response);
++        assert_eq!(summary["apple_error_code"], -80045);
++        assert_eq!(summary["fields"]["spd"], "data");
++        assert!(!summary.to_string().contains(secret));
++        let mut flat_response = Dictionary::new();
++        flat_response.insert("ec".into(), plist::Value::Integer((-80045_i64).into()));
++        flat_response.insert("em".into(), plist::Value::String(secret.into()));
++        let flat_summary = diagnostic_response(&flat_response);
++        assert_eq!(flat_summary["apple_error_code"], -80045);
++        assert!(!flat_summary.to_string().contains(secret));
++    }
++}
++
+ pub trait GrandSlamErrorChecker {
+     fn check_grandslam_error(self) -> Result<Dictionary, Report<SideloadError>>;
+ }
 diff --git a/isideload/src/dev/app_ids.rs b/isideload/src/dev/app_ids.rs
 index 37203a1..6924f79 100644
 --- a/isideload/src/dev/app_ids.rs
@@ -899,7 +2242,7 @@ index 5e59ac5..ff70446 100644
  pub mod sign;
  pub use builder::{SideloaderBuilder, TeamSelection};
 diff --git a/isideload/src/sideload/sideloader.rs b/isideload/src/sideload/sideloader.rs
-index 1c0bb91..fdec0f4 100644
+index e0b7934..e21245f 100644
 --- a/isideload/src/sideload/sideloader.rs
 +++ b/isideload/src/sideload/sideloader.rs
 @@ -3,6 +3,7 @@ use crate::{
@@ -1173,10 +2516,10 @@ index 1c0bb91..fdec0f4 100644
 +    }
 +}
 diff --git a/isideload/src/sideload/sign.rs b/isideload/src/sideload/sign.rs
-index cd414b3..566c226 100644
+index e9c5bbe..8a9d462 100644
 --- a/isideload/src/sideload/sign.rs
 +++ b/isideload/src/sideload/sign.rs
-@@ -79,5 +79,23 @@ where
+@@ -92,5 +92,23 @@ where
          callback(0.5).await;
      }
  
@@ -1969,1868 +3312,5 @@ index 0000000..6d9b457
 +    #[test]
 +    fn streaming_crc_matches_standard_vector() {
 +        assert_eq!(crc32_ieee(b"123456789"), 0xcbf4_3926);
-+    }
-+}
-diff --git a/isideload/src/anisette/mod.rs b/isideload/src/anisette/mod.rs
-index ec43baf..1f3b86d 100644
---- a/isideload/src/anisette/mod.rs
-+++ b/isideload/src/anisette/mod.rs
-@@ -28,31 +28,36 @@ pub struct AnisetteData {
-     generated_at: SystemTime,
- }
- 
--// Some headers don't seem to be required. I guess not including them is technically more efficient soooo
-+fn native_identity_enabled() -> bool {
-+    #[cfg(not(feature = "wasm"))]
-+    {
-+        std::env::var("GYMA_AUTH_EXPERIMENT").as_deref() == Ok("windows-native-identity")
-+    }
-+    #[cfg(feature = "wasm")]
-+    false
-+}
-+
- impl AnisetteData {
-     pub fn get_headers(&self) -> HashMap<String, String> {
--        //let dt: DateTime<Utc> = Utc::now().round_subsecs(0);
-+        let mut headers = self.baseline_headers();
-+        #[cfg(not(feature = "wasm"))]
-+        if native_identity_enabled() {
-+            headers.extend(
-+                self.metadata_headers(std::time::SystemTime::now())
-+                    .map(|(key, value)| (key.to_string(), value)),
-+            );
-+        }
-+        headers
-+    }
- 
-+    fn baseline_headers(&self) -> HashMap<String, String> {
-         HashMap::from_iter([
--            // (
--            //     "X-Apple-I-Client-Time".to_string(),
--            //     dt.format("%+").to_string().replace("+00:00", "Z"),
--            // ),
--            // ("X-Apple-I-SRL-NO".to_string(), serial),
--            // ("X-Apple-I-TimeZone".to_string(), "UTC".to_string()),
--            // ("X-Apple-Locale".to_string(), "en_US".to_string()),
--            // ("X-Apple-I-MD-RINFO".to_string(), self.routing_info.clone()),
--            // ("X-Apple-I-MD-LU".to_string(), self.local_user_id.clone()),
-             (
-                 "X-Mme-Device-Id".to_string(),
-                 self.device_unique_identifier.clone(),
-             ),
-             ("X-Apple-I-MD".to_string(), self.one_time_password.clone()),
-             ("X-Apple-I-MD-M".to_string(), self.machine_id.clone()),
--            // (
--            //     "X-Mme-Client-Info".to_string(),
--            //     self.device_description.clone(),
--            // ),
-         ])
-     }
- 
-@@ -71,7 +76,72 @@ impl AnisetteData {
-     }
- 
-     pub fn get_client_provided_data(&self) -> Dictionary {
--        let headers = self.get_headers();
-+        #[cfg(not(feature = "wasm"))]
-+        {
-+            let experiment = std::env::var("GYMA_AUTH_EXPERIMENT").ok();
-+            self.client_provided_data_for_experiment(
-+                experiment.as_deref(),
-+                std::time::SystemTime::now(),
-+            )
-+        }
-+        #[cfg(feature = "wasm")]
-+        self.client_provided_data_with_flags(false)
-+    }
-+
-+    #[cfg(not(feature = "wasm"))]
-+    fn client_provided_data_for_experiment(
-+        &self,
-+        experiment: Option<&str>,
-+        now: std::time::SystemTime,
-+    ) -> Dictionary {
-+        let use_boolean_flags = matches!(
-+            experiment,
-+            Some("cpd-booleans" | "cpd-metadata" | "windows-native-identity")
-+        );
-+        let mut cpd = self.client_provided_data_with_flags(use_boolean_flags);
-+        if matches!(experiment, Some("cpd-metadata" | "windows-native-identity")) {
-+            self.add_cpd_metadata(&mut cpd, now);
-+        }
-+        if experiment == Some("windows-native-identity")
-+            && let Ok(routing_info) = self.routing_info.parse::<u64>()
-+        {
-+            // AltServer's native Windows CPD uses an unsigned plist integer;
-+            // the corresponding HTTP header remains its decimal string.
-+            cpd.insert(
-+                "X-Apple-I-MD-RINFO".to_string(),
-+                plist::Value::Integer(routing_info.into()),
-+            );
-+        }
-+        cpd
-+    }
-+
-+    #[cfg(not(feature = "wasm"))]
-+    fn metadata_headers(&self, now: std::time::SystemTime) -> [(&'static str, String); 5] {
-+        let seconds = now
-+            .duration_since(std::time::UNIX_EPOCH)
-+            .unwrap_or_default()
-+            .as_secs();
-+        let timestamp =
-+            plist::Date::from(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
-+                .to_xml_format();
-+        [
-+            ("X-Apple-I-MD-LU", self._local_user_id.clone()),
-+            ("X-Apple-I-MD-RINFO", self.routing_info.clone()),
-+            ("X-Apple-I-Client-Time", timestamp),
-+            ("X-Apple-I-TimeZone", "UTC".to_string()),
-+            ("X-Apple-Locale", "en_US".to_string()),
-+        ]
-+    }
-+
-+    #[cfg(not(feature = "wasm"))]
-+    fn add_cpd_metadata(&self, cpd: &mut Dictionary, now: std::time::SystemTime) {
-+        for (key, value) in self.metadata_headers(now) {
-+            cpd.insert(key.to_string(), plist::Value::String(value));
-+        }
-+    }
-+
-+    fn client_provided_data_with_flags(&self, use_boolean_flags: bool) -> Dictionary {
-+        let headers = self.baseline_headers();
- 
-         let mut cpd = plist!(dict {
-             "bootstrap": "true",
-@@ -82,6 +152,19 @@ impl AnisetteData {
-             "svct": "iCloud"
-         });
- 
-+        // This opt-in experiment changes only the four plist flag types. The
-+        // default preserves upstream behavior for a comparable baseline.
-+        if use_boolean_flags {
-+            for (key, value) in [
-+                ("bootstrap", true),
-+                ("icscrec", true),
-+                ("pbe", false),
-+                ("prkgen", true),
-+            ] {
-+                cpd.insert(key.to_string(), plist::Value::Boolean(value));
-+            }
-+        }
-+
-         for (key, value) in headers {
-             cpd.insert(key.to_string(), plist::Value::String(value));
-         }
-@@ -101,6 +184,131 @@ impl AnisetteData {
-     }
- }
- 
-+#[cfg(test)]
-+mod diagnostic_experiment_tests {
-+    use super::*;
-+
-+    #[cfg(not(feature = "wasm"))]
-+    #[test]
-+    fn native_identity_cpd_uses_boolean_flags_integer_routing_and_matching_headers() {
-+        let data = AnisetteData {
-+            machine_id: "test-native-mid".into(),
-+            one_time_password: "test-native-otp".into(),
-+            routing_info: "84215040".into(),
-+            _device_description: "test-native-client".into(),
-+            device_unique_identifier: "test-native-device".into(),
-+            _local_user_id: "test-native-local-user".into(),
-+            generated_at: SystemTime::now(),
-+        };
-+        let now = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_700_000_000_123);
-+        let cpd = data.client_provided_data_for_experiment(Some("windows-native-identity"), now);
-+        for (key, expected) in [
-+            ("bootstrap", true),
-+            ("icscrec", true),
-+            ("pbe", false),
-+            ("prkgen", true),
-+        ] {
-+            assert_eq!(cpd.get(key), Some(&plist::Value::Boolean(expected)));
-+        }
-+        assert_eq!(
-+            cpd.get("X-Apple-I-MD-RINFO")
-+                .and_then(plist::Value::as_unsigned_integer),
-+            Some(84215040)
-+        );
-+        for (key, value) in data.metadata_headers(now) {
-+            if key != "X-Apple-I-MD-RINFO" {
-+                assert_eq!(cpd.get(key), Some(&plist::Value::String(value)));
-+            } else {
-+                assert_eq!(value, "84215040");
-+            }
-+        }
-+        assert_eq!(data.baseline_headers().len(), 3);
-+        for profile in [
-+            None,
-+            Some("baseline"),
-+            Some("windows-native-anisette"),
-+            Some("authkit-user-agent"),
-+        ] {
-+            let baseline = data.client_provided_data_for_experiment(profile, now);
-+            assert_eq!(
-+                baseline.get("bootstrap"),
-+                Some(&plist::Value::String("true".into()))
-+            );
-+            assert!(!baseline.contains_key("X-Apple-I-MD-LU"));
-+            assert!(!baseline.contains_key("X-Apple-I-MD-RINFO"));
-+        }
-+        let metadata = data.client_provided_data_for_experiment(Some("cpd-metadata"), now);
-+        assert_eq!(
-+            metadata.get("X-Apple-I-MD-RINFO"),
-+            Some(&plist::Value::String("84215040".into()))
-+        );
-+    }
-+
-+    #[cfg(not(feature = "wasm"))]
-+    #[test]
-+    fn metadata_experiment_preserves_existing_data_and_uses_whole_second_utc() {
-+        let data = AnisetteData {
-+            machine_id: "test-machine".to_string(),
-+            one_time_password: "test-otp".to_string(),
-+            routing_info: "17106176".to_string(),
-+            _device_description: "test-description".to_string(),
-+            device_unique_identifier: "test-device".to_string(),
-+            _local_user_id: "test-local-user".to_string(),
-+            generated_at: SystemTime::now(),
-+        };
-+        let baseline = data.client_provided_data_with_flags(true);
-+        let mut metadata = baseline.clone();
-+        data.add_cpd_metadata(
-+            &mut metadata,
-+            std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_700_000_000_123),
-+        );
-+        for (key, expected) in [
-+            ("X-Apple-I-MD-LU", "test-local-user"),
-+            ("X-Apple-I-MD-RINFO", "17106176"),
-+            ("X-Apple-I-Client-Time", "2023-11-14T22:13:20Z"),
-+            ("X-Apple-I-TimeZone", "UTC"),
-+            ("X-Apple-Locale", "en_US"),
-+        ] {
-+            assert_eq!(
-+                metadata.remove(key),
-+                Some(plist::Value::String(expected.to_string()))
-+            );
-+        }
-+        assert_eq!(metadata, baseline);
-+    }
-+
-+    #[test]
-+    fn boolean_experiment_changes_only_four_flag_types() {
-+        let data = AnisetteData {
-+            machine_id: "test-machine".to_string(),
-+            one_time_password: "test-otp".to_string(),
-+            routing_info: "test-routing".to_string(),
-+            _device_description: "test-description".to_string(),
-+            device_unique_identifier: "test-device".to_string(),
-+            _local_user_id: "test-user".to_string(),
-+            generated_at: SystemTime::now(),
-+        };
-+        let mut baseline = data.client_provided_data_with_flags(false);
-+        let mut experiment = data.client_provided_data_with_flags(true);
-+        for (key, expected) in [
-+            ("bootstrap", true),
-+            ("icscrec", true),
-+            ("pbe", false),
-+            ("prkgen", true),
-+        ] {
-+            assert_eq!(
-+                baseline.remove(key),
-+                Some(plist::Value::String(expected.to_string()))
-+            );
-+            assert_eq!(
-+                experiment.remove(key),
-+                Some(plist::Value::Boolean(expected))
-+            );
-+        }
-+        assert_eq!(baseline, experiment);
-+    }
-+}
-+
- #[cfg_attr(feature = "wasm", async_trait::async_trait(?Send))]
- #[cfg_attr(not(feature = "wasm"), async_trait::async_trait)]
- pub trait AnisetteProvider {
-@@ -131,7 +339,8 @@ impl AnisetteDataGenerator {
-         &mut self,
-         gs: Arc<GrandSlam>,
-     ) -> Result<Arc<AnisetteData>, Report> {
--        if let Some(data) = &self.data
-+        if !native_identity_enabled()
-+            && let Some(data) = &self.data
-             && !data.needs_refresh()
-         {
-             return Ok(data.clone());
-diff --git a/isideload/src/anisette/remote_v3/mod.rs b/isideload/src/anisette/remote_v3/mod.rs
-index f571ae8..a134965 100644
---- a/isideload/src/anisette/remote_v3/mod.rs
-+++ b/isideload/src/anisette/remote_v3/mod.rs
-@@ -1,3 +1,4 @@
-+mod native_windows;
- mod state;
- mod websocket;
- 
-@@ -25,6 +26,138 @@ use crate::{SideloadError, anisette::remote_v3::websocket::AppWebSocket};
- 
- pub const DEFAULT_ANISETTE_V3_URL: &str = "https://ani.stikstore.app";
- 
-+pub(crate) const AUTHKIT_EXPERIMENT_USER_AGENT: &str =
-+    "AuthKit/1 (Macintosh; OS X 26.5.2) (com.apple.dt.Xcode/26.0)";
-+const NATIVE_IDENTITY_USER_AGENT: &str = "akd/1.0 CFNetwork/978.0.7 Darwin/18.7.0";
-+
-+pub(crate) fn client_info_for_experiment(experiment: Option<&str>) -> AnisetteClientInfo {
-+    AnisetteClientInfo {
-+        client_info: "<Mac15,7> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
-+            .to_string(),
-+        user_agent: match experiment {
-+            Some("authkit-user-agent") => AUTHKIT_EXPERIMENT_USER_AGENT,
-+            _ => "akd/1.0 CFNetwork/808.1.4",
-+        }
-+        .to_string(),
-+    }
-+}
-+
-+fn decode_existing_native_state(saved: &[u8]) -> Result<AnisetteState, Report> {
-+    const INVALID: &str =
-+        "Native anisette comparison requires valid baseline provisioning; launch baseline first";
-+    // Validate before the upstream typed decoder, whose fixed-size conversion
-+    // panics and prints the original bytes when the identifier length is wrong.
-+    let dictionary: plist::Dictionary = plist::from_bytes(saved).map_err(|_| report!(INVALID))?;
-+    let keychain_identifier = dictionary
-+        .get("keychain_identifier")
-+        .and_then(plist::Value::as_data)
-+        .and_then(|data| <[u8; 16]>::try_from(data).ok())
-+        .ok_or_else(|| report!(INVALID))?;
-+    let adi_pb = dictionary
-+        .get("adi_pb")
-+        .and_then(plist::Value::as_data)
-+        .filter(|data| !data.is_empty())
-+        .ok_or_else(|| report!(INVALID))?
-+        .to_vec();
-+    // Do not reparse the original bytes: duplicate XML keys could otherwise
-+    // select a different value in the upstream typed decoder.
-+    Ok(AnisetteState {
-+        keychain_identifier,
-+        adi_pb: Some(adi_pb),
-+    })
-+}
-+
-+fn native_identity_data(native: native_windows::NativeHeaders) -> Result<AnisetteData, Report> {
-+    let identity = native.identity.ok_or_else(|| {
-+        report!("Native anisette helper did not return a complete Windows identity")
-+    })?;
-+    if identity.routing_info.parse::<u64>().is_err() {
-+        bail!("Native anisette helper returned invalid routing metadata");
-+    }
-+    Ok(AnisetteData {
-+        machine_id: native.machine_id,
-+        one_time_password: native.one_time_password,
-+        routing_info: identity.routing_info,
-+        _device_description: identity.client_info,
-+        device_unique_identifier: identity.device_id,
-+        _local_user_id: identity.local_user_id,
-+        generated_at: SystemTime::now(),
-+    })
-+}
-+
-+#[cfg(test)]
-+mod native_state_tests {
-+    use super::*;
-+
-+    #[test]
-+    fn native_data_uses_only_its_own_identity_and_requires_metadata() {
-+        let data = native_identity_data(native_windows::NativeHeaders {
-+            machine_id: "test-native-mid".into(),
-+            one_time_password: "test-native-otp".into(),
-+            identity: Some(native_windows::NativeIdentity {
-+                client_info: "test-native-client".into(),
-+                device_id: "test-native-device".into(),
-+                local_user_id: "test-native-local-user".into(),
-+                routing_info: "84215040".into(),
-+            }),
-+        })
-+        .unwrap();
-+        assert_eq!(data.machine_id, "test-native-mid");
-+        assert_eq!(data.one_time_password, "test-native-otp");
-+        assert_eq!(data._device_description, "test-native-client");
-+        assert_eq!(data.device_unique_identifier, "test-native-device");
-+        assert_eq!(data._local_user_id, "test-native-local-user");
-+        assert_eq!(data.routing_info, "84215040");
-+        assert!(
-+            native_identity_data(native_windows::NativeHeaders {
-+                machine_id: "test-native-mid".into(),
-+                one_time_password: "test-native-otp".into(),
-+                identity: None,
-+            })
-+            .is_err()
-+        );
-+    }
-+
-+    #[test]
-+    fn duplicate_state_keys_cannot_reach_upstream_panicking_decoder() {
-+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>
-+            <key>keychain_identifier</key><data>AA==</data>
-+            <key>keychain_identifier</key><data>AAAAAAAAAAAAAAAAAAAAAA==</data>
-+            <key>adi_pb</key><data>AQ==</data>
-+            </dict></plist>"#;
-+        let decoded = decode_existing_native_state(xml).unwrap();
-+        assert_eq!(decoded.keychain_identifier, [0; 16]);
-+        assert_eq!(decoded.adi_pb, Some(vec![1]));
-+    }
-+
-+    #[test]
-+    fn rejects_malformed_native_comparison_state_without_panicking_or_data_in_errors() {
-+        for (identifier, provisioning) in [(vec![99; 15], vec![88]), (vec![99; 16], vec![])] {
-+            let mut state = plist::Dictionary::new();
-+            state.insert("keychain_identifier".into(), plist::Value::Data(identifier));
-+            state.insert("adi_pb".into(), plist::Value::Data(provisioning));
-+            let mut bytes = Vec::new();
-+            plist::to_writer_xml(&mut bytes, &state).unwrap();
-+            let error = decode_existing_native_state(&bytes).err().unwrap();
-+            let message = error.to_string();
-+            assert!(message.contains("requires valid baseline provisioning"));
-+            assert!(!message.contains("99"));
-+            assert!(!message.contains("88"));
-+        }
-+        let state = AnisetteState {
-+            keychain_identifier: [0; 16],
-+            adi_pb: Some(vec![1]),
-+        };
-+        let mut bytes = Vec::new();
-+        plist::to_writer_xml(&mut bytes, &state).unwrap();
-+        assert!(
-+            decode_existing_native_state(&bytes)
-+                .unwrap()
-+                .is_provisioned()
-+        );
-+    }
-+}
-+
- pub struct RemoteV3AnisetteProvider {
-     pub state: Option<AnisetteState>,
-     url: String,
-@@ -108,6 +241,11 @@ impl RemoteV3AnisetteProvider {
- #[cfg_attr(not(feature = "wasm"), async_trait::async_trait)]
- impl AnisetteProvider for RemoteV3AnisetteProvider {
-     async fn get_anisette_data(&self) -> Result<AnisetteData, Report> {
-+        if native_windows::identity_enabled() {
-+            // Obtain a fresh OTP and its own Windows identity together. This
-+            // path never reads remote provisioning or contacts an anisette server.
-+            return native_identity_data(native_windows::generate().await?);
-+        }
-         let state = self
-             .state
-             .as_ref()
-@@ -118,6 +256,9 @@ impl AnisetteProvider for RemoteV3AnisetteProvider {
-             .ok_or(SideloadError::AnisetteNotProvisioned)?;
-         let client_info = self.get_client_info().await?;
- 
-+        // Still needed for the baseline routing_info, which is not persisted in
-+        // AnisetteState. Generate native OTP only after this request completes,
-+        // so a slow remote service cannot age the OTP before authentication.
-         let headers = self
-             .client
-             .post(format!("{}/v3/get_headers", self.url))
-@@ -141,6 +282,14 @@ impl AnisetteProvider for RemoteV3AnisetteProvider {
-                 one_time_password,
-                 routing_info,
-             } => {
-+                // Hybrid diagnostic: only replace MID/OTP, preserving remote
-+                // identity/routing data. Helper failures never use remote OTP.
-+                let (machine_id, one_time_password) = if native_windows::enabled() {
-+                    let native = native_windows::generate().await?;
-+                    (native.machine_id, native.one_time_password)
-+                } else {
-+                    (machine_id, one_time_password)
-+                };
-                 let data = AnisetteData {
-                     machine_id,
-                     one_time_password,
-@@ -160,15 +309,28 @@ impl AnisetteProvider for RemoteV3AnisetteProvider {
-     }
- 
-     async fn get_client_info(&self) -> Result<AnisetteClientInfo, Report> {
--        Ok(AnisetteClientInfo {
--            client_info:
--                "<Mac15,7> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
--                    .to_string(),
--            user_agent: "akd/1.0 CFNetwork/808.1.4".to_string(),
--        })
-+        if native_windows::identity_enabled() {
-+            // GrandSlam needs client-info before its first request. Discard this
-+            // OTP; get_anisette_data obtains fresh data immediately before login.
-+            let native = native_windows::generate().await?;
-+            let identity = native.identity.ok_or_else(|| {
-+                report!("Native anisette helper did not return a complete Windows identity")
-+            })?;
-+            return Ok(AnisetteClientInfo {
-+                client_info: identity.client_info,
-+                user_agent: NATIVE_IDENTITY_USER_AGENT.to_string(),
-+            });
-+        }
-+        Ok(client_info_for_experiment(
-+            std::env::var("GYMA_AUTH_EXPERIMENT").ok().as_deref(),
-+        ))
-     }
- 
-     fn needs_provisioning(&self) -> Result<bool, Report> {
-+        if native_windows::identity_enabled() {
-+            native_windows::ensure_supported()?;
-+            return Ok(false);
-+        }
-         if let Some(state) = &self.state {
-             Ok(!state.is_provisioned())
-         } else {
-@@ -177,6 +339,9 @@ impl AnisetteProvider for RemoteV3AnisetteProvider {
-     }
- 
-     async fn provision(&mut self, gs: Arc<GrandSlam>) -> Result<(), Report> {
-+        if native_windows::identity_enabled() {
-+            return native_windows::ensure_supported();
-+        }
-         self.get_client_info().await?;
-         self.get_state(gs).await?;
-         Ok(())
-@@ -185,6 +350,17 @@ impl AnisetteProvider for RemoteV3AnisetteProvider {
- 
- impl RemoteV3AnisetteProvider {
-     async fn get_state(&mut self, gs: Arc<GrandSlam>) -> Result<&mut AnisetteState, Report> {
-+        if native_windows::enabled() {
-+            native_windows::ensure_supported()?;
-+            if self.state.is_none() {
-+                let saved = self.storage.retrieve_data("anisette_state").ok().flatten()
-+                    .ok_or_else(|| report!("Native anisette comparison requires existing baseline provisioning; launch baseline first"))?;
-+                self.state = Some(decode_existing_native_state(&saved)?);
-+            }
-+            let state = self.state.as_mut().filter(|s| s.is_provisioned())
-+                .ok_or_else(|| report!("Native anisette comparison requires valid baseline provisioning; launch baseline first"))?;
-+            return Ok(state);
-+        }
-         if self.state.is_none() {
-             if let Ok(Some(state)) = &self.storage.retrieve_data("anisette_state") {
-                 if let Ok(state) = plist::from_bytes(state) {
-diff --git a/isideload/src/anisette/remote_v3/native_windows.rs b/isideload/src/anisette/remote_v3/native_windows.rs
-new file mode 100644
-index 0000000..d1273a2
---- /dev/null
-+++ b/isideload/src/anisette/remote_v3/native_windows.rs
-@@ -0,0 +1,393 @@
-+//! Opt-in Windows anisette comparisons, including a coherent native identity.
-+//! Helper output is authentication material and must never reach logs or errors.
-+
-+use base64::prelude::*;
-+use rootcause::prelude::*;
-+use serde::Deserialize;
-+
-+const MAX_OUTPUT: usize = 24 * 1024;
-+const MAX_FIELD: usize = 8192;
-+
-+pub(super) struct NativeHeaders {
-+    pub machine_id: String,
-+    pub one_time_password: String,
-+    pub identity: Option<NativeIdentity>,
-+}
-+
-+pub(super) struct NativeIdentity {
-+    pub client_info: String,
-+    pub device_id: String,
-+    pub local_user_id: String,
-+    pub routing_info: String,
-+}
-+
-+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-+enum HelperError {
-+    Configuration,
-+    Spawn,
-+    Read,
-+    TooLarge,
-+    Timeout,
-+    Exit,
-+    InvalidResponse,
-+    GenerationFailed,
-+}
-+
-+impl HelperError {
-+    fn message(self) -> &'static str {
-+        match self {
-+            Self::Configuration => "Native anisette helper requires an absolute executable path",
-+            Self::Spawn => "Native anisette helper could not start",
-+            Self::Read => "Native anisette helper pipe could not be read",
-+            Self::TooLarge => "Native anisette helper output exceeded the size limit",
-+            Self::Timeout => "Native anisette helper timed out",
-+            Self::Exit => "Native anisette helper exited unsuccessfully",
-+            Self::InvalidResponse => "Native anisette helper returned an invalid response",
-+            Self::GenerationFailed => "Native anisette helper could not generate headers",
-+        }
-+    }
-+}
-+
-+fn experiment_enabled(experiment: Option<&str>) -> bool {
-+    matches!(
-+        experiment,
-+        Some("windows-native-anisette" | "windows-native-identity")
-+    )
-+}
-+
-+pub(super) fn enabled() -> bool {
-+    experiment_enabled(std::env::var("GYMA_AUTH_EXPERIMENT").ok().as_deref())
-+}
-+
-+pub(super) fn identity_enabled() -> bool {
-+    std::env::var("GYMA_AUTH_EXPERIMENT").as_deref() == Ok("windows-native-identity")
-+}
-+
-+pub(super) fn ensure_supported() -> Result<(), Report> {
-+    if !cfg!(windows) {
-+        bail!("Native anisette comparison is only available on Windows");
-+    }
-+    Ok(())
-+}
-+
-+#[derive(Deserialize)]
-+#[serde(deny_unknown_fields)]
-+struct HelperResponse {
-+    success: bool,
-+    machine_id: Option<String>,
-+    one_time_password: Option<String>,
-+    client_info: Option<String>,
-+    device_id: Option<String>,
-+    local_user_id: Option<String>,
-+    routing_info: Option<String>,
-+}
-+
-+fn valid_field(value: &str) -> bool {
-+    if value.is_empty() || value.len() > MAX_FIELD {
-+        return false;
-+    }
-+    match BASE64_STANDARD.decode(value) {
-+        Ok(mut decoded) => {
-+            let valid = !decoded.is_empty();
-+            decoded.fill(0);
-+            valid
-+        }
-+        Err(_) => false,
-+    }
-+}
-+
-+fn valid_header(value: &str, maximum: usize) -> bool {
-+    !value.is_empty() && value.len() <= maximum && value.bytes().all(|b| (32..=126).contains(&b))
-+}
-+
-+fn parse_output(bytes: &[u8], native_identity: bool) -> Result<NativeHeaders, HelperError> {
-+    if bytes.len() > MAX_OUTPUT {
-+        return Err(HelperError::TooLarge);
-+    }
-+    let response: HelperResponse =
-+        serde_json::from_slice(bytes).map_err(|_| HelperError::InvalidResponse)?;
-+    if !response.success {
-+        return Err(HelperError::GenerationFailed);
-+    }
-+    let machine_id = response.machine_id.ok_or(HelperError::InvalidResponse)?;
-+    let one_time_password = response
-+        .one_time_password
-+        .ok_or(HelperError::InvalidResponse)?;
-+    if !valid_field(&machine_id) || !valid_field(&one_time_password) {
-+        return Err(HelperError::InvalidResponse);
-+    }
-+    let identity = match (
-+        native_identity,
-+        response.client_info,
-+        response.device_id,
-+        response.local_user_id,
-+        response.routing_info,
-+    ) {
-+        (true, Some(client_info), Some(device_id), Some(local_user_id), Some(routing_info))
-+            if valid_header(&client_info, 2048)
-+                && valid_header(&device_id, 256)
-+                && !device_id.bytes().any(|b| b.is_ascii_whitespace())
-+                && valid_field(&local_user_id)
-+                && routing_info == "84215040" =>
-+        {
-+            Some(NativeIdentity {
-+                client_info,
-+                device_id,
-+                local_user_id,
-+                routing_info,
-+            })
-+        }
-+        (false, None, None, None, None) => None,
-+        _ => return Err(HelperError::InvalidResponse),
-+    };
-+    Ok(NativeHeaders {
-+        machine_id,
-+        one_time_password,
-+        identity,
-+    })
-+}
-+
-+fn read_bounded(mut pipe: impl std::io::Read) -> Result<Vec<u8>, HelperError> {
-+    let mut bytes = Vec::new();
-+    let mut chunk = [0_u8; 4096];
-+    loop {
-+        let count = match pipe.read(&mut chunk) {
-+            Ok(count) => count,
-+            Err(_) => {
-+                bytes.fill(0);
-+                chunk.fill(0);
-+                return Err(HelperError::Read);
-+            }
-+        };
-+        if count == 0 {
-+            return Ok(bytes);
-+        }
-+        if bytes.len() + count > MAX_OUTPUT {
-+            bytes.fill(0);
-+            chunk.fill(0);
-+            return Err(HelperError::TooLarge);
-+        }
-+        bytes.extend_from_slice(&chunk[..count]);
-+        chunk.fill(0);
-+    }
-+}
-+
-+#[cfg(windows)]
-+fn run_helper(
-+    path: std::path::PathBuf,
-+    native_identity: bool,
-+) -> Result<NativeHeaders, HelperError> {
-+    use std::os::windows::process::CommandExt;
-+    use std::process::{Command, Stdio};
-+    use std::sync::mpsc;
-+    use std::time::{Duration, Instant};
-+
-+    if !path.is_absolute()
-+        || !path.is_file()
-+        || path.extension().and_then(|e| e.to_str()) != Some("exe")
-+    {
-+        return Err(HelperError::Configuration);
-+    }
-+    // Reserve up to one second for termination. All waiting is bounded.
-+    let deadline = Instant::now() + Duration::from_secs(14);
-+    let mut command = Command::new(path);
-+    if native_identity {
-+        command.arg("--native-identity");
-+    }
-+    let mut child = command
-+        .stdin(Stdio::null())
-+        .stdout(Stdio::piped())
-+        .stderr(Stdio::null())
-+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
-+        .spawn()
-+        .map_err(|_| HelperError::Spawn)?;
-+    let pipe = match child.stdout.take() {
-+        Some(pipe) => pipe,
-+        None => {
-+            let _ = child.kill();
-+            return Err(HelperError::Read);
-+        }
-+    };
-+    let (sender, receiver) = mpsc::sync_channel(1);
-+    let reader = std::thread::Builder::new()
-+        .name("native-anisette-pipe".into())
-+        .spawn(move || {
-+            let result = read_bounded(pipe);
-+            // Dropped receiver means timeout/cancellation. Wipe captured bytes.
-+            if let Err(mpsc::SendError(Ok(mut bytes))) = sender.send(result) {
-+                bytes.fill(0);
-+            }
-+        });
-+    if reader.is_err() {
-+        let _ = child.kill();
-+        return Err(HelperError::Read);
-+    }
-+    let result = (|| {
-+        let mut output = None;
-+        loop {
-+            if output.is_none() {
-+                match receiver.try_recv() {
-+                    Ok(result) => output = Some(result?),
-+                    Err(mpsc::TryRecvError::Disconnected) => return Err(HelperError::Read),
-+                    Err(mpsc::TryRecvError::Empty) => {}
-+                }
-+            }
-+            match child.try_wait().map_err(|_| HelperError::Exit)? {
-+                Some(status) => {
-+                    if !status.success() {
-+                        if let Some(mut bytes) = output.take() {
-+                            bytes.fill(0);
-+                        }
-+                        return Err(HelperError::Exit);
-+                    }
-+                    if let Some(mut bytes) = output.take() {
-+                        let parsed = parse_output(&bytes, native_identity);
-+                        bytes.fill(0);
-+                        return parsed;
-+                    }
-+                }
-+                None => {}
-+            }
-+            if Instant::now() >= deadline {
-+                if let Some(mut bytes) = output.take() {
-+                    bytes.fill(0);
-+                }
-+                return Err(HelperError::Timeout);
-+            }
-+            std::thread::sleep(Duration::from_millis(10));
-+        }
-+    })();
-+    if result.is_err() {
-+        let _ = child.kill();
-+        let cleanup_deadline = Instant::now() + Duration::from_secs(1);
-+        while Instant::now() < cleanup_deadline {
-+            if !matches!(child.try_wait(), Ok(None)) {
-+                break;
-+            }
-+            std::thread::sleep(Duration::from_millis(10));
-+        }
-+    }
-+    // Do not join a possibly blocked reader after timeout. Child termination
-+    // normally closes its pipe; the detached reader then drops its private data.
-+    result
-+}
-+
-+pub(super) async fn generate() -> Result<NativeHeaders, Report> {
-+    ensure_supported()?;
-+    #[cfg(windows)]
-+    {
-+        let path = std::env::var_os("GYMA_NATIVE_ANISETTE_HELPER")
-+            .map(std::path::PathBuf::from)
-+            .ok_or_else(|| report!(HelperError::Configuration.message()))?;
-+        let (sender, receiver) = futures::channel::oneshot::channel();
-+        let native_identity = identity_enabled();
-+        std::thread::Builder::new()
-+            .name("native-anisette-helper".into())
-+            .spawn(move || {
-+                let _ = sender.send(run_helper(path, native_identity));
-+            })
-+            .map_err(|_| report!(HelperError::Spawn.message()))?;
-+        return Ok(receiver
-+            .await
-+            .map_err(|_| report!(HelperError::Exit.message()))?
-+            .map_err(|error| report!(error.message()))?);
-+    }
-+    #[cfg(not(windows))]
-+    bail!("Native anisette comparison is only available on Windows");
-+}
-+
-+#[cfg(test)]
-+mod tests {
-+    use super::*;
-+
-+    #[test]
-+    fn parser_accepts_only_bounded_success_with_two_base64_fields() {
-+        let headers = parse_output(
-+            br#"{"success":true,"machine_id":"YWJj","one_time_password":"ZGVm"}"#,
-+            false,
-+        )
-+        .unwrap();
-+        assert_eq!(headers.machine_id, "YWJj");
-+        assert_eq!(headers.one_time_password, "ZGVm");
-+        for input in [
-+            br#"{"success":false,"machine_id":null,"one_time_password":null}"#.as_slice(),
-+            br#"{"success":true,"machine_id":"SECRET_MARKER!","one_time_password":"ZGVm"}"#.as_slice(),
-+            br#"{"success":true,"machine_id":"YWJj","one_time_password":"ZGVm","secret":"SECRET_MARKER"}"#.as_slice(),
-+            b"SECRET_MARKER invalid JSON".as_slice(),
-+        ] {
-+            let error = parse_output(input, false).err().unwrap();
-+            assert!(!error.message().contains("SECRET_MARKER"));
-+        }
-+        assert_eq!(
-+            parse_output(&vec![b'x'; MAX_OUTPUT + 1], false).err(),
-+            Some(HelperError::TooLarge)
-+        );
-+        assert!(!valid_field(&"A".repeat(MAX_FIELD + 4)));
-+        assert!(!valid_field(""));
-+    }
-+
-+    #[test]
-+    fn identity_profile_requires_complete_safe_native_metadata() {
-+        let input = serde_json::json!({
-+            "success": true, "machine_id": "YWJj", "one_time_password": "ZGVm",
-+            "client_info": "<Windows> <com.apple.iCloud>",
-+            "device_id": "00000000-0000-0000-0000-000000000000",
-+            "local_user_id": "YWJj", "routing_info": "84215040",
-+        });
-+        let bytes = serde_json::to_vec(&input).unwrap();
-+        let headers = parse_output(&bytes, true).unwrap();
-+        assert_eq!(headers.identity.unwrap().routing_info, "84215040");
-+        assert_eq!(
-+            parse_output(&bytes, false).err(),
-+            Some(HelperError::InvalidResponse)
-+        );
-+        for key in ["client_info", "device_id", "local_user_id", "routing_info"] {
-+            let mut missing = input.clone();
-+            missing.as_object_mut().unwrap().remove(key);
-+            assert_eq!(
-+                parse_output(&serde_json::to_vec(&missing).unwrap(), true).err(),
-+                Some(HelperError::InvalidResponse)
-+            );
-+        }
-+        for (key, value) in [
-+            ("client_info", "x\r\nInjected: SECRET"),
-+            ("device_id", "a b"),
-+            ("routing_info", "17106176"),
-+            ("local_user_id", "SECRET!"),
-+        ] {
-+            let mut invalid = input.clone();
-+            invalid[key] = serde_json::json!(value);
-+            assert_eq!(
-+                parse_output(&serde_json::to_vec(&invalid).unwrap(), true).err(),
-+                Some(HelperError::InvalidResponse)
-+            );
-+        }
-+        assert_eq!(
-+            parse_output(
-+                br#"{"success":true,"machine_id":"YWJj","one_time_password":"ZGVm"}"#,
-+                true
-+            )
-+            .err(),
-+            Some(HelperError::InvalidResponse)
-+        );
-+    }
-+
-+    #[test]
-+    fn pipe_reader_enforces_cap_and_profile_is_exact() {
-+        assert_eq!(
-+            read_bounded(std::io::Cursor::new(vec![0; MAX_OUTPUT + 1])).err(),
-+            Some(HelperError::TooLarge)
-+        );
-+        assert!(experiment_enabled(Some("windows-native-anisette")));
-+        assert!(experiment_enabled(Some("windows-native-identity")));
-+        for label in [
-+            None,
-+            Some("baseline"),
-+            Some("cpd-booleans"),
-+            Some("cpd-metadata"),
-+            Some("authkit-user-agent"),
-+        ] {
-+            assert!(!experiment_enabled(label));
-+        }
-+    }
-+}
-diff --git a/isideload/src/auth/grandslam.rs b/isideload/src/auth/grandslam.rs
-index c5b6215..b59cfd0 100644
---- a/isideload/src/auth/grandslam.rs
-+++ b/isideload/src/auth/grandslam.rs
-@@ -1,290 +1,629 @@
--use super::middleware::WasmProxyMiddleware;
--use plist::Dictionary;
--use plist_macro::plist_to_xml_string;
--use plist_macro::pretty_print_dictionary;
--#[cfg(not(feature = "wasm"))]
--use reqwest::Certificate;
--use reqwest::{
--    ClientBuilder,
--    header::{HeaderMap, HeaderValue},
--};
--use reqwest_middleware::ClientBuilder as MwClientBuilder;
--use rootcause::prelude::*;
--use tracing::debug;
--use tracing::warn;
--
--#[cfg(not(feature = "wasm"))]
--use crate::sideload::cert_identity::APPLE_ROOT;
--use crate::{SideloadError, anisette::AnisetteClientInfo, util::plist::PlistDataExtract};
--
--const URL_BAG: &str = "https://gsa.apple.com/grandslam/GsService2/lookup";
--
--pub struct GrandSlam {
--    pub client: reqwest_middleware::ClientWithMiddleware,
--    pub client_info: AnisetteClientInfo,
--    url_bag: Dictionary,
--}
--
--impl GrandSlam {
--    /// Create a new GrandSlam instance
--    ///
--    /// # Arguments
--    /// - `client`: The reqwest client to use for requests
--    pub async fn new(
--        client_info: AnisetteClientInfo,
--        debug: bool,
--        proxy_url: Option<String>,
--    ) -> Result<Self, Report> {
--        let client =
--            Self::build_reqwest_client(debug, proxy_url).context("Failed to build HTTP client")?;
--        let base_headers = Self::base_headers(&client_info, false)?;
--        let url_bag = Self::fetch_url_bag(&client, base_headers).await?;
--        Ok(Self {
--            client,
--            client_info,
--            url_bag,
--        })
--    }
--
--    /// Fetch the URL bag from GrandSlam and cache it
--    pub async fn fetch_url_bag(
--        client: &reqwest_middleware::ClientWithMiddleware,
--        base_headers: HeaderMap,
--    ) -> Result<Dictionary, Report> {
--        debug!("Fetching URL bag from GrandSlam");
--        let resp = client
--            .get(URL_BAG)
--            .headers(base_headers)
--            .send()
--            .await
--            .context("Failed to fetch URL Bag")?
--            .text()
--            .await
--            .context("Failed to read URL Bag response text")?;
--
--        let dict: Dictionary =
--            plist::from_bytes(resp.as_bytes()).context("Failed to parse URL Bag plist")?;
--        let urls = dict
--            .get("urls")
--            .and_then(|v| v.as_dictionary())
--            .cloned()
--            .ok_or_else(|| report!("URL Bag plist missing 'urls' dictionary"))?;
--
--        Ok(urls)
--    }
--
--    pub fn get_url(&self, key: &str) -> Result<String, Report> {
--        let url = self
--            .url_bag
--            .get_string(key)
--            .context("Unable to find key in URL bag")?;
--        Ok(url)
--    }
--
--    pub fn get(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder, Report> {
--        let builder = self
--            .client
--            .get(url)
--            .headers(Self::base_headers(&self.client_info, false)?);
--
--        Ok(builder)
--    }
--
--    pub fn get_sms(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder, Report> {
--        let builder = self
--            .client
--            .get(url)
--            .headers(Self::base_headers(&self.client_info, true)?);
--
--        Ok(builder)
--    }
--
--    pub fn put_sms(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder, Report> {
--        let builder = self
--            .client
--            .put(url)
--            .headers(Self::base_headers(&self.client_info, true)?);
--
--        Ok(builder)
--    }
--
--    pub fn post(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder, Report> {
--        let builder = self
--            .client
--            .post(url)
--            .headers(Self::base_headers(&self.client_info, false)?);
--
--        Ok(builder)
--    }
--
--    pub fn post_sms(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder, Report> {
--        let builder = self
--            .client
--            .post(url)
--            .headers(Self::base_headers(&self.client_info, true)?);
--
--        Ok(builder)
--    }
--
--    pub fn patch(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder, Report> {
--        let builder = self
--            .client
--            .patch(url)
--            .headers(Self::base_headers(&self.client_info, false)?);
--
--        Ok(builder)
--    }
--
--    pub async fn plist_request(
--        &self,
--        url: &str,
--        body: &Dictionary,
--        additional_headers: Option<HeaderMap>,
--        retry_limit: Option<u32>,
--    ) -> Result<Dictionary, Report> {
--        let result = self
--            .post(url)?
--            .headers(
--                additional_headers
--                    .clone()
--                    .unwrap_or_else(reqwest::header::HeaderMap::new),
--            )
--            .body(plist_to_xml_string(body))
--            .send()
--            .await
--            .context("Failed to send grandslam request")?;
--
--        if let Some(retries) = retry_limit
--            && result.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
--        {
--            if retries > 0 {
--                warn!(
--                    "Received 429 Too Many Requests, retrying request ({} retries left)",
--                    retries
--                );
--                return Box::pin(self.plist_request(
--                    url,
--                    body,
--                    additional_headers,
--                    Some(retries - 1),
--                ))
--                .await;
--            } else {
--                bail!("Received 429 Too Many Requests, no retries left");
--            }
--        }
--
--        let resp = result
--            .error_for_status()
--            .context("Received error response from grandslam")?
--            .text()
--            .await
--            .context("Failed to read grandslam response as text")?;
--
--        let dict: Dictionary = plist::from_bytes(resp.as_bytes())
--            .context("Failed to parse grandslam response plist")
--            .attach_with(|| resp.clone())?;
--
--        let response_plist = dict
--            .get("Response")
--            .and_then(|v| v.as_dictionary())
--            .cloned()
--            .ok_or_else(|| {
--                report!("grandslam response missing 'Response'")
--                    .attach(pretty_print_dictionary(&dict))
--            })?;
--
--        Ok(response_plist)
--    }
--
--    fn base_headers(
--        client_info: &AnisetteClientInfo,
--        sms: bool,
--    ) -> Result<reqwest::header::HeaderMap, Report> {
--        let mut headers = reqwest::header::HeaderMap::new();
--        if !sms {
--            headers.insert("Content-Type", HeaderValue::from_static("text/x-xml-plist"));
--            headers.insert("Accept", HeaderValue::from_static("text/x-xml-plist"));
--        } else {
--            headers.insert("Content-Type", HeaderValue::from_static("application/json"));
--            headers.insert("Accept", HeaderValue::from_static("application/json"));
--        }
--        headers.insert(
--            "X-Mme-Client-Info",
--            HeaderValue::from_str(&client_info.client_info)?,
--        );
--        headers.insert(
--            "User-Agent",
--            HeaderValue::from_str(&client_info.user_agent)?,
--        );
--        headers.insert(
--            "X-Xcode-Version",
--            HeaderValue::from_static("27.0 (27A5218g)"),
--        );
--        headers.insert(
--            "X-Apple-App-Info",
--            HeaderValue::from_static("com.apple.gs.xcode.auth"),
--        );
--        headers.insert(
--            reqwest::header::CONNECTION,
--            HeaderValue::from_static("close"),
--        );
--
--        Ok(headers)
--    }
--
--    /// Build a reqwest client with the Apple root certificate
--    ///
--    /// # Arguments
--    /// - `debug`: DANGER, If true, accept invalid certificates and enable verbose connection logging
--    /// # Errors
--    /// Returns an error if the reqwest client cannot be built
--    pub fn build_reqwest_client(
--        #[cfg(not(feature = "wasm"))] debug: bool,
--        #[cfg(feature = "wasm")] _debug: bool,
--        proxy_url: Option<String>,
--    ) -> Result<reqwest_middleware::ClientWithMiddleware, Report> {
--        #[cfg(not(feature = "wasm"))]
--        let cert = Certificate::from_der(APPLE_ROOT)?;
--        #[cfg(not(feature = "wasm"))]
--        let client = ClientBuilder::new()
--            .add_root_certificate(cert)
--            .http1_title_case_headers()
--            .danger_accept_invalid_certs(debug)
--            .connection_verbose(debug)
--            // .pool_max_idle_per_host(0)
--            .build()?;
--        #[cfg(feature = "wasm")]
--        let client = ClientBuilder::new().build()?;
--
--        let builder = MwClientBuilder::new(client);
--        let builder = if let Some(proxy_url) = proxy_url {
--            builder.with(WasmProxyMiddleware::new(proxy_url))
--        } else {
--            builder
--        };
--        Ok(builder.build())
--    }
--}
--
--pub trait GrandSlamErrorChecker {
--    fn check_grandslam_error(self) -> Result<Dictionary, Report<SideloadError>>;
--}
--
--impl GrandSlamErrorChecker for Dictionary {
--    fn check_grandslam_error(self) -> Result<Self, Report<SideloadError>> {
--        let result = match self.get("Status") {
--            Some(plist::Value::Dictionary(d)) => d,
--            _ => &self,
--        };
--
--        if result.get_signed_integer("ec").unwrap_or(0) != 0 {
--            bail!(SideloadError::AuthWithMessage(
--                result.get_signed_integer("ec").unwrap_or(-1),
--                result.get_str("em").unwrap_or("Unknown error").to_string(),
--            ))
--        }
--
--        Ok(self)
--    }
--}
-+use super::middleware::WasmProxyMiddleware;
-+use plist::Dictionary;
-+use plist_macro::plist_to_xml_string;
-+use plist_macro::pretty_print_dictionary;
-+#[cfg(not(feature = "wasm"))]
-+use reqwest::Certificate;
-+use reqwest::{
-+    ClientBuilder,
-+    header::{HeaderMap, HeaderValue},
-+};
-+use reqwest_middleware::ClientBuilder as MwClientBuilder;
-+use rootcause::prelude::*;
-+use tracing::debug;
-+use tracing::warn;
-+
-+#[cfg(not(feature = "wasm"))]
-+use crate::sideload::cert_identity::APPLE_ROOT;
-+use crate::{SideloadError, anisette::AnisetteClientInfo, util::plist::PlistDataExtract};
-+
-+const URL_BAG: &str = "https://gsa.apple.com/grandslam/GsService2/lookup";
-+
-+pub struct GrandSlam {
-+    pub client: reqwest_middleware::ClientWithMiddleware,
-+    pub client_info: AnisetteClientInfo,
-+    url_bag: Dictionary,
-+}
-+
-+impl GrandSlam {
-+    /// Create a new GrandSlam instance
-+    ///
-+    /// # Arguments
-+    /// - `client`: The reqwest client to use for requests
-+    pub async fn new(
-+        client_info: AnisetteClientInfo,
-+        debug: bool,
-+        proxy_url: Option<String>,
-+    ) -> Result<Self, Report> {
-+        let client =
-+            Self::build_reqwest_client(debug, proxy_url).context("Failed to build HTTP client")?;
-+        let base_headers = Self::base_headers(&client_info, false)?;
-+        let url_bag = Self::fetch_url_bag(&client, base_headers).await?;
-+        Ok(Self {
-+            client,
-+            client_info,
-+            url_bag,
-+        })
-+    }
-+
-+    /// Fetch the URL bag from GrandSlam and cache it
-+    pub async fn fetch_url_bag(
-+        client: &reqwest_middleware::ClientWithMiddleware,
-+        base_headers: HeaderMap,
-+    ) -> Result<Dictionary, Report> {
-+        debug!("Fetching URL bag from GrandSlam");
-+        let resp = client
-+            .get(URL_BAG)
-+            .headers(base_headers)
-+            .send()
-+            .await
-+            .context("Failed to fetch URL Bag")?
-+            .text()
-+            .await
-+            .context("Failed to read URL Bag response text")?;
-+
-+        let dict: Dictionary =
-+            plist::from_bytes(resp.as_bytes()).context("Failed to parse URL Bag plist")?;
-+        let urls = dict
-+            .get("urls")
-+            .and_then(|v| v.as_dictionary())
-+            .cloned()
-+            .ok_or_else(|| report!("URL Bag plist missing 'urls' dictionary"))?;
-+
-+        Ok(urls)
-+    }
-+
-+    pub fn get_url(&self, key: &str) -> Result<String, Report> {
-+        let url = self
-+            .url_bag
-+            .get_string(key)
-+            .context("Unable to find key in URL bag")?;
-+        Ok(url)
-+    }
-+
-+    pub fn get(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder, Report> {
-+        let builder = self
-+            .client
-+            .get(url)
-+            .headers(Self::base_headers(&self.client_info, false)?);
-+
-+        Ok(builder)
-+    }
-+
-+    pub fn get_sms(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder, Report> {
-+        let builder = self
-+            .client
-+            .get(url)
-+            .headers(Self::base_headers(&self.client_info, true)?);
-+
-+        Ok(builder)
-+    }
-+
-+    pub fn put_sms(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder, Report> {
-+        let builder = self
-+            .client
-+            .put(url)
-+            .headers(Self::base_headers(&self.client_info, true)?);
-+
-+        Ok(builder)
-+    }
-+
-+    pub fn post(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder, Report> {
-+        let builder = self
-+            .client
-+            .post(url)
-+            .headers(Self::base_headers(&self.client_info, false)?);
-+
-+        Ok(builder)
-+    }
-+
-+    pub fn post_sms(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder, Report> {
-+        let builder = self
-+            .client
-+            .post(url)
-+            .headers(Self::base_headers(&self.client_info, true)?);
-+
-+        Ok(builder)
-+    }
-+
-+    pub fn patch(&self, url: &str) -> Result<reqwest_middleware::RequestBuilder, Report> {
-+        let builder = self
-+            .client
-+            .patch(url)
-+            .headers(Self::base_headers(&self.client_info, false)?);
-+
-+        Ok(builder)
-+    }
-+
-+    pub async fn plist_request(
-+        &self,
-+        url: &str,
-+        body: &Dictionary,
-+        additional_headers: Option<HeaderMap>,
-+        retry_limit: Option<u32>,
-+    ) -> Result<Dictionary, Report> {
-+        let diagnostic =
-+            AuthDiagnostic::new(url, body, &self.client_info, additional_headers.as_ref());
-+        if let Some(diagnostic) = &diagnostic {
-+            diagnostic.emit("request", serde_json::json!({}));
-+        }
-+        let result = self
-+            .post(url)?
-+            .headers(
-+                additional_headers
-+                    .clone()
-+                    .unwrap_or_else(reqwest::header::HeaderMap::new),
-+            )
-+            .body(plist_to_xml_string(body))
-+            .send()
-+            .await
-+            .inspect_err(|_| {
-+                if let Some(diagnostic) = &diagnostic {
-+                    diagnostic.emit("transport_error", serde_json::json!({}));
-+                }
-+            })
-+            .context("Failed to send grandslam request")?;
-+
-+        if let Some(diagnostic) = &diagnostic {
-+            diagnostic.emit(
-+                "http_response",
-+                serde_json::json!({"status": result.status().as_u16()}),
-+            );
-+        }
-+
-+        if let Some(retries) = retry_limit
-+            && result.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
-+        {
-+            if retries > 0 {
-+                warn!(
-+                    "Received 429 Too Many Requests, retrying request ({} retries left)",
-+                    retries
-+                );
-+                return Box::pin(self.plist_request(
-+                    url,
-+                    body,
-+                    additional_headers,
-+                    Some(retries - 1),
-+                ))
-+                .await;
-+            } else {
-+                bail!("Received 429 Too Many Requests, no retries left");
-+            }
-+        }
-+
-+        let resp = result
-+            .error_for_status()
-+            .context("Received error response from grandslam")?
-+            .text()
-+            .await
-+            .inspect_err(|_| {
-+                if let Some(diagnostic) = &diagnostic {
-+                    diagnostic.emit("body_read_error", serde_json::json!({}));
-+                }
-+            })
-+            .context("Failed to read grandslam response as text")?;
-+
-+        let dict: Dictionary = plist::from_bytes(resp.as_bytes())
-+            .inspect_err(|_| {
-+                if let Some(diagnostic) = &diagnostic {
-+                    diagnostic.emit("plist_parse_error", serde_json::json!({}));
-+                }
-+            })
-+            .context("Failed to parse grandslam response plist")
-+            .attach_with(|| resp.clone())?;
-+
-+        let response_plist = dict
-+            .get("Response")
-+            .and_then(|v| v.as_dictionary())
-+            .cloned()
-+            .ok_or_else(|| {
-+                if let Some(diagnostic) = &diagnostic {
-+                    diagnostic.emit("missing_response", serde_json::json!({}));
-+                }
-+                report!("grandslam response missing 'Response'")
-+                    .attach(pretty_print_dictionary(&dict))
-+            })?;
-+
-+        if let Some(diagnostic) = &diagnostic {
-+            diagnostic.emit("apple_response", diagnostic_response(&response_plist));
-+        }
-+
-+        Ok(response_plist)
-+    }
-+
-+    fn base_headers(
-+        client_info: &AnisetteClientInfo,
-+        sms: bool,
-+    ) -> Result<reqwest::header::HeaderMap, Report> {
-+        let mut headers = reqwest::header::HeaderMap::new();
-+        if !sms {
-+            headers.insert("Content-Type", HeaderValue::from_static("text/x-xml-plist"));
-+            headers.insert("Accept", HeaderValue::from_static("text/x-xml-plist"));
-+        } else {
-+            headers.insert("Content-Type", HeaderValue::from_static("application/json"));
-+            headers.insert("Accept", HeaderValue::from_static("application/json"));
-+        }
-+        headers.insert(
-+            "X-Mme-Client-Info",
-+            HeaderValue::from_str(&client_info.client_info)?,
-+        );
-+        headers.insert(
-+            "User-Agent",
-+            HeaderValue::from_str(&client_info.user_agent)?,
-+        );
-+        headers.insert(
-+            "X-Xcode-Version",
-+            HeaderValue::from_static("27.0 (27A5218g)"),
-+        );
-+        headers.insert(
-+            "X-Apple-App-Info",
-+            HeaderValue::from_static("com.apple.gs.xcode.auth"),
-+        );
-+        headers.insert(
-+            reqwest::header::CONNECTION,
-+            HeaderValue::from_static("close"),
-+        );
-+
-+        Ok(headers)
-+    }
-+
-+    /// Build a reqwest client with the Apple root certificate
-+    ///
-+    /// # Arguments
-+    /// - `debug`: DANGER, If true, accept invalid certificates and enable verbose connection logging
-+    /// # Errors
-+    /// Returns an error if the reqwest client cannot be built
-+    pub fn build_reqwest_client(
-+        #[cfg(not(feature = "wasm"))] debug: bool,
-+        #[cfg(feature = "wasm")] _debug: bool,
-+        proxy_url: Option<String>,
-+    ) -> Result<reqwest_middleware::ClientWithMiddleware, Report> {
-+        #[cfg(not(feature = "wasm"))]
-+        let cert = Certificate::from_der(APPLE_ROOT)?;
-+        #[cfg(not(feature = "wasm"))]
-+        let client = ClientBuilder::new()
-+            .add_root_certificate(cert)
-+            .http1_title_case_headers()
-+            .danger_accept_invalid_certs(debug)
-+            .connection_verbose(debug)
-+            // .pool_max_idle_per_host(0)
-+            .build()?;
-+        #[cfg(feature = "wasm")]
-+        let client = ClientBuilder::new().build()?;
-+
-+        let builder = MwClientBuilder::new(client);
-+        let builder = if let Some(proxy_url) = proxy_url {
-+            builder.with(WasmProxyMiddleware::new(proxy_url))
-+        } else {
-+            builder
-+        };
-+        Ok(builder.build())
-+    }
-+}
-+
-+// Deliberately separate from verbose tracing: authentication values and arbitrary
-+// error strings must never reach this opt-in diagnostic file.
-+struct AuthDiagnostic {
-+    path: std::path::PathBuf,
-+    context: serde_json::Value,
-+}
-+
-+impl AuthDiagnostic {
-+    fn new(
-+        url: &str,
-+        body: &Dictionary,
-+        client_info: &AnisetteClientInfo,
-+        additional_headers: Option<&HeaderMap>,
-+    ) -> Option<Self> {
-+        #[cfg(feature = "wasm")]
-+        return None;
-+        #[cfg(not(feature = "wasm"))]
-+        {
-+            let path = std::path::PathBuf::from(std::env::var_os("GYMA_AUTH_DIAGNOSTICS_PATH")?);
-+            if !path.is_absolute() {
-+                return None;
-+            }
-+            Some(Self {
-+                path,
-+                context: diagnostic_request(url, body, client_info, additional_headers),
-+            })
-+        }
-+    }
-+
-+    fn emit(&self, event: &str, detail: serde_json::Value) {
-+        use std::io::Write;
-+        static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-+        let Ok(_guard) = WRITE_LOCK.lock() else {
-+            return;
-+        };
-+        let Ok(mut file) = std::fs::OpenOptions::new()
-+            .create(true)
-+            .append(true)
-+            .open(&self.path)
-+        else {
-+            return;
-+        };
-+        // Keep diagnostics bounded even if the caller leaves the option enabled.
-+        if file
-+            .metadata()
-+            .map(|m| m.len() >= 4 * 1024 * 1024)
-+            .unwrap_or(true)
-+        {
-+            return;
-+        }
-+        let timestamp_ms = std::time::SystemTime::now()
-+            .duration_since(std::time::UNIX_EPOCH)
-+            .map(|d| d.as_millis())
-+            .unwrap_or(0);
-+        let record = serde_json::json!({
-+            "schema": 1, "timestamp_ms": timestamp_ms, "event": event,
-+            "request": self.context, "detail": detail,
-+        });
-+        if let Ok(mut line) = serde_json::to_vec(&record) {
-+            line.push(b'\n');
-+            let _ = file.write_all(&line);
-+        }
-+    }
-+}
-+
-+fn diagnostic_type(value: &plist::Value) -> &'static str {
-+    match value {
-+        plist::Value::Array(_) => "array",
-+        plist::Value::Dictionary(_) => "dictionary",
-+        plist::Value::Boolean(_) => "boolean",
-+        plist::Value::Data(_) => "data",
-+        plist::Value::Date(_) => "date",
-+        plist::Value::Real(_) => "real",
-+        plist::Value::Integer(_) => "integer",
-+        plist::Value::String(_) => "string",
-+        plist::Value::Uid(_) => "uid",
-+        _ => "other",
-+    }
-+}
-+
-+fn diagnostic_fields(dict: Option<&Dictionary>, allowed: &[&str]) -> serde_json::Value {
-+    let mut fields = serde_json::Map::new();
-+    if let Some(dict) = dict {
-+        for key in allowed {
-+            if let Some(value) = dict.get(*key) {
-+                fields.insert(
-+                    (*key).to_string(),
-+                    serde_json::json!(diagnostic_type(value)),
-+                );
-+            }
-+        }
-+    }
-+    serde_json::Value::Object(fields)
-+}
-+
-+fn diagnostic_request(
-+    url: &str,
-+    body: &Dictionary,
-+    client_info: &AnisetteClientInfo,
-+    additional_headers: Option<&HeaderMap>,
-+) -> serde_json::Value {
-+    use std::sync::atomic::{AtomicU64, Ordering};
-+    static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(1);
-+    let request = body.get("Request").and_then(plist::Value::as_dictionary);
-+    let operation = match request
-+        .and_then(|r| r.get("o"))
-+        .and_then(plist::Value::as_string)
-+    {
-+        Some("init") => "init",
-+        Some("complete") => "complete",
-+        Some("apptokens") => "apptokens",
-+        _ => "other",
-+    };
-+    let endpoint = reqwest::Url::parse(url)
-+        .ok()
-+        .and_then(|u| {
-+            (u.scheme() == "https"
-+                && u.host_str() == Some("gsa.apple.com")
-+                && u.path() == "/grandslam/GsService2")
-+                .then_some("https://gsa.apple.com/grandslam/GsService2")
-+        })
-+        .unwrap_or("other");
-+    let mut headers = GrandSlam::base_headers(client_info, false).unwrap_or_default();
-+    if let Some(additional) = additional_headers {
-+        for (key, value) in additional {
-+            headers.insert(key.clone(), value.clone());
-+        }
-+    }
-+    let public_headers = [
-+        ("content-type", "text/x-xml-plist"),
-+        ("accept", "text/x-xml-plist"),
-+        ("user-agent", "akd/1.0 CFNetwork/808.1.4"),
-+        (
-+            "x-mme-client-info",
-+            "<Mac15,7> <macOS;27.0;26A5378j> <com.apple.AuthKit/1 (com.apple.akd/1.0)>",
-+        ),
-+        ("x-xcode-version", "27.0 (27A5218g)"),
-+        ("x-apple-app-info", "com.apple.gs.xcode.auth"),
-+        ("connection", "close"),
-+    ];
-+    let mut header_summary = serde_json::Map::new();
-+    for (name, known_value) in public_headers {
-+        let value = match headers.get(name).and_then(|v| v.to_str().ok()) {
-+            Some(value) if value == known_value => known_value,
-+            Some(crate::anisette::remote_v3::AUTHKIT_EXPERIMENT_USER_AGENT)
-+                if name == "user-agent" =>
-+            {
-+                crate::anisette::remote_v3::AUTHKIT_EXPERIMENT_USER_AGENT
-+            }
-+            Some(_) => "other",
-+            None => "absent",
-+        };
-+        header_summary.insert(name.to_string(), serde_json::json!(value));
-+    }
-+    serde_json::json!({
-+        "attempt": NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed),
-+        "experiment": match std::env::var("GYMA_AUTH_EXPERIMENT").as_deref() {
-+            Ok("cpd-booleans") => "cpd-booleans",
-+            Ok("cpd-metadata") => "cpd-metadata",
-+            Ok("windows-native-anisette") => "windows-native-anisette",
-+            Ok("windows-native-identity") => "windows-native-identity",
-+            Ok("authkit-user-agent") => "authkit-user-agent",
-+            _ => "baseline",
-+        },
-+        "operation": operation,
-+        "anisette_source": match std::env::var("GYMA_AUTH_EXPERIMENT").as_deref() {
-+            Ok("windows-native-anisette") => "windows-native-mid-otp-with-remote-metadata",
-+            Ok("windows-native-identity") => "windows-native-identity",
-+            _ => "remote-v3",
-+        },
-+        "endpoint": endpoint,
-+        "headers": header_summary,
-+        "fields": diagnostic_fields(request, &["A2k", "cpd", "ps", "o", "u", "c", "M1", "app", "checksum", "t"]),
-+        "cpd_fields": diagnostic_fields(request.and_then(|r| r.get("cpd")).and_then(plist::Value::as_dictionary), &[
-+            "bootstrap", "icscrec", "pbe", "prkgen", "svct", "loc", "X-Apple-Locale",
-+            "X-Apple-I-MD", "X-Apple-I-MD-M", "X-Mme-Device-Id", "X-Apple-I-MD-LU",
-+            "X-Apple-I-MD-RINFO", "X-Apple-I-SRL-NO", "X-Apple-I-Client-Time", "X-Apple-I-TimeZone",
-+        ]),
-+    })
-+}
-+
-+fn diagnostic_response(response: &Dictionary) -> serde_json::Value {
-+    let status = response
-+        .get("Status")
-+        .and_then(plist::Value::as_dictionary)
-+        .unwrap_or(response);
-+    let code = status.get("ec").and_then(plist::Value::as_signed_integer);
-+    serde_json::json!({
-+        "apple_error_code": code,
-+        "fields": diagnostic_fields(Some(response), &["Status", "c", "s", "i", "B", "sp", "M2", "spd", "et"]),
-+    })
-+}
-+
-+#[cfg(test)]
-+mod diagnostic_tests {
-+    use super::*;
-+
-+    #[test]
-+    fn authkit_experiment_changes_only_user_agent_header() {
-+        use crate::anisette::remote_v3::{
-+            AUTHKIT_EXPERIMENT_USER_AGENT, client_info_for_experiment,
-+        };
-+        let baseline = client_info_for_experiment(None);
-+        let experiment = client_info_for_experiment(Some("authkit-user-agent"));
-+        assert_eq!(baseline.client_info, experiment.client_info);
-+        assert_eq!(baseline.user_agent, "akd/1.0 CFNetwork/808.1.4");
-+        assert_eq!(experiment.user_agent, AUTHKIT_EXPERIMENT_USER_AGENT);
-+        for label in ["baseline", "cpd-booleans", "unknown"] {
-+            assert_eq!(
-+                client_info_for_experiment(Some(label)).user_agent,
-+                baseline.user_agent
-+            );
-+        }
-+        let mut baseline_headers = GrandSlam::base_headers(&baseline, false).unwrap();
-+        let mut experiment_headers = GrandSlam::base_headers(&experiment, false).unwrap();
-+        assert_eq!(
-+            baseline_headers.remove("user-agent").unwrap(),
-+            baseline.user_agent
-+        );
-+        assert_eq!(
-+            experiment_headers.remove("user-agent").unwrap(),
-+            experiment.user_agent
-+        );
-+        assert_eq!(baseline_headers, experiment_headers);
-+        let summary = diagnostic_request(
-+            "https://gsa.apple.com/grandslam/GsService2",
-+            &Dictionary::new(),
-+            &experiment,
-+            None,
-+        );
-+        assert_eq!(
-+            summary["headers"]["user-agent"],
-+            AUTHKIT_EXPERIMENT_USER_AGENT
-+        );
-+    }
-+
-+    #[test]
-+    fn diagnostic_summary_never_contains_authentication_values() {
-+        let secret = "SECRET_MARKER_NEVER_LOG";
-+        let mut cpd = Dictionary::new();
-+        cpd.insert("bootstrap".into(), plist::Value::String("true".into()));
-+        cpd.insert("pbe".into(), plist::Value::Boolean(false));
-+        cpd.insert("X-Apple-I-MD".into(), plist::Value::String(secret.into()));
-+        cpd.insert(secret.into(), plist::Value::String(secret.into()));
-+        let mut request = Dictionary::new();
-+        request.insert("o".into(), plist::Value::String("init".into()));
-+        request.insert("u".into(), plist::Value::String(secret.into()));
-+        request.insert("cpd".into(), plist::Value::Dictionary(cpd));
-+        let mut body = Dictionary::new();
-+        body.insert("Request".into(), plist::Value::Dictionary(request));
-+        let client = AnisetteClientInfo {
-+            client_info: secret.into(),
-+            user_agent: secret.into(),
-+        };
-+        let mut additional = HeaderMap::new();
-+        additional.insert(
-+            "authorization",
-+            HeaderValue::from_static("SECRET_MARKER_NEVER_LOG"),
-+        );
-+        let summary = diagnostic_request(
-+            "https://gsa.apple.com/grandslam/GsService2?token=SECRET_MARKER_NEVER_LOG",
-+            &body,
-+            &client,
-+            Some(&additional),
-+        );
-+        assert!(!summary.to_string().contains(secret));
-+        assert_eq!(summary["cpd_fields"]["bootstrap"], "string");
-+        assert_eq!(summary["cpd_fields"]["pbe"], "boolean");
-+        assert_eq!(summary["fields"]["u"], "string");
-+        assert_eq!(summary["operation"], "init");
-+        assert_eq!(summary["headers"]["user-agent"], "other");
-+        assert_eq!(
-+            diagnostic_request(
-+                "https://example.com/SECRET_MARKER_NEVER_LOG",
-+                &body,
-+                &client,
-+                None
-+            )["endpoint"],
-+            "other"
-+        );
-+    }
-+
-+    #[test]
-+    fn diagnostic_response_keeps_only_error_code_and_protocol_field_types() {
-+        let secret = "SECRET_MARKER_NEVER_LOG";
-+        let mut status = Dictionary::new();
-+        status.insert("ec".into(), plist::Value::Integer((-80045_i64).into()));
-+        status.insert("em".into(), plist::Value::String(secret.into()));
-+        let mut response = Dictionary::new();
-+        response.insert("Status".into(), plist::Value::Dictionary(status));
-+        response.insert("spd".into(), plist::Value::Data(secret.as_bytes().into()));
-+        response.insert(secret.into(), plist::Value::String(secret.into()));
-+        let summary = diagnostic_response(&response);
-+        assert_eq!(summary["apple_error_code"], -80045);
-+        assert_eq!(summary["fields"]["spd"], "data");
-+        assert!(!summary.to_string().contains(secret));
-+        let mut flat_response = Dictionary::new();
-+        flat_response.insert("ec".into(), plist::Value::Integer((-80045_i64).into()));
-+        flat_response.insert("em".into(), plist::Value::String(secret.into()));
-+        let flat_summary = diagnostic_response(&flat_response);
-+        assert_eq!(flat_summary["apple_error_code"], -80045);
-+        assert!(!flat_summary.to_string().contains(secret));
-+    }
-+}
-+
-+pub trait GrandSlamErrorChecker {
-+    fn check_grandslam_error(self) -> Result<Dictionary, Report<SideloadError>>;
-+}
-+
-+impl GrandSlamErrorChecker for Dictionary {
-+    fn check_grandslam_error(self) -> Result<Self, Report<SideloadError>> {
-+        let result = match self.get("Status") {
-+            Some(plist::Value::Dictionary(d)) => d,
-+            _ => &self,
-+        };
-+
-+        if result.get_signed_integer("ec").unwrap_or(0) != 0 {
-+            bail!(SideloadError::AuthWithMessage(
-+                result.get_signed_integer("ec").unwrap_or(-1),
-+                result.get_str("em").unwrap_or("Unknown error").to_string(),
-+            ))
-+        }
-+
-+        Ok(self)
 +    }
 +}

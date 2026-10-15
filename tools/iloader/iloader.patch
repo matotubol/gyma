@@ -1,26 +1,26 @@
 diff --git a/src-tauri/Cargo.lock b/src-tauri/Cargo.lock
-index a0f478c..2714194 100644
+index c1f896b..3f87a7a 100644
 --- a/src-tauri/Cargo.lock
 +++ b/src-tauri/Cargo.lock
 @@ -2731,8 +2731,6 @@ dependencies = [
  [[package]]
  name = "isideload"
- version = "0.4.3"
+ version = "0.4.6"
 -source = "registry+https://github.com/rust-lang/crates.io-index"
--checksum = "46de455a50785bb772f4a1e586420a12861a07f4607fe5b0a5b2507da6a5c4bd"
+-checksum = "473bde4da71c72bcf5f1cf77acfffdf4b879b65ef989c19f8cb4c3e9ea758a76"
  dependencies = [
   "aes 0.9.3",
   "aes-gcm",
 diff --git a/src-tauri/Cargo.toml b/src-tauri/Cargo.toml
-index d6dbdf2..8d6f5fe 100644
+index 858bb6a..9d49432 100644
 --- a/src-tauri/Cargo.toml
 +++ b/src-tauri/Cargo.toml
 @@ -23,7 +23,7 @@ tauri-plugin-opener = "2"
  serde = { version = "1", features = ["derive"] }
  serde_json = "1"
  idevice = { version = "0.1.68", features = ["usbmuxd", "house_arrest", "afc", "core_device_proxy", "remote_pairing", "tcp", "tunnel_tcp_stack", "xpc", "rsd", "pair"] }
--isideload = { version = "0.4.3", features = ["fs-storage"] } #, git = "https://github.com/nab138/isideload", package = "isideload", branch = "apple-codesign-quick" }
-+isideload = { version = "0.4.3", path = "../../isideload/isideload", features = ["fs-storage"] }
+-isideload = { version = "0.4.6", features = ["fs-storage"] } # , path = "../../isideload/isideload" } #, git = "https://github.com/nab138/isideload", package = "isideload", branch = "apple-codesign-quick" }
++isideload = { version = "0.4.6", path = "../../isideload/isideload", features = ["fs-storage"] }
  keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-sync-persistent"] }
  tauri-plugin-store = "2"
  futures = "0.3.31"
@@ -52,7 +52,7 @@ index c62e6ca..2ad70d2 100644
  
      let provider = device.to_provider(UsbmuxdAddr::from_env_var().unwrap(), "iloader");
 diff --git a/src-tauri/tauri.conf.json b/src-tauri/tauri.conf.json
-index f96ce33..ce1d3e2 100644
+index 36ea3fd..eab4731 100644
 --- a/src-tauri/tauri.conf.json
 +++ b/src-tauri/tauri.conf.json
 @@ -12,7 +12,7 @@
@@ -60,7 +60,7 @@ index f96ce33..ce1d3e2 100644
      "windows": [
        {
 -        "title": "iloader",
-+        "title": "iloader 2.3.6 — Unofficial Watch build",
++        "title": "iloader 2.3.8 — Unofficial Watch build",
          "width": 800,
          "height": 600,
          "minHeight": 300,

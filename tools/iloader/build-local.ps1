@@ -255,8 +255,8 @@ try {
     $env:BUN_INSTALL_CACHE_DIR = Join-Path $cache 'bun'
     $env:CARGO_BUILD_TARGET = $TargetTriple
     # CARGO_HOME remains unchanged: existing Cargo registry/git downloads are reused.
-    $iloaderRevision = 'dc396af059fd46982062cd8fc90252d7e27085e9'
-    $backendRevision = 'c23db688c7f6079413bf82dad4e4f19e5ddf4ce7'
+    $iloaderRevision = 'cc5b168ee5e39693e3e8f4a7e591ec5e0766b6d4'
+    $backendRevision = '8ca39b6203263e539408986e546c42e7c1cc3699'
     $frontend = Join-Path $runDirectory 'iloader'
     $backend = Join-Path $runDirectory 'isideload'
     New-PinnedCheckout $tools['git.exe'] $frontend 'https://github.com/nab138/iloader.git' $iloaderRevision (Join-Path $inputs 'iloader.patch')
@@ -275,7 +275,7 @@ try {
     $installers = @(Get-ChildItem -LiteralPath $nsisDirectory -Filter '*.exe' -File | Where-Object { $_.LastWriteTimeUtc -ge $bundleStarted.AddSeconds(-2) })
     if ($installers.Count -ne 1) { throw "Expected one newly generated NSIS installer in '$nsisDirectory'; found $($installers.Count). Old cached installers will not be packaged." }
     $null = New-Item -ItemType Directory -Path $outputDirectory
-    Copy-Item -LiteralPath $installers[0].FullName -Destination (Join-Path $outputDirectory 'iloader-2.3.6-watch-windows-x64.exe')
+    Copy-Item -LiteralPath $installers[0].FullName -Destination (Join-Path $outputDirectory 'iloader-2.3.8-watch-windows-x64.exe')
     foreach ($inputFile in (Get-ChildItem -LiteralPath $inputs -File)) { Copy-Item -LiteralPath $inputFile.FullName -Destination $outputDirectory }
     Copy-Item -LiteralPath (Join-Path $frontend 'LICENSE') -Destination (Join-Path $outputDirectory 'LICENSE-iloader.txt')
     Copy-Item -LiteralPath (Join-Path $frontend 'LICENSE-BRANDING') -Destination (Join-Path $outputDirectory 'LICENSE-BRANDING-iloader.txt')
