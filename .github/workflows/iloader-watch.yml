@@ -1,4 +1,4 @@
-name: iLoader 2.3.6 Watch build
+name: iLoader 2.3.8 Watch build
 
 on:
   workflow_dispatch:
@@ -20,18 +20,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Check out iLoader 2.3.6
+      - name: Check out iLoader 2.3.8
         uses: actions/checkout@v6
         with:
           repository: nab138/iloader
-          ref: dc396af059fd46982062cd8fc90252d7e27085e9
+          ref: cc5b168ee5e39693e3e8f4a7e591ec5e0766b6d4
           path: build/iloader-ci/sources/iloader
 
-      - name: Check out matching isideload 0.4.3
+      - name: Check out matching isideload 0.4.6
         uses: actions/checkout@v6
         with:
           repository: nab138/isideload
-          ref: c23db688c7f6079413bf82dad4e4f19e5ddf4ce7
+          ref: 8ca39b6203263e539408986e546c42e7c1cc3699
           path: build/iloader-ci/sources/isideload
 
       - name: Apply the Watch port
@@ -95,7 +95,7 @@ jobs:
           $out = New-Item -ItemType Directory -Force build/iloader-ci/artifacts
           $installers = @(Get-ChildItem build/iloader-ci/sources/iloader/src-tauri/target/release/bundle/nsis -Filter '*.exe' -File)
           if ($installers.Count -ne 1) { throw 'Expected exactly one NSIS installer' }
-          Copy-Item -LiteralPath $installers[0].FullName -Destination "$out/iloader-2.3.6-watch-windows-x64.exe"
+          Copy-Item -LiteralPath $installers[0].FullName -Destination "$out/iloader-2.3.8-watch-windows-x64.exe"
           Copy-Item tools/iloader/* -Destination $out
           Copy-Item build/iloader-ci/sources/iloader/LICENSE -Destination "$out/LICENSE-iloader.txt"
           Copy-Item build/iloader-ci/sources/iloader/LICENSE-BRANDING -Destination "$out/LICENSE-BRANDING-iloader.txt"
@@ -112,7 +112,7 @@ jobs:
 
       - uses: actions/upload-artifact@v6
         with:
-          name: iloader-2.3.6-watch-windows-x64-${{ github.run_number }}
+          name: iloader-2.3.8-watch-windows-x64-${{ github.run_number }}
           path: build/iloader-ci/artifacts/*
           if-no-files-found: error
           retention-days: 30

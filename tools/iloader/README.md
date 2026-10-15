@@ -1,19 +1,25 @@
-# Unofficial iLoader 2.3.6 with Watch support
+# Unofficial iLoader 2.3.8 with Watch support
 
 This is a custom Windows build for installing Gyma's paired iPhone and Apple Watch apps. It is not an official iLoader release and is not endorsed by the upstream authors. The official project is [nab138/iloader](https://github.com/nab138/iloader).
 
-The build keeps version 2.3.6, labels the UI as an unofficial Watch build, and disables automatic updates. It keeps the existing application identifier so installed iLoader settings remain available. Enter Apple Account credentials only in the desktop application; GitHub Actions receives no Apple credentials and produces the Windows tool, not a device-signed IPA.
+The build keeps version 2.3.8, labels the UI as an unofficial Watch build, and disables automatic updates. It keeps the existing application identifier so installed iLoader settings remain available. Enter Apple Account credentials only in the desktop application; GitHub Actions receives no Apple credentials and produces the Windows tool, not a device-signed IPA.
+
+## Upstream fixes in 2.3.8
+
+This port includes the [upstream 2.3.8 release](https://github.com/nab138/iloader/releases/tag/v2.3.8) and its matching isideload 0.4.6 backend. It retains the authentication/503 fixes and the corrected pairing-file names for StikDebug and SideStore. Upstream requires a new authentication with 2FA and migrates unsupported custom anisette servers to its supported server list. Trusted-device 2FA works; upstream still lists SMS 2FA as broken. Normal launches use this new upstream authentication path; optional diagnostics remain opt-in.
 
 ## Pinned sources
 
 | Component | Source revision |
 | --- | --- |
-| iLoader 2.3.6 | `nab138/iloader@dc396af059fd46982062cd8fc90252d7e27085e9` |
-| isideload 0.4.3 | `nab138/isideload@c23db688c7f6079413bf82dad4e4f19e5ddf4ce7` |
+| iLoader 2.3.8 | `nab138/iloader@cc5b168ee5e39693e3e8f4a7e591ec5e0766b6d4` |
+| isideload 0.4.6 | `nab138/isideload@8ca39b6203263e539408986e546c42e7c1cc3699` |
 | Watch implementation reference | `Rzbck/isideload@f7b9f3da570edd6824c29680545e710846d07df5` |
 | Windows transport reference | `Rzbck/iloader@70f37e9b4afc659ab44ec1944c034093f4cda416` |
 
 Watch support is adapted from the [iLoader Watch companion project](https://github.com/Rzbck/iloader-watch-companion), retaining the newer generic Sideloader API and apple-codesign-quick signer. Both upstream code projects are MIT licensed; their license notices and iLoader's branding notice are included in the build artifact.
+
+The backend revision is the source SHA recorded in the published isideload 0.4.6 crate's `.cargo_vcs_info.json`.
 
 ## What the patches do
 
@@ -88,9 +94,11 @@ The separate `build-native-anisette-helper.ps1` compiles an x86 helper against t
 
 `-Experiment windows-native-identity` obtains the client description, device ID, local-user ID, MID and OTP from the installed Windows Apple libraries, with routing information `84215040`. It uses the native getter approach from [AltServer's February 2026 fix for -22410](https://github.com/rileytestut/AltServer-Windows/commit/e91915d11068e62cd17a9290776afeeb744b9c03), plus complete CPD metadata and boolean flags. This profile does not use the remote anisette service or its saved provisioning state. The helper verifies the supported `iCloud_main.dll` SHA-256 before resolving its private methods; an unsupported binary fails without falling back. This is still an experimental comparison, not a verified fix for current Apple authentication failures. Native identity values remain excluded from diagnostic traces.
 
+With the 2.3.8 backend, both native experiments stop if Apple requests server resynchronization. The hybrid `windows-native-anisette` experiment also stops if saved provisioning needs replacement. Restart in baseline mode to use upstream recovery; neither native experiment silently falls back.
+
 ### Device installation
 
-Use `iloader-2.3.6-watch-windows-x64.exe` from the printed local artifact directory. For an explicitly requested GitHub build, download `iloader-2.3.6-watch-windows-x64-<run number>` from **iLoader 2.3.6 Watch build**. Both outputs include checksums, provenance, patches, and license notices.
+Use `iloader-2.3.8-watch-windows-x64.exe` from the printed local artifact directory. For an explicitly requested GitHub build, download `iloader-2.3.8-watch-windows-x64-<run number>` from **iLoader 2.3.8 Watch build**. Both outputs include checksums, provenance, patches, and license notices.
 
 Install it and confirm the window says **Unofficial Watch build**. Connect the paired iPhone by USB, select its USB entry, keep the Watch unlocked nearby with Developer Mode enabled, and select Gyma's combined `gyma-swift-unsigned.ipa`.
 
