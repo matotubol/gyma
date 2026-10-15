@@ -42,6 +42,8 @@ Sign both bundles with compatible provisioning before installing: `com.mato.gyma
 
 ## Project structure
 
+Read [the architecture and team conventions](docs/ARCHITECTURE.md) before changing app code. Feature ownership, one-way state flow, shared rules, and agent edit coordination are enforced in part by `python tools/apple/check_architecture.py` and the normal Swift workflow.
+
 | Path | Responsibility |
 | --- | --- |
 | `apple/iOS` | iPhone app wiring in `App`, screens and presentation grouped under `Features`, device services in `Services`, shared phone UI in `UI` |

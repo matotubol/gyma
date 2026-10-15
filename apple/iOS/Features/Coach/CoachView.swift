@@ -35,9 +35,9 @@ struct CoachView: View {
                     if !model.hasCoachAPIKey { keySetup }
                     if let conversation, conversation.startedWorkoutID == nil {
                         if conversation.isProgramPlanning { programPlanningSummary }
-                        else { checkInSummary(conversation.checkIn) }
+                        else { CoachCheckInSummary(checkIn: conversation.checkIn) }
                         if conversation.messages.isEmpty { conversationSuggestions }
-                        ForEach(conversation.messages) { chatMessage($0) }
+                        ForEach(conversation.messages) { CoachMessageRow(message: $0) }
                         if model.coachRequestInFlight {
                             ProgressView("Your coach is thinking…")
                                 .font(.subheadline).frame(maxWidth: .infinity, alignment: .leading)
@@ -53,14 +53,16 @@ struct CoachView: View {
                             .buttonStyle(.bordered)
                             .disabled(!model.hasCoachAPIKey || model.storageBlocked)
                         }
-                        if let proposal = model.coachAppChanges { appChangesCard(proposal) }
+                        if let proposal = model.coachAppChanges {
+                            CoachAppChangesCard(proposal: proposal) { composerFocused = false }
+                        }
                         if let plan = conversation.plan {
-                            if plan.acceptedAt == nil { planCard(plan) }
+                            if plan.acceptedAt == nil { CoachWorkoutPlanCard(plan: plan, onAccepted: closePlanning) }
                             else { TimelineView(.periodic(from: .now, by: 30)) { context in acceptedPlan(plan, now: context.date) } }
                         }
                         if let program = conversation.proposedProgram { ProgramProposalCard(program: program) }
                         if let proposals = conversation.proposedExercises, !proposals.isEmpty {
-                            exerciseProposalsCard(proposals)
+                            CoachExerciseProposalsCard(proposals: proposals) { composerFocused = false }
                         }
                     } else {
                         TimelineView(.periodic(from: .now, by: 30)) { context in introduction(at: context.date) }
@@ -68,8 +70,8 @@ struct CoachView: View {
                             DisclosureGroup("Previous conversation") {
                                 VStack(alignment: .leading, spacing: 18) {
                                     if previous.isProgramPlanning { programPlanningSummary }
-                                    else { checkInSummary(previous.checkIn, heading: "PREVIOUS CHECK-IN") }
-                                    ForEach(previous.messages) { chatMessage($0) }
+                                    else { CoachCheckInSummary(checkIn: previous.checkIn, heading: "PREVIOUS CHECK-IN") }
+                                    ForEach(previous.messages) { CoachMessageRow(message: $0) }
                                 }
                                 .padding(.top, 14)
                             }
@@ -253,93 +255,6 @@ struct CoachView: View {
         else { dismiss() }
     }
 
-    private func checkInSummary(_ checkIn: SessionCheckIn, heading: String = "TODAY’S CHECK-IN") -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(heading).font(.caption.weight(.bold)).foregroundStyle(GymaStyle.accent)
-            Text("\(checkIn.energy.label) energy · \(checkIn.timeMinutes) min · \(checkIn.shift.label) shift")
-                .font(.subheadline)
-            if let hours = checkIn.sleepHours {
-                Text("\(hours.gymaNumber) hours of sleep").font(.caption).foregroundStyle(.secondary)
-            }
-            if checkIn.soreness != nil {
-                let sore = Muscle.allCases.filter { checkIn.soreness(for: $0) != .none }
-                Text(sore.isEmpty ? "Soreness: none" : sore.map { "\($0.label): \(checkIn.soreness(for: $0).label.lowercased())" }.joined(separator: " · "))
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if !checkIn.notes.isEmpty { Text(checkIn.notes).font(.subheadline).foregroundStyle(.secondary) }
-            if !checkIn.recentTrainingNote.isEmpty {
-                Text("Recent training: \(checkIn.recentTrainingNote)").font(.subheadline).foregroundStyle(.secondary)
-            }
-            if !checkIn.painNote.isEmpty {
-                Text("Limitations: \(checkIn.painNote)").font(.subheadline).foregroundStyle(.secondary)
-            }
-        }
-        .padding(18).frame(maxWidth: .infinity, alignment: .leading)
-        .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 20))
-    }
-
-    private func chatMessage(_ message: CoachMessage) -> some View {
-        let isCoach = message.role == .assistant
-        return VStack(alignment: .leading, spacing: 7) {
-            Text(isCoach ? "GPT-6.1 Sol" : "You")
-                .font(.caption.weight(.semibold)).foregroundStyle(isCoach ? GymaStyle.accent : .secondary)
-            Text(message.content).font(.body).textSelection(.enabled)
-        }
-        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-        .background(isCoach ? GymaStyle.card : GymaStyle.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 20))
-        .padding(isCoach ? .trailing : .leading, 18)
-    }
-
-    private func planCard(_ plan: WorkoutPlan) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 5) {
-                Label(plan.acceptedAt == nil ? "WORKOUT DRAFT" : "ACCEPTED WORKOUT", systemImage: plan.acceptedAt == nil ? "list.clipboard" : "checkmark.seal")
-                    .font(.caption.weight(.bold)).foregroundStyle(GymaStyle.accent)
-                Text(plan.title).font(.title2.bold())
-                Text("\(plan.exercises.count) exercises · \(plan.exercises.reduce(0) { $0 + ($1.target?.sets ?? 0) }) sets")
-                    .font(.subheadline).foregroundStyle(.secondary)
-            }
-            ForEach(Array(plan.exercises.enumerated()), id: \.element.id) { index, exercise in
-                VStack(alignment: .leading, spacing: 8) {
-                    Divider()
-                    Text("\(index + 1). \(model.name(for: exercise.exerciseID))").font(.headline)
-                    if let target = exercise.target {
-                        Text("\(target.sets) sets × \(repDescription(target)) reps")
-                            .font(.subheadline.weight(.medium))
-                        HStack(alignment: .top) {
-                            Label(target.loadKg.map { "\($0.gymaNumber) kg" } ?? "Choose a comfortable load", systemImage: "dumbbell")
-                            Spacer(minLength: 8)
-                            Label("\(target.restSeconds)s rest", systemImage: "timer")
-                        }
-                        .font(.subheadline).foregroundStyle(.secondary)
-                        if !target.reason.isEmpty {
-                            Text(target.reason).font(.caption).foregroundStyle(.secondary)
-                        }
-                        if let effort = target.targetEffort {
-                            Text("Effort target: \(effort.label)").font(.caption).foregroundStyle(GymaStyle.accent)
-                        }
-                    }
-                }
-            }
-            Divider()
-            Text("Your Watch will guide the accepted sets, reps and rest times. You can adjust the reps and kilograms you actually complete.")
-                .font(.caption).foregroundStyle(.secondary)
-            Button {
-                if model.acceptCoachPlan(plan.id) { closePlanning() }
-            } label: {
-                Label("Accept workout plan", systemImage: "checkmark")
-                    .font(.headline).frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent).disabled(!model.canAcceptCoachPlan)
-        }
-        .padding(20).frame(maxWidth: .infinity, alignment: .leading)
-        .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 24))
-    }
-
-    private func repDescription(_ target: ExerciseTarget) -> String {
-        target.repsMin == target.repsMax ? "\(target.repsMin)" : "\(target.repsMin)–\(target.repsMax)"
-    }
-
     private var conversationSuggestions: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("What would you like to work on?").font(.title3.bold())
@@ -352,81 +267,6 @@ struct CoachView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func appChangesCard(_ proposal: CoachAppChangeProposal) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Label("CHANGES TO REVIEW", systemImage: "slider.horizontal.3")
-                .font(.caption.weight(.bold)).foregroundStyle(GymaStyle.accent)
-            Text("Apply these changes together").font(.title2.bold())
-            ForEach(Array(proposal.summaries.enumerated()), id: \.offset) { _, summary in
-                Text(summary).font(.subheadline).textSelection(.enabled)
-                Divider()
-            }
-            if !model.canApplyCoachAppChanges && !model.coachRequestInFlight {
-                Text("Your data changed after this proposal. Ask the coach to refresh it before applying.")
-                    .font(.subheadline).foregroundStyle(.orange)
-                Button("Refresh changes", systemImage: "arrow.clockwise") {
-                    _ = model.sendCoachMessage("Refresh your proposed app changes using my latest saved data. Keep my requested changes, look up anything that changed, and show an updated proposal.")
-                }
-                .buttonStyle(.bordered)
-                .disabled(model.storageBlocked || !model.hasCoachAPIKey)
-            }
-            Button {
-                if model.applyCoachAppChanges(proposal) { composerFocused = false }
-            } label: {
-                Label("Apply changes", systemImage: "checkmark")
-                    .font(.headline).frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(!model.canApplyCoachAppChanges)
-            Button("Dismiss proposal") { model.discardCoachAppChanges() }
-                .disabled(model.coachRequestInFlight || model.storageBlocked)
-            Text("You can describe corrections in the chat before applying.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-        .padding(20).frame(maxWidth: .infinity, alignment: .leading)
-        .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 24))
-    }
-
-    private func exerciseProposalsCard(_ proposals: [CoachExerciseProposal]) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Label("EXERCISES TO REVIEW", systemImage: "dumbbell")
-                .font(.caption.weight(.bold)).foregroundStyle(GymaStyle.accent)
-            Text("Check these match your equipment and movement. Describe any corrections in the chat below before saving.")
-                .font(.subheadline).foregroundStyle(.secondary)
-            ForEach(proposals) { proposal in
-                VStack(alignment: .leading, spacing: 8) {
-                    Divider()
-                    Text(proposal.exercise.name).font(.headline)
-                    LabeledContent("Soreness region", value: proposal.exercise.muscle.label)
-                    if let metadata = proposal.exercise.trainingMetadata {
-                        LabeledContent("Main muscles", value: metadata.primaryMuscles.map(\.label).joined(separator: ", "))
-                        LabeledContent("Secondary muscles", value: metadata.secondaryMuscles.isEmpty ? "None specified" : metadata.secondaryMuscles.map(\.label).joined(separator: ", "))
-                        LabeledContent("Equipment", value: metadata.equipment?.label ?? "Not specified")
-                        LabeledContent("How to log weight", value: metadata.loadConvention.label)
-                        LabeledContent("Measurement", value: metadata.measurement == .seconds ? "Seconds" : "Repetitions")
-                    } else {
-                        Text("Muscle, equipment and weight details are not specified. Ask your coach to clarify these before saving.")
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(proposal.explanation).foregroundStyle(.secondary)
-                }.font(.subheadline)
-            }
-            Text("Saving adds these exercises to your library so the coach can use them in your program. You will review the program separately.")
-                .font(.caption).foregroundStyle(.secondary)
-            Button {
-                if model.acceptCoachExercises(proposals) { composerFocused = false }
-            } label: {
-                Label("Save exercises & continue", systemImage: "checkmark")
-                    .font(.headline).frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(model.storageBlocked || model.coachRequestInFlight || model.state.activeWorkout != nil ||
-                      conversation?.proposedExercises != proposals || conversation?.messages.last?.role != .assistant)
-        }
-        .padding(20).frame(maxWidth: .infinity, alignment: .leading)
-        .background(GymaStyle.card, in: RoundedRectangle(cornerRadius: 24))
     }
 
     private var composer: some View {
