@@ -38,13 +38,11 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         ITSAppUsesNonExemptEncryption: false
-        UILaunchScreen:
-          UIColorName: LaunchBackground
+        UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-        UIUserInterfaceStyle: Dark
         NSAppTransportSecurity:
           # Lets the app reach `wrangler dev` on your PC over the local network. The Worker itself is HTTPS.
           NSAllowsLocalNetworking: true

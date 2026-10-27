@@ -6,10 +6,12 @@ Built with Swift and SwiftUI for iOS 17 and later. There is no Apple Watch app o
 
 ## What it does
 
-- **Home**: month calendar with training/rest dots, the selected day's plan, and a button into its workout. Tap a date to select it; tap it again to open its workout.
-- **Day plan**: set the day type, add library exercises with sets, reps and kg. Each exercise shows last time, a *Same / +step* kg suggestion (double progression) and a live verdict on the chosen weight (PR attempt, heavier, lighter).
-- **Workout**: start the saved plan, pick an exercise, start each set, confirm actual kg and reps with − / + steppers. Set tiles show done sets, PRs (★), the running set's timer and what's next. Personal records trigger a celebration and haptics. From the ⋯ menu: add or edit an exercise, log a set afterwards, finish or reopen the workout. Tap a done set to correct or remove it.
-- **Progress**: pick an exercise to chart its heaviest set, most reps or volume per date (Swift Charts), with PR markers and recent sessions that open that day's workout.
+A standard iOS app: tab bar, navigation stacks with back and swipe-back, inset-grouped lists and forms, system steppers, menus, swipe actions and sheets. It follows the system light/dark setting; the tint is gym-web's green.
+
+- **Home**: the system calendar (`UICalendarView`) with green/blue dots for training and rest days, and the selected day's plan with buttons into its workout or plan.
+- **Day plan** (sheet): day type, exercises you can reorder (Edit) or swipe to delete, and a pushed screen per exercise with sets, reps and kg steppers. Each exercise shows last time, a *Same / Add* kg suggestion (double progression) and a verdict on the chosen weight. New exercises are picked from, or created in, the shared library.
+- **Workout**: the day's exercises in *To Do* and *Done*. Tapping one pushes its screen: set rows (✓ done, ★ PR, a live timer on the running set), weight and reps steppers with the last-time and PR target hint, then **Start Set** / **Log Set**. While a set runs, back is hidden and the app keeps that exercise open. Finishing its last set returns to the list. Swipe a set to delete it, tap it to correct it; swipe an exercise to edit or remove it. The ⋯ menu adds exercises and finishes or reopens the workout. Records trigger a banner and haptics.
+- **Progress**: pick an exercise to chart its heaviest set, most reps or volume per date (Swift Charts), with PR markers, stats and recent sessions that open that day's workout.
 
 ## Sign in
 
@@ -52,7 +54,7 @@ Edit `apple/project.yml`; the generated Xcode project and Info.plist are ignored
 | `apple/iOS/App` | Entry point, root tabs, `AppModel` (sign-in, selected day, server data) |
 | `apple/iOS/Features` | `SignIn`, `Home`, `Plan`, `Exercises` (library picker), `Workout`, `Progress` |
 | `apple/iOS/Services` | Keychain token store, haptics |
-| `apple/iOS/UI` | gym-web's colour theme, shared controls (number stepper, kg suggestion), date formatting |
+| `apple/iOS/UI` | Semantic colours, shared form rows (value stepper, kg suggestion section), date formatting |
 | `apple/Resources` | App icon, colours, privacy manifest |
 | `tools/apple` | IPA verification used by CI |
 | `tools/iloader` | Patched iLoader build scripts for installing from Windows |

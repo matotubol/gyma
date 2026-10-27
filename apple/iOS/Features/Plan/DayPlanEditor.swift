@@ -9,55 +9,76 @@ struct DayPlanEditor: View {
     @State private var base: WorkoutPlan?
     @State private var kind: DayKind?
     @State private var rows: [DraftRow] = []
-    @State private var dirty = false
+    @State private var original: [DraftRow] = []
+    @State private var path: [UUID] = []
     @State private var saving = false
     @State private var conflict = false
     @State private var error: String?
-    @State private var pickerRow: PickerTarget?
+    @State private var picking = false
     @State private var pendingKind: KindChoice?
     @State private var confirmDiscard = false
 
+    private var dirty: Bool { base != nil && (kind != base?.kind || rows != original) }
+
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 if let base {
-                    editor(base)
+                    form(base)
                 } else if let error = model.dayError {
-                    ErrorBanner(message: error, actionTitle: "Retry") { model.loadDay() }.padding(16)
-                    Spacer()
+                    ContentUnavailableView {
+                        Label("Couldn’t Load Plan", systemImage: "wifi.exclamationmark")
+                    } description: {
+                        Text(error)
+                    } actions: {
+                        Button("Try Again") { model.loadDay() }
+                    }
                 } else {
-                    ProgressView("Loading plan…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ProgressView()
                 }
             }
-            .screenBackground()
+            .navigationTitle("Day Plan")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .principal) {
-                    VStack(spacing: 0) {
-                        Text("Day plan").font(.headline)
-                        Text(DateText.shortDay(base?.date ?? model.selectedDate)).font(.caption).foregroundStyle(Theme.muted)
-                    }
-                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { if dirty { confirmDiscard = true } else { dismiss() } }
                         .disabled(saving)
                 }
-            }
-            .keyboardDoneButton()
-            .confirmationDialog("Discard unsaved changes?", isPresented: $confirmDiscard, titleVisibility: .visible) {
-                Button("Discard changes", role: .destructive) { dismiss() }
-            }
-            .confirmationDialog("Remove this day’s exercises and change the day type?", isPresented: Binding(
-                get: { pendingKind != nil }, set: { if !$0 { pendingKind = nil } }), titleVisibility: .visible, presenting: pendingKind) { choice in
-                Button("Remove exercises", role: .destructive) {
-                    rows = []; kind = choice.kind; dirty = true
+                ToolbarItem(placement: .confirmationAction) {
+                    if saving { ProgressView() } else {
+                        Button("Save", action: save)
+                            .disabled(!dirty || conflict || model.busy || rows.contains { $0.exercise == nil })
+                    }
                 }
-            } message: { _ in
-                Text("Save to apply.")
+                ToolbarItemGroup(placement: .bottomBar) {
+                    if base != nil, !rows.isEmpty { EditButton() }
+                    Spacer()
+                    Text(summary).font(.footnote).foregroundStyle(.secondary)
+                    Spacer()
+                }
             }
-            .sheet(item: $pickerRow) { target in
-                ExercisePickerSheet { chosen in choose(chosen, for: target.id) }
-                    .environmentObject(model)
+            .navigationDestination(for: UUID.self) { id in
+                if let index = rows.firstIndex(where: { $0.id == id }), let base {
+                    PlanRowEditor(row: $rows[index], date: base.date)
+                }
+            }
+            .confirmationDialog("Discard your changes?", isPresented: $confirmDiscard, titleVisibility: .visible) {
+                Button("Discard Changes", role: .destructive) { dismiss() }
+            }
+            .confirmationDialog("Remove this day’s exercises?", isPresented: Binding(
+                get: { pendingKind != nil }, set: { if !$0 { pendingKind = nil } }), titleVisibility: .visible, presenting: pendingKind) { choice in
+                Button("Remove Exercises", role: .destructive) { rows = []; kind = choice.kind }
+            } message: { choice in
+                Text("A \(choice.title.lowercased()) day has no exercises. Save to apply.")
+            }
+            .sheet(isPresented: $picking) {
+                ExercisePickerSheet { chosen in
+                    let row = DraftRow(exercise: chosen, autoKg: true)
+                    rows.append(row)
+                    kind = .training
+                    path = [row.id]
+                }
+                .environmentObject(model)
             }
         }
         .interactiveDismissDisabled(dirty || saving)
@@ -65,78 +86,51 @@ struct DayPlanEditor: View {
         .onChange(of: model.plan) { if base == nil || !dirty { resetFromModel() } }
     }
 
-    private func editor(_ base: WorkoutPlan) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                if let error {
-                    ErrorBanner(message: error, actionTitle: conflict ? "Reload plan" : nil, action: reloadPlan)
+    private func form(_ base: WorkoutPlan) -> some View {
+        List {
+            if let error {
+                Section {
+                    Text(error).foregroundStyle(.red)
+                    if conflict { Button("Reload Plan", systemImage: "arrow.clockwise", action: reloadPlan) }
                 }
-                if model.session != nil {
-                    Text("This day has a started workout. Changes here update the day plan; edit recorded sets from the workout’s actions menu.")
-                        .font(.caption)
-                        .foregroundStyle(Theme.muted)
-                }
+            }
 
-                Picker("Day type", selection: kindChoice) {
+            Section {
+                Picker("Day Type", selection: kindChoice) {
                     ForEach(KindChoice.allCases) { Text($0.title).tag($0) }
                 }
-                .pickerStyle(.segmented)
-
-                HStack {
-                    Spacer()
-                    Text("\(rows.count) \(rows.count == 1 ? "exercise" : "exercises") · \(rows.reduce(0) { $0 + (Int($1.sets) ?? 0) }) sets")
-                        .font(.caption)
-                        .foregroundStyle(Theme.muted)
-                }
-
-                ForEach($rows) { $row in
-                    DraftRowCard(row: $row, number: (rows.firstIndex { $0.id == row.id } ?? 0) + 1, date: base.date,
-                                 onPickExercise: { pickerRow = PickerTarget(id: row.id) },
-                                 onRemove: { rows.removeAll { $0.id == row.id }; dirty = true },
-                                 onChange: { dirty = true })
-                }
-
-                Button {
-                    let row = DraftRow()
-                    rows.append(row)
-                    kind = .training
-                    dirty = true
-                    pickerRow = PickerTarget(id: row.id)
-                } label: {
-                    Label("Add exercise", systemImage: "plus")
-                }
-                .buttonStyle(.dashed)
-                .disabled(rows.count >= 100)
-
-                Text("Kg per set. Use 0 for bodyweight.")
-                    .font(.caption)
-                    .foregroundStyle(Theme.faint)
-            }
-            .disabled(saving || model.busy)
-            .padding(16)
-        }
-        .scrollDismissesKeyboard(.interactively)
-        .safeAreaInset(edge: .bottom) {
-            Button(action: save) {
-                HStack(spacing: 6) {
-                    Text(saving ? "Saving…" : "Save plan")
-                    if !saving { Image(systemName: "checkmark").font(.footnote.weight(.semibold)) }
+            } footer: {
+                if model.session != nil {
+                    Text("This day has a started workout. To change recorded sets, use the workout.")
                 }
             }
-            .buttonStyle(.primary)
-            .disabled(saving || model.busy || !dirty || conflict || rows.contains { $0.exercise == nil })
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(Theme.canvas)
+
+            Section {
+                ForEach(rows) { row in
+                    NavigationLink(value: row.id) { PlanRowLabel(row: row) }
+                }
+                .onDelete { rows.remove(atOffsets: $0) }
+                .onMove { rows.move(fromOffsets: $0, toOffset: $1) }
+                Button("Add Exercise", systemImage: "plus") { picking = true }
+                    .disabled(rows.count >= 100)
+            } header: {
+                Text("Exercises")
+            } footer: {
+                Text("Kilograms per set. Use 0 for bodyweight.")
+            }
         }
+        .disabled(saving || model.busy)
+    }
+
+    private var summary: String {
+        let sets = rows.reduce(0) { $0 + (Int($1.sets) ?? 0) }
+        return "\(rows.count) \(rows.count == 1 ? "exercise" : "exercises") · \(sets) sets"
     }
 
     private var kindChoice: Binding<KindChoice> {
         Binding(get: { KindChoice(kind) }, set: { choice in
             guard choice.kind != kind else { return }
-            if choice != .training && !rows.isEmpty { pendingKind = choice; return }
-            kind = choice.kind
-            dirty = true
+            if choice != .training && !rows.isEmpty { pendingKind = choice } else { kind = choice.kind }
         })
     }
 
@@ -145,45 +139,39 @@ struct DayPlanEditor: View {
         base = plan
         kind = plan.kind
         rows = plan.exercises.map { DraftRow(exercise: $0.library, sets: String($0.sets), reps: String($0.reps), kg: formatKg($0.plannedKg)) }
-        dirty = false; conflict = false; error = nil
+        original = rows
+        path = []
+        conflict = false; error = nil
     }
 
     private func reloadPlan() {
-        dirty = false; conflict = false; error = nil; base = nil
+        base = nil; conflict = false; error = nil
         model.loadDay()
-    }
-
-    private func choose(_ exercise: LibraryExercise, for id: UUID) {
-        guard let index = rows.firstIndex(where: { $0.id == id }) else { return }
-        rows[index].exercise = exercise
-        rows[index].autoKg = (parseNumber(rows[index].kg) ?? 0) == 0
-        dirty = true
     }
 
     private func save() {
         guard let base, !saving else { return }
         var inputs: [PlannedExerciseInput] = []
         for (index, row) in rows.enumerated() {
-            guard let exercise = row.exercise else { error = "Choose a library exercise for each row before saving."; return }
-            guard let sets = parseCount(row.sets, in: 1...100), let reps = parseCount(row.reps, in: 1...1000),
-                  let kg = parseNumber(row.kg), (0...10000).contains(kg) else {
-                error = "Check exercise \(index + 1): sets 1–100, reps 1–1000 and kg 0–10000."
+            guard let exercise = row.exercise, let values = row.values else {
+                error = "Check exercise \(index + 1): sets 1–100, reps 1–1000 and 0–10000 kg."
                 return
             }
-            inputs.append(PlannedExerciseInput(exerciseId: exercise.id, sets: sets, reps: reps, plannedKg: kg))
+            inputs.append(PlannedExerciseInput(exerciseId: exercise.id, sets: values.sets, reps: values.reps, plannedKg: values.kg))
         }
         saving = true; error = nil
         Task {
             switch await model.savePlan(date: base.date, kind: kind, expectedVersion: base.version, exercises: inputs) {
             case .saved:
-                dirty = false
+                original = rows
+                self.base = model.dayPlan
                 Haptics.success()
                 dismiss()
             case .conflict:
                 conflict = true
-                error = "This plan changed elsewhere. Your edits are still here. Reload the saved plan before editing again."
+                error = "This plan changed elsewhere. Your edits are still here; reload the saved plan before editing again."
             case .failed:
-                error = "Couldn’t save. Your edits are still here; please try again."
+                error = "Couldn’t save. Your edits are still here; try again."
             }
             saving = false
         }
@@ -199,9 +187,74 @@ struct DraftRow: Identifiable, Equatable {
     var reps = "10"
     var kg = "0"
     var autoKg = false
+
+    var values: (sets: Int, reps: Int, kg: Double)? {
+        guard let sets = parseCount(sets, in: 1...100), let reps = parseCount(reps, in: 1...1000),
+              let kg = parseNumber(kg), (0...10000).contains(kg) else { return nil }
+        return (sets, reps, kg)
+    }
+
+    static func == (lhs: DraftRow, rhs: DraftRow) -> Bool {
+        lhs.id == rhs.id && lhs.exercise == rhs.exercise && lhs.sets == rhs.sets && lhs.reps == rhs.reps && lhs.kg == rhs.kg
+    }
 }
 
-private struct PickerTarget: Identifiable { let id: UUID }
+private struct PlanRowLabel: View {
+    let row: DraftRow
+
+    var body: some View {
+        LabeledContent {
+            if let values = row.values {
+                Text("\(values.sets) × \(values.reps)\(values.kg > 0 ? " · \(formatKg(values.kg)) kg" : "")").monospacedDigit()
+            } else {
+                Label("Check values", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            }
+        } label: {
+            Text(row.exercise?.name ?? "Choose exercise")
+            if let exercise = row.exercise { Text(exercise.detail) }
+        }
+    }
+}
+
+/// One planned exercise: library reference, sets, reps and load with a suggestion.
+private struct PlanRowEditor: View {
+    @Binding var row: DraftRow
+    let date: String
+
+    var body: some View {
+        Form {
+            Section {
+                NavigationLink {
+                    ExercisePickerList { exercise in
+                        row.exercise = exercise
+                        row.autoKg = (parseNumber(row.kg) ?? 0) == 0
+                    }
+                } label: {
+                    LabeledContent("Exercise") {
+                        Text(row.exercise?.name ?? "Choose").foregroundStyle(row.exercise == nil ? Color.accentColor : Color.secondary)
+                    }
+                }
+            } footer: {
+                if let exercise = row.exercise { Text(exercise.detail) }
+            }
+
+            Section("Targets") {
+                ValueStepper(title: "Sets", text: $row.sets, step: 1, range: 1...100)
+                ValueStepper(title: "Reps per set", text: $row.reps, step: 1, range: 1...1000)
+                ValueStepper(title: "Weight", text: $row.kg, step: row.exercise.map { kgStep($0.equipment) } ?? 2.5, unit: "kg", decimal: true)
+            }
+
+            if let exercise = row.exercise {
+                KgSuggestSection(exercise: exercise, before: date, reps: row.reps, kg: row.kg, autoFill: row.autoKg) { row.kg = $0 }
+                    .id(exercise.id)
+            }
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .keyboardDoneButton()
+        .navigationTitle(row.exercise?.name ?? "Exercise")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
 
 private enum KindChoice: CaseIterable, Identifiable {
     case unplanned, training, rest
@@ -223,76 +276,4 @@ private enum KindChoice: CaseIterable, Identifiable {
         }
     }
     var title: String { kind.label }
-}
-
-private struct DraftRowCard: View {
-    @Binding var row: DraftRow
-    let number: Int
-    let date: String
-    let onPickExercise: () -> Void
-    let onRemove: () -> Void
-    let onChange: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Text(String(format: "%02ld", number))
-                    .font(.system(size: 11))
-                    .monospacedDigit()
-                    .foregroundStyle(Theme.muted)
-                Button(action: onPickExercise) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(row.exercise?.name ?? "Choose exercise")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(row.exercise == nil ? Theme.muted : Theme.ink)
-                            if let exercise = row.exercise {
-                                Text(exercise.detail).font(.system(size: 11)).foregroundStyle(Theme.muted)
-                            }
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.down").font(.caption).foregroundStyle(Theme.muted)
-                    }
-                    .padding(.horizontal, 10).padding(.vertical, 8)
-                    .background(Theme.canvas, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.line))
-                }
-                .buttonStyle(.plain)
-                Button(role: .destructive, action: onRemove) {
-                    Image(systemName: "trash").frame(width: 36, height: 36)
-                }
-                .foregroundStyle(Theme.muted)
-                .accessibilityLabel("Remove exercise \(number)")
-            }
-
-            HStack(spacing: 10) {
-                field("Sets", text: $row.sets, decimal: false)
-                field("Reps / set", text: $row.reps, decimal: false)
-                field("Planned kg", text: $row.kg, decimal: true)
-            }
-
-            if let exercise = row.exercise {
-                KgSuggestView(exercise: exercise, before: date, reps: row.reps, kg: row.kg, autoFill: row.autoKg) { value in
-                    row.kg = value
-                    onChange()
-                }
-                .id(exercise.id)
-            }
-        }
-        .padding(12)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.line))
-    }
-
-    private func field(_ label: String, text: Binding<String>, decimal: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.caption).foregroundStyle(Theme.muted)
-            TextField("0", text: text)
-                .keyboardType(decimal ? .decimalPad : .numberPad)
-                .font(.body.weight(.semibold))
-                .monospacedDigit()
-                .inputField()
-                .onChange(of: text.wrappedValue) { onChange() }
-        }
-    }
 }

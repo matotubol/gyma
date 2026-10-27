@@ -1,8 +1,8 @@
 import SwiftUI
 import GymaCore
 
-/// Search the shared exercise library, or create a definition, then return it.
-struct ExercisePickerSheet: View {
+/// The exercise library as a searchable list. Push it, or present it with `ExercisePickerSheet`.
+struct ExercisePickerList: View {
     var allowCreate = true
     let onChoose: (LibraryExercise) -> Void
 
@@ -15,57 +15,48 @@ struct ExercisePickerSheet: View {
     @State private var loading = true
     @State private var error: String?
     @State private var retry = 0
-    @State private var creating = false
 
     private static let pageSize = 20
 
     var body: some View {
-        NavigationStack {
-            List {
+        List {
+            if allowCreate {
+                Section {
+                    NavigationLink {
+                        CreateExerciseForm(initialName: query.trimmingCharacters(in: .whitespaces)) { choose($0) }
+                    } label: {
+                        Label("New exercise", systemImage: "plus")
+                    }
+                }
+            }
+            Section {
                 ForEach(results) { exercise in
                     Button { choose(exercise) } label: {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(exercise.name).foregroundStyle(Theme.ink)
-                            Text(exercise.detail).font(.caption).foregroundStyle(Theme.muted)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                    }
-                    .listRowBackground(Theme.surface)
-                }
-
-                Group {
-                    if loading {
-                        HStack { Spacer(); ProgressView(); Spacer() }
-                    } else if let error {
-                        Button("\(error) Retry") { retry += 1 }.foregroundStyle(Theme.danger)
-                    } else if results.isEmpty {
-                        Text("No matching exercises.").foregroundStyle(Theme.muted)
-                    } else if more {
-                        Button("Show more") { page += 1 }
-                    }
-                    if allowCreate {
-                        Button { creating = true } label: {
-                            Label("Create exercise in library", systemImage: "plus")
+                            Text(exercise.name).foregroundStyle(Color.primary)
+                            Text(exercise.detail).font(.footnote).foregroundStyle(.secondary)
                         }
                     }
                 }
-                .listRowBackground(Theme.surface)
-            }
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search name, equipment, brand…")
-            .autocorrectionDisabled()
-            .onChange(of: query) { page = 0; more = false }
-            .task(id: "\(query)|\(page)|\(retry)") { await load() }
-            .screenBackground()
-            .navigationTitle("Choose exercise")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-            }
-            .navigationDestination(isPresented: $creating) {
-                CreateExerciseForm(initialName: query.trimmingCharacters(in: .whitespaces), onCreate: choose)
+                if loading {
+                    HStack { Spacer(); ProgressView(); Spacer() }
+                } else if let error {
+                    Button { retry += 1 } label: {
+                        Label("\(error). Retry", systemImage: "arrow.clockwise")
+                    }
+                } else if results.isEmpty {
+                    Text("No matching exercises").foregroundStyle(.secondary)
+                } else if more {
+                    Button("Show more") { page += 1 }
+                }
             }
         }
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Name, equipment or brand")
+        .autocorrectionDisabled()
+        .onChange(of: query) { page = 0; more = false }
+        .task(id: "\(query)|\(page)|\(retry)") { await load() }
+        .navigationTitle("Exercises")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private func load() async {
@@ -81,7 +72,7 @@ struct ExercisePickerSheet: View {
             more = rows.count == Self.pageSize
         } catch {
             guard !Task.isCancelled else { return }
-            self.error = "Couldn’t load exercises."
+            self.error = "Couldn’t load"
         }
         loading = false
     }
@@ -89,6 +80,23 @@ struct ExercisePickerSheet: View {
     private func choose(_ exercise: LibraryExercise) {
         onChoose(exercise)
         dismiss()
+    }
+}
+
+/// The library picker in its own navigation stack, for sheets.
+struct ExercisePickerSheet: View {
+    var allowCreate = true
+    let onChoose: (LibraryExercise) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            // The list dismisses this sheet itself after a choice.
+            ExercisePickerList(allowCreate: allowCreate, onChoose: onChoose)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            }
+        }
     }
 }
 
@@ -115,46 +123,39 @@ private struct CreateExerciseForm: View {
                 }
                 if equipment.hasBrand {
                     Picker("Brand", selection: $brand) {
-                        Text("Unspecified / other").tag(Brand?.none)
+                        Text("Unspecified").tag(Brand?.none)
                         ForEach(Brand.allCases, id: \.self) { item in
                             Text(item.rawValue).tag(Brand?.some(item))
                         }
                     }
                 }
+            } footer: {
+                if let error { Text(error).foregroundStyle(.red) }
             }
-            .listRowBackground(Theme.surface)
-
-            if let error {
-                Section { Text(error).foregroundStyle(Theme.danger) }.listRowBackground(Theme.dangerSurface)
-            }
-
-            Section {
-                Button(action: create) {
-                    Text(busy ? "Creating…" : "Create & select")
-                }
-                .buttonStyle(.primary)
-                .disabled(busy || name.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-            .listRowBackground(Color.clear)
-            .listRowInsets(EdgeInsets())
         }
         .disabled(busy)
-        .screenBackground()
-        .navigationTitle("New library exercise")
+        .navigationTitle("New Exercise")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                if busy { ProgressView() } else {
+                    Button("Add", action: create).disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
         .onAppear { if name.isEmpty { name = initialName } }
     }
 
     private func create() {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
-        guard (1...120).contains(trimmed.count) else { error = "Enter an exercise name (up to 120 characters)."; return }
+        guard (1...120).contains(trimmed.count) else { error = "Use up to 120 characters."; return }
         guard let api = model.api else { return }
         busy = true; error = nil
         Task {
             do {
                 onCreate(try await api.createExercise(CreateExercise(name: trimmed, equipment: equipment, brand: brand)))
             } catch {
-                self.error = "Couldn’t create this exercise. Your entry is still here; try again."
+                self.error = "Couldn’t create this exercise. Try again."
             }
             busy = false
         }

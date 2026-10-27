@@ -8,34 +8,27 @@ struct RecordToast: View {
     @State private var popped = false
 
     var body: some View {
-        let monster = celebration.monster
         HStack(spacing: 12) {
-            ZStack {
-                Circle().fill((monster ? Theme.canvas : Theme.pr).opacity(0.15))
-                Image(systemName: monster ? "flame.fill" : "trophy.fill")
-                    .font(.system(size: 20, weight: .semibold))
-                    .scaleEffect(popped ? 1 : 0.4)
-                    .symbolEffect(.bounce, value: popped)
-            }
-            .frame(width: 40, height: 40)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(celebration.title).font(.system(size: 15, weight: .bold))
-                Text(celebration.detail).font(.caption).monospacedDigit().opacity(0.85)
+            Image(systemName: celebration.monster ? "flame.fill" : "trophy.fill")
+                .font(.title2)
+                .foregroundStyle(celebration.monster ? Color.white : Theme.pr)
+                .frame(width: 44, height: 44)
+                .background(celebration.monster ? Theme.pr : Theme.pr.opacity(0.18), in: Circle())
+                .scaleEffect(popped ? 1 : 0.4)
+                .symbolEffect(.bounce, value: popped)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(celebration.title).font(.headline)
+                Text(celebration.detail).font(.subheadline).foregroundStyle(.secondary).monospacedDigit()
             }
             Spacer(minLength: 0)
-            Button(action: onDismiss) {
-                Image(systemName: "xmark").font(.caption.weight(.semibold)).frame(width: 32, height: 32)
-            }
-            .buttonStyle(.plain)
-            .opacity(0.7)
-            .accessibilityLabel("Dismiss")
         }
-        .foregroundStyle(monster ? Theme.canvas : Theme.pr)
-        .padding(.horizontal, 16).padding(.vertical, 12)
-        .background(monster ? Theme.pr : Theme.prSurface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Theme.pr.opacity(monster ? 1 : 0.4)))
-        .shadow(color: .black.opacity(0.4), radius: 20, y: 8)
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .shadow(color: .black.opacity(0.15), radius: 16, y: 6)
+        .onTapGesture(perform: onDismiss)
         .onAppear { withAnimation(.spring(response: 0.45, dampingFraction: 0.55)) { popped = true } }
         .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Dismiss")
     }
 }

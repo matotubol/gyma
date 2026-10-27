@@ -13,7 +13,8 @@ View action -> AppModel (savePlan / mutateSession) -> GymAPI -> Worker /api/v1 -
 - Writes carry the version the client last saw (`expectedVersion` / `expectedPlanVersion`). A `409` means the data changed elsewhere (for example in the browser): the screen keeps the user's input, shows the conflict and offers a reload.
 - Client-chosen IDs (`setId` for a started or logged set, `entryId` for an added exercise) are created once per attempt so a retried request cannot duplicate work, matching the web client.
 - A `401` signs out and returns to the sign-in screen.
-- Views keep only transient presentation state: focused exercise, typed kg/reps, open editors and drafts of the day plan until saved.
+- Navigation is native: the Workout tab's `NavigationStack` path lives in `AppModel.workoutPath` (an exercise position per pushed screen), so a running set can always bring its exercise to the front. Editors are sheets with Cancel/Save.
+- Views keep only transient presentation state: typed kg/reps, open editors and drafts of the day plan until saved.
 
 ## Where code belongs
 
@@ -26,6 +27,6 @@ View action -> AppModel (savePlan / mutateSession) -> GymAPI -> Worker /api/v1 -
 | `iOS/App` | Entry point, tabs, `AppModel` |
 | `iOS/Features/<Feature>` | Screens and feature-local components |
 | `iOS/Services` | Keychain and haptics adapters |
-| `iOS/UI` | Theme (gym-web palette), components used by more than one feature, formatting |
+| `iOS/UI` | Semantic colours, form rows used by more than one feature, formatting |
 
 When gym-web's API or `records.ts` changes, update the matching `GymaCore` file and its tests in the same change.

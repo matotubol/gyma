@@ -31,6 +31,12 @@ final class AppModel: ObservableObject {
     /// Bumped whenever recorded sets may have changed, so progress charts refresh.
     @Published private(set) var historyRevision = 0
 
+    // Workout presentation shared by the exercise list and the pushed exercise screens.
+    @Published var workoutPath: [Int] = []
+    @Published var celebration: ShownCelebration?
+    @Published var workoutError: String?
+    @Published var workoutNeedsReload = false
+
     private(set) var api: GymAPI?
     private var monthTask: Task<Void, Never>?
     private var dayTask: Task<Void, Never>?
@@ -85,6 +91,7 @@ final class AppModel: ObservableObject {
         days = [:]; loadedMonth = ""; plan = nil; session = nil
         monthError = nil; dayError = nil
         planEditorOpen = false; tab = .home
+        workoutPath = []; celebration = nil; workoutError = nil; workoutNeedsReload = false
         auth = .guest
     }
 
@@ -97,6 +104,7 @@ final class AppModel: ObservableObject {
         guard date != selectedDate else { return }
         selectedDate = date
         plan = nil; session = nil
+        workoutPath = []; workoutError = nil; workoutNeedsReload = false
         loadDay()
     }
 
@@ -110,8 +118,10 @@ final class AppModel: ObservableObject {
         if selectedDate == date { tab = .workout }
     }
 
-    func showMonth(by offset: Int) {
-        month = CivilDate.shift(month: month, by: offset)
+    /// The calendar scrolled to another month.
+    func showMonth(_ month: String) {
+        guard month != self.month else { return }
+        self.month = month
         loadMonth()
     }
 
@@ -149,7 +159,7 @@ final class AppModel: ObservableObject {
         guard let api else { return }
         dayTask?.cancel()
         let date = selectedDate
-        dayLoading = true; dayError = nil
+        dayLoading = true; dayError = nil; workoutNeedsReload = false
         dayTask = Task {
             do {
                 async let plan = api.plan(date: date)
@@ -173,7 +183,7 @@ final class AppModel: ObservableObject {
         let date = selectedDate
         do {
             let loaded = try await api.session(date: date)
-            if date == selectedDate { session = loaded }
+            if date == selectedDate { session = loaded; workoutNeedsReload = false; workoutError = nil }
         } catch {
             if case .unauthorized = classify(error) { return }
             dayError = "Couldn’t load workout progress. Retry before starting a set."
