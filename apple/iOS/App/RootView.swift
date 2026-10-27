@@ -1,37 +1,44 @@
 import SwiftUI
 
 struct RootView: View {
-    @EnvironmentObject private var model: GymaAppModel
-    @State private var selectedTab = "overview"
+    @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            NavigationStack { OverviewView() }
-                .tabItem { Label("Overview", systemImage: "square.grid.2x2") }
-                .tag("overview")
-            NavigationStack { CoachView(onAccepted: { selectedTab = "overview" }, onClose: { selectedTab = "overview" }) }
-                .tabItem { Label("Coach", systemImage: "bubble.left.and.bubble.right") }
-                .tag("coach")
-            NavigationStack { HistoryView() }
-                .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
-                .tag("history")
-            NavigationStack { ProgressViewScreen() }
-                .tabItem { Label("Progress", systemImage: "chart.xyaxis.line") }
-                .tag("progress")
-            NavigationStack { SettingsView() }
-                .tabItem { Label("Settings", systemImage: "gearshape") }
-                .tag("settings")
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if model.storageBlocked {
-                Label("Saved data needs attention. Open Settings to recover it.", systemImage: "externaldrive.badge.exclamationmark")
-                    .font(.caption.weight(.medium))
-                    .padding(12).frame(maxWidth: .infinity)
-                    .background(Color.orange.opacity(0.18))
+        Group {
+            switch model.auth {
+            case .checking:
+                ProgressView("Opening your workouts…")
+                    .foregroundStyle(Theme.muted)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Theme.canvas.ignoresSafeArea())
+            case .guest:
+                SignInView()
+            case .ready:
+                MainTabs()
             }
         }
-        .alert("Gyma", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
-            Button("OK", role: .cancel) { model.errorMessage = nil }
-        } message: { Text(model.errorMessage ?? "") }
+        .preferredColorScheme(.dark)
+        .tint(Theme.accent)
+    }
+}
+
+private struct MainTabs: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        TabView(selection: $model.tab) {
+            HomeView()
+                .tabItem { Label("Home", systemImage: "house") }
+                .tag(AppModel.Tab.home)
+            WorkoutView()
+                .tabItem { Label("Workout", systemImage: "dumbbell") }
+                .tag(AppModel.Tab.workout)
+            ProgressScreen()
+                .tabItem { Label("Progress", systemImage: "chart.line.uptrend.xyaxis") }
+                .tag(AppModel.Tab.progress)
+        }
+        .sheet(isPresented: $model.planEditorOpen) {
+            DayPlanEditor().environmentObject(model)
+        }
     }
 }

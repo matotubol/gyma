@@ -1,132 +1,60 @@
 # Gyma
 
-A native, local-first strength training app built from scratch with Swift and SwiftUI for **iOS 26 and watchOS 26**. The iPhone and Apple Watch apps share a Swift package and communicate directly through Apple's WatchConnectivity APIs.
+The native iPhone app for **gym-web**. It talks to the same Cloudflare Worker (`/api/v1`, Hono + D1) as the web client, so the browser and the phone always show the same calendar, plans, workouts and progress. There is no local database: every change is an API call and the Worker's response replaces the local copy.
 
-## Train on iPhone and Apple Watch
+Built with Swift and SwiftUI for iOS 17 and later. There is no Apple Watch app or AI coach.
 
-On iPhone, add your OpenAI API key in Settings, then check in with the GPT-6.1 Sol coach. Discuss and revise a workout with ordered exercises, sets, reps, weights and rest seconds. Accepting closes the planning chat. Start today's accepted plan from Overview or Watch after reviewing energy and soreness for every muscle group. Inside an active workout, Ask coach uses current progress and proposes changes for you to apply while preserving completed sets. Log actual weights and reps, review workout history and rest durations, restore deleted workouts, and export or restore native JSON backups in Settings.
+## What it does
 
-The Watch opens the current exercise with weight and expected-rep controls. **Start Set → Finish Set → Confirm Reps → Confirm Weight → rest → Dismiss** guides each set. Reps and kilograms have separate review screens, with − / reps / + controls and a Digital Crown weight wheel in half-kilogram steps. Actual rest is tracked. Rest vibration defaults on with six full notification-haptic pulses spaced over ten seconds, stopping on Dismiss; enable Watch Silent Mode to mute system tones. Allow workout access for a native Watch workout session that keeps running with your wrist down and provides the system return-to-app icon. The Watch can request a start only for today's accepted plan and waits for phone confirmation. Pending or rejected changes remain visible when action is needed.
+- **Home**: month calendar with training/rest dots, the selected day's plan, and a button into its workout. Tap a date to select it; tap it again to open its workout.
+- **Day plan**: set the day type, add library exercises with sets, reps and kg. Each exercise shows last time, a *Same / +step* kg suggestion (double progression) and a live verdict on the chosen weight (PR attempt, heavier, lighter).
+- **Workout**: start the saved plan, pick an exercise, start each set, confirm actual kg and reps with − / + steppers. Set tiles show done sets, PRs (★), the running set's timer and what's next. Personal records trigger a celebration and haptics. From the ⋯ menu: add or edit an exercise, log a set afterwards, finish or reopen the workout. Tap a done set to correct or remove it.
+- **Progress**: pick an exercise to chart its heaviest set, most reps or volume per date (Swift Charts), with PR markers and recent sessions that open that day's workout.
 
-The coach uses OpenAI's Responses API with `gpt-6.1-sol`. The personal API key stays in the iPhone Keychain; workout backups and Watch snapshots never contain it. See [coach setup and device checks](docs/COACH.md). The Watch uses HealthKit for active workout runtime but does not save a duplicate Health workout. A body-photo journal and heart-rate tracking are not included.
+## Sign in
 
-Overview opens a calendar showing **one complete month at a time**, with today selected and previous/next month controls. Every date is visible, including dates outside the current training block. Select a day to see its saved schedule, optional activities and recorded workouts; past months include earlier blocks and workout history. **Today** returns to the current month. Block details and the calendar key sit below the month view.
+Open the app and enter the Worker's `API_TOKEN` (the same key you use for the web sign-in). It is checked against `GET /api/v1/status` and stored in the iPhone Keychain. The server defaults to `https://gym-api.matotubol.workers.dev`; change it under **Server** on the sign-in screen, for example to `http://<your-pc-ip>:8787` while running `npm run dev` in gym-web.
 
-Training is planned in eight-week blocks with your choice of 1–10 training days per 10-day cycle. Set the block start separately from the first morning shift and move upcoming training days around work. Fresh setup starts on **13 October 2026**, with the first morning shift still **17 October 2026**. Opening strength dates are 13, 14 and 16 October; sleep before the first session after nights and use 15 October for recovery. The default recurring pattern is cycle days 2, 5, 8, 9 and 10; five days are not required. Existing calendars keep their saved settings; use Calendar > Edit to adjust them. Saved program sessions continue in order across cycles; completed workouts determine progression, while future dates show adjustable previews.
+The app sends `Authorization: Bearer <token>` on every request. The Worker already accepts bearer requests without cookies or an `Origin` header, so gym-web needs no changes for the app.
 
-Each calendar day can optionally include **incline treadmill walking, stretching or abs**, with an adjustable duration and a completion check on the day. Activities are saved in native backups and the current block is shared with the coach. Starting a later block keeps the previous calendar in history. Activities do not count as lifting sets or advance the strength program. Recovery walking should stay at an easy conversational effort with speed and incline adjusted as needed; keep stretching comfortable. Abs are resistance work, so optional abs days are spaced apart and checked against known abdominal work. After poor sleep, soreness or pain, reduce or skip extra work. Activity completion is recorded on iPhone; the Watch continues to run strength workouts.
+## Build the IPA with GitHub Actions
 
-Overview shows **today's calendar status**. With a saved calendar, a new strength workout can start only on a scheduled day in the active block, before a workout has already been recorded that day. Future sessions are previews; phone and Watch starts recheck the saved calendar time zone. An active workout can still be resumed after midnight. Program planning stays available before the block starts and on recovery days.
+Pushing changes under `apple/` or `tools/apple/` to `main` or `gym-web-ios` runs **Swift iPhone build** (`.github/workflows/swift.yml`). You can also start it from the Actions tab or with:
 
-The eight-week review never deletes workout logs. **History** keeps recorded sessions, weights, reps, rest and reviews across blocks. **Progress > By exercise** shows the first and latest recorded working weights, sets, reps and effort coverage, plus the full session list and eligible estimated-strength trend. **Compare with AI coach** opens a review of that exercise using its retained first/latest baseline and recent training evidence. A load change alone does not establish improvement; equipment, repetitions and effort still matter. The coach receives bounded history summaries, not an unlimited copy of every past conversation.
-
-## Build through GitHub Actions
-
-Push changes under `apple/` or `tools/apple/` to `swift` to run **Swift iPhone + Watch build**. These changes on `main` and pull requests also run it. Manual dispatch:
-
-```sh
-gh workflow run swift.yml --ref swift
+```powershell
+gh workflow run swift.yml --ref gym-web-ios
 ```
 
-The macOS 26 job uses the runner's latest stable Xcode, runs shared Swift tests and Python packaging checks, generates the project with XcodeGen, archives both device apps, and verifies the iPhone IPA with its embedded Watch app. Download `gyma-swift-ios-watch-<run number>` for `gyma-swift-unsigned.ipa`. Compiler/test logs and SDK versions are recorded, including on failures. The unsigned build needs no signing credentials.
+The macOS job runs the IPA-check tests and the `GymaCore` Swift tests (API client, records, kg suggestions, calendar), generates the Xcode project with XcodeGen, archives the app without signing and verifies the IPA. Download the `gyma-ios-<run number>` artifact for `gyma-unsigned.ipa`:
 
-The separate Watch simulator build and three visible-content launch checks run **only when manually requested**. Pushes, pull requests, and ordinary manual dispatches skip them so the IPA is available sooner. To include them, enable **Build the Watch simulator app and run launch checks** in GitHub's Run workflow form, or run:
-
-```sh
-gh workflow run swift.yml --ref main -f watch_smoke=true
+```powershell
+gh run download <run-id> -n gyma-ios-<run-number> -D build/apple/runs/<run-number>
 ```
 
-The optional checks cover fresh launch, a restored workout with a pending finish command, and an idle snapshot with a stale set draft. A normal successful build verifies compilation and packaging, but does not establish that these simulator launch scenarios pass. Shared tests and IPA validation remain enabled in both modes.
+Then sign and install it with iLoader or Sideloadly using your Apple ID. Bundle identifier: `com.mato.gyma`.
 
-Sign both bundles with compatible provisioning before installing: `com.mato.gyma` and `com.mato.gyma.watchkitapp`. If a signing tool changes the phone bundle identifier, update the Watch prefix and `WKCompanionAppBundleIdentifier` to match. Connectivity needs a physical paired iPhone and Watch for validation.
+## Develop on a Mac
+
+```bash
+brew install xcodegen
+xcodegen generate --spec apple/project.yml --project apple
+open apple/Gyma.xcodeproj
+swift test --package-path apple/Packages/GymaCore
+```
+
+Edit `apple/project.yml`; the generated Xcode project and Info.plist are ignored.
 
 ## Project structure
 
-Read [the architecture and team conventions](docs/ARCHITECTURE.md) before changing app code. Feature ownership, one-way state flow, shared rules, and agent edit coordination are enforced in part by `python tools/apple/check_architecture.py` and the normal Swift workflow.
-
-| Path | Responsibility |
-| --- | --- |
-| `apple/iOS` | iPhone app wiring in `App`, screens and presentation grouped under `Features`, device services in `Services`, shared phone UI in `UI` |
-| `apple/watchOS` | Watch app wiring in `App`, wrist features under `Features`, HealthKit/runtime and notifications in `Services`, reusable Watch controls in `UI` |
-| `apple/Shared/Connectivity` | WCSession lifecycle, snapshots, durable Watch command outbox, compiled by both app targets |
-| `apple/Packages/GymaCore` | Swift package containing Foundation models, workout rules, persistence, command validation and tests |
-| `apple/Resources` | Resources shared by the app targets |
-| `apple/project.yml` | Both app targets, Watch embedding, bundle relationship and schemes |
-| `tools/apple` | IPA checks, simulator launch checks, and Windows device helpers |
-| `tools/iloader` | Windows iLoader patches, local build and diagnostic scripts |
-| `docs` | [Coach behavior](docs/COACH.md) and [phone/Watch synchronization](docs/CONNECTIVITY.md) |
-| `.github/workflows/swift.yml` | macOS tests, archive and unsigned IPA artifact |
-
-The iPhone and Watch are sibling app targets in one XcodeGen project. Both use `GymaCore` and the shared connectivity service. The phone owns saved workout state; the Watch displays confirmed snapshots and submits durable commands for phone validation. Neither target includes the other target's screens. `GymaCore` stays independent of SwiftUI, WatchConnectivity, HealthKit and device credentials.
-
-Within each app, keep related screens and presentation helpers together under a feature, such as `Features/Calendar` or `Features/Workout`. `App` assembles the services and owns the app lifecycle. `Services` holds platform integrations, and `UI` holds small components used across features. A shared folder does not create a separate module: connectivity is intentionally compiled into both apps, while `GymaCore` is the independently tested package.
-
-Local development on a Mac:
-
-```sh
-brew install xcodegen
-swift test --package-path apple/Packages/GymaCore --scratch-path build/apple/GymaCore
-xcodegen generate --spec apple/project.yml --project apple
-open apple/Gyma.xcodeproj
-```
-
-Select the same signing team for both targets. `Gyma` builds both apps; `GymaWatch` runs the companion. Edit `apple/project.yml`; generated Xcode files are ignored. Swift 6 tooling runs in Swift 5 language mode with concurrency checking enabled.
-
-### Local outputs and reusable tools
-
-All paths below are Git-ignored. Keep generated output under the single root `build/` directory; keep reusable dependencies and device state under `.local/`.
-
 | Path | Contents |
 | --- | --- |
-| `build/apple` | Swift tests, simulator products, archive, unsigned IPA and build logs |
-| `build/apple/runs/<run-number>` | Downloaded GitHub build artifacts, grouped by run |
-| `build/apple/latest` | Current IPA for local signing and installation |
-| `build/iloader/<run>` | Locally built iLoader installers, checksums, provenance and licenses |
-| `build/iloader-ci` | Output from the explicitly requested GitHub iLoader fallback |
-| `build/archive` | Optional historical build downloads and investigation files |
-| `.local/iloader` | Reused Cargo/Bun caches, retained upstream source checkouts, native helper and opt-in diagnostic sessions |
-| `.local/device-tools` | Python environment, device pairing records and existing portable device tools |
-| `.local/tools` | Downloaded development utilities such as actionlint |
+| `apple/Packages/GymaCore` | API types and client (`GymAPI`), personal records and kg suggestions ported from gym-web's `records.ts`, workout progress rules, civil dates. Foundation only, tested on CI |
+| `apple/iOS/App` | Entry point, root tabs, `AppModel` (sign-in, selected day, server data) |
+| `apple/iOS/Features` | `SignIn`, `Home`, `Plan`, `Exercises` (library picker), `Workout`, `Progress` |
+| `apple/iOS/Services` | Keychain token store, haptics |
+| `apple/iOS/UI` | gym-web's colour theme, shared controls (number stepper, kg suggestion), date formatting |
+| `apple/Resources` | App icon, colours, privacy manifest |
+| `tools/apple` | IPA verification used by CI |
+| `tools/iloader` | Patched iLoader build scripts for installing from Windows |
 
-For example, download an app build with `gh run download <run-id> -n gyma-swift-ios-watch-<run-number> -D build/apple/runs/<run-number>`. Promote its verified IPA to `build/apple/latest` when ready to use it. Avoid new feature-named output directories. Old downloads in `build/archive` can be reviewed and removed independently of reusable caches; never blanket-delete `.local`, which also contains pairing records and retained source edits.
-
-## Connection and persistence
-
-The phone owns workout state. The Watch persists a command before sending it and waits for confirmation before allowing another change. The phone checks its store identity, workout and revision, then atomically writes the change and receipt before acknowledging. Repeated delivery cannot log another set. Rest controls check timer identity. Restoring a native backup creates a new store identity so old Watch commands cannot change restored data.
-
-Snapshots use `updateApplicationContext`, with `sendMessage` for prompt updates when reachable. Commands also use `transferUserInfo` for queued delivery. Activation, reachability, Watch switching and WatchConnectivity background tasks are handled. Routine snapshots contain a bounded active workout, not full history. See [Apple's WatchConnectivity APIs](https://developer.apple.com/documentation/watchconnectivity/transferring-data-with-watch-connectivity).
-
-Data lives in `gyma-native.json`. Unreadable files block mutations instead of being overwritten; Settings can export their original bytes. Restoring a backup first preserves existing native workout data in the app's Documents directory. This protects user workout data, not source-code backups.
-
-The single-target Watch app uses `WKApplication` and `WKCompanionAppBundleIdentifier`. It is embedded at `Gyma.app/Watch/GymaWatch.app`, following [Apple's bundle layout](https://developer.apple.com/documentation/bundleresources/placing-content-in-a-bundle). CI rejects misplaced or missing Watch bundles and verifies the companion identity and build number. Physical-device installation still needs verification.
-
-For Sideloadly, use version 0.70.1 or newer: its [changelog](https://sideloadly.io/changelog) documents preserving and re-signing bundled WatchKit apps, while older releases stripped them. Install the combined IPA on the paired iPhone, then check the iPhone's Watch app under My Watch > Available Apps. Both devices must meet the deployment targets above. A correct unsigned IPA alone does not validate the re-signing tool's Watch provisioning or guarantee installation.
-
-Development-signed apps also require Developer Mode on the physical Watch. [Apple's documented setup](https://developer.apple.com/documentation/xcode/enabling-developer-mode-on-a-device) exposes the setting through developer pairing with Xcode. The Windows helper below can also reveal the setting through the paired iPhone. GitHub Actions cannot reach the physical devices. TestFlight avoids Developer Mode but requires Apple Developer Program membership and a separately configured signed distribution workflow.
-
-### Windows Watch setup
-
-Connect the paired iPhone to Windows by USB, unlock both devices, and keep them nearby. Apple's USB driver/service must be installed. From the repository root in PowerShell:
-
-```powershell
-python -m venv .local/device-tools/venv
-.local/device-tools/venv/Scripts/python.exe -m pip install -r tools/apple/requirements-device-tools.txt
-.local/device-tools/venv/Scripts/python.exe tools/apple/watch_developer_mode.py --inspect
-.local/device-tools/venv/Scripts/python.exe tools/apple/watch_developer_mode.py --reveal
-```
-
-Accept the Trust prompt **on the Watch**. After it confirms the reveal request, open the Watch's Settings > Privacy & Security > Developer Mode, enable it, restart, and confirm Turn On/Trust. Run `--inspect` again to verify that Developer Mode is enabled. The helper verifies the connected Watch's identity, refuses ambiguous device selections, and sends only the reveal request; it does not enable Developer Mode, restart devices, or change passcodes. Pairing records stay in the Git-ignored `.local/device-tools/pairing/` directory. This reveal request succeeded against a physical iPhone on iOS 26.6.1 and Watch on watchOS 26.0.2; other combinations still need testing.
-
-For Watch provisioning and direct installation on Windows, this repository builds an [unofficial iLoader 2.3.8 with Watch support](tools/iloader/README.md), adapted from the [iLoader Watch companion project](https://github.com/Rzbck/iloader-watch-companion). **Future iLoader builds run locally on Windows** using its build script; the GitHub Actions workflow is available only as a manual fallback. The custom tool rewrites the companion identifiers together, provisions and signs the Watch separately, and installs through the paired iPhone. An ordinary installed Watch app is updated in place; only an explicitly identified placeholder is removed. Sign in inside the desktop tool, select the iPhone's USB connection, and choose the combined Gyma IPA. Free-account installation and app launch still need physical verification. Official iLoader 2.3.8 does not contain these Watch changes. Normal Gyma app changes still use the Swift macOS workflow and do not rebuild iLoader.
-
-## Device checks
-
-1. Start a phone workout; verify Watch exercises and targets.
-2. Log a Watch set; confirm exactly one saved record after reconnecting/reopening both apps.
-3. Disconnect, queue an action, reconnect, and confirm its pending state resolves once.
-4. Change/end the phone workout while an action is pending; verify visible stale-action rejection.
-5. Background both apps during rest; verify deadlines, skip/extend and notification opt-in. Warm-ups and the final target set must not start rest.
-6. Restore a native backup, reinstall the phone app and switch Watches; cached state must not resurrect another store's workout.
-7. Import an invalid backup or simulate unavailable storage; verify previous data remains recoverable and uncommitted Watch actions stay pending.
-
-CI verifies compilation, core behavior and IPA packaging. Pairing, notification routing, delivery timing and device UI layout require device testing.
+See [the architecture](docs/ARCHITECTURE.md) for how state flows. Generated output goes under the Git-ignored `build/` directory; `.local/` keeps reusable tool caches and device pairing records.

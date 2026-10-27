@@ -2,16 +2,17 @@ import SwiftUI
 
 @main
 struct GymaApp: App {
-    @StateObject private var model = GymaAppModel()
+    @StateObject private var model = AppModel()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(model)
-                .tint(GymaStyle.accent)
+                .task { await model.start() }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { model.refresh() }
+                    // Pick up changes made in the browser while the app was in the background.
+                    if phase == .active, model.auth == .ready, !model.busy, !model.planEditorOpen { model.reloadAll() }
                 }
         }
     }
