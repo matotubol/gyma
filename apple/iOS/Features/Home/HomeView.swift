@@ -4,19 +4,35 @@ import GymaCore
 struct HomeView: View {
     @EnvironmentObject private var model: AppModel
     @State private var confirmSignOut = false
+    @State private var calendarExpanded = false
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    MonthCalendar(selected: model.selectedDate, month: model.month,
-                                  days: model.loadedMonth == model.month ? model.days : [:],
-                                  onSelect: { model.select($0) }, onMonthChange: { model.showMonth($0) })
-                        .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+                    calendarNavigation
+                    if calendarExpanded {
+                        MonthCalendar(selected: model.selectedDate, month: model.month,
+                                      days: model.loadedMonth == model.month ? model.days : [:],
+                                      onSelect: {
+                                          model.select($0)
+                                          withAnimation(.snappy) { calendarExpanded = false }
+                                      }, onMonthChange: { model.showMonth($0) })
+                            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+                            .disabled(model.busy)
+                    } else {
+                        WeekCalendar(selected: model.selectedDate,
+                                     days: model.loadedMonth == CivilDate.month(of: model.selectedDate) ? model.days : [:],
+                                     onSelect: { model.select($0) })
+                            .listRowInsets(EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8))
+                            .disabled(model.busy)
+                    }
                 } footer: {
                     HStack(spacing: 16) {
-                        Label("Training", systemImage: "circle.fill").foregroundStyle(Theme.training)
-                        Label("Rest", systemImage: "circle.fill").foregroundStyle(Theme.rest)
+                        if calendarExpanded {
+                            Label("Training", systemImage: "circle.fill").foregroundStyle(Theme.training)
+                            Label("Rest", systemImage: "circle.fill").foregroundStyle(Theme.rest)
+                        }
                         if model.monthLoading { ProgressView().controlSize(.mini) }
                         if let error = model.monthError {
                             Button("\(error) Retry") { model.loadMonth() }.font(.footnote)
@@ -48,6 +64,47 @@ struct HomeView: View {
                 Button("Sign Out", role: .destructive) { model.signOut() }
             }
         }
+    }
+
+    private var calendarNavigation: some View {
+        HStack {
+            Button {
+                // Return to the selected day when switching between week and month browsing.
+                model.showMonth(CivilDate.month(of: model.selectedDate))
+                withAnimation(.snappy) { calendarExpanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(DateText.month(calendarExpanded ? model.month : CivilDate.month(of: model.selectedDate)))
+                        .font(.headline)
+                    Image(systemName: "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .rotationEffect(.degrees(calendarExpanded ? 180 : 0))
+                }
+                .frame(minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .accessibilityHint(calendarExpanded ? "Collapse to one week" : "Expand the full calendar")
+            .accessibilityValue(calendarExpanded ? "Expanded" : "Collapsed")
+
+            Spacer(minLength: 0)
+            if !calendarExpanded {
+                Button {
+                    model.select(CivilDate.shift(day: model.selectedDate, by: -7))
+                } label: {
+                    Image(systemName: "chevron.left").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Previous week")
+                .disabled(model.busy)
+                Button {
+                    model.select(CivilDate.shift(day: model.selectedDate, by: 7))
+                } label: {
+                    Image(systemName: "chevron.right").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Next week")
+                .disabled(model.busy)
+            }
+        }
+        .buttonStyle(.borderless)
     }
 }
 
