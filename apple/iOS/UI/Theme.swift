@@ -1,4 +1,5 @@
 import SwiftUI
+import GymaCore
 
 /// Semantic colours on top of the system palette. The app tint is the AccentColor asset.
 enum Theme {
